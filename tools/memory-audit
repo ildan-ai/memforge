@@ -1,0 +1,413 @@
+#!/bin/bash
+# memory-audit — health + integrity checks for Claude Code memory folders.
+#
+# Default: audits both per-cwd memory and ~/.claude/global-memory/.
+# Integrity violations (orphans, bad frontmatter, cap violations) return
+# nonzero when --strict is set, so this script is CI-wireable.
+
+set -u
+
+usage() {
+  cat <<'EOF'
+Usage: memory-audit [--path DIR] [--strict] [--json] [--fix] [--add-defaults] [--stale-days N]
+
+Audits Claude Code memory folders for structural integrity and health.
+
+Defaults: per-cwd memory + ~/.claude/global-memory/
+
+Flags:
+  --path DIR        Audit only this dir (repeatable; overrides defaults)
+  --strict          Exit 1 on any integrity violation
+  --json            Emit machine-readable JSON (requires jq)
+  --fix             Prompt to remove orphan pointers from MEMORY.md
+  --add-defaults    One-shot: add `sensitivity: internal` to files missing the field.
+                    Prints planned changes first, prompts before writing.
+  --stale-days N    Flag files older than N days (default: 90)
+  -h, --help        Show this message
+
+Sensitivity validation (spec 0.2.0):
+  sensitivity frontmatter field must be one of:
+    public | internal | restricted | privileged
+  Absence is allowed and treated as internal. --add-defaults makes absence explicit.
+EOF
+}
+
+STALE_DAYS=90
+STRICT=0
+JSON=0
+FIX=0
+ADD_DEFAULTS=0
+PATHS=()
+VALID_SENSITIVITY="public internal restricted privileged"
+
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    --path) PATHS+=("$2"); shift 2 ;;
+    --strict) STRICT=1; shift ;;
+    --json) JSON=1; shift ;;
+    --fix) FIX=1; shift ;;
+    --add-defaults) ADD_DEFAULTS=1; shift ;;
+    --stale-days) STALE_DAYS="$2"; shift 2 ;;
+    -h|--help) usage; exit 0 ;;
+    *) echo "unknown arg: $1" >&2; usage >&2; exit 2 ;;
+  esac
+done
+
+if [[ ${#PATHS[@]} -eq 0 ]]; then
+  PATHS=(
+    "$HOME/.claude/projects/${USER}-claude-projects/memory"
+    "$HOME/.claude/global-memory"
+  )
+fi
+
+TOTAL_VIOLATIONS=0
+JSON_REPORTS=()
+
+parse_frontmatter() {
+  # $1 = file. Emits tab-separated key/value pairs to stdout.
+  awk '
+    BEGIN { in_fm=0; fm_done=0; body_all=""; name=""; desc=""; type=""; sens="" }
+    NR==1 && /^---[[:space:]]*$/ { in_fm=1; next }
+    in_fm && /^---[[:space:]]*$/ { in_fm=0; fm_done=1; next }
+    in_fm {
+      if (match($0, /^name:[[:space:]]*/)) {
+        name = substr($0, RLENGTH+1)
+      } else if (match($0, /^description:[[:space:]]*/)) {
+        desc = substr($0, RLENGTH+1)
+      } else if (match($0, /^type:[[:space:]]*/)) {
+        type = substr($0, RLENGTH+1)
+      } else if (match($0, /^sensitivity:[[:space:]]*/)) {
+        sens = substr($0, RLENGTH+1)
+      }
+      next
+    }
+    { body_all = body_all $0 "\n" }
+    END {
+      body_stripped = body_all
+      gsub(/[[:space:]]/, "", body_stripped)
+      printf "NAME\t%s\n", name
+      printf "DESC\t%s\n", desc
+      printf "TYPE\t%s\n", type
+      printf "SENSITIVITY\t%s\n", sens
+      printf "HASFM\t%d\n", fm_done
+      printf "BODYLEN\t%d\n", length(body_stripped)
+      printf "HASWHY\t%d\n", (index(body_all, "**Why:**") > 0) ? 1 : 0
+      printf "HASAPPLY\t%d\n", (index(body_all, "**How to apply:**") > 0) ? 1 : 0
+    }
+  ' "$1"
+}
+
+extract_pointers() {
+  # $1 = MEMORY.md path. Emits one filename per line.
+  [[ -f "$1" ]] || return 0
+  grep -oE '\[[^]]+\]\([^)]+\.md\)' "$1" 2>/dev/null \
+    | sed -E 's/.*\(([^)]+\.md)\)/\1/'
+}
+
+json_array() {
+  # Turn a bash array into a JSON string array via jq.
+  # Call: json_array "${arr[@]}"
+  if [[ $# -eq 0 ]]; then
+    echo "[]"
+  else
+    printf '%s\n' "$@" | jq -R . | jq -s .
+  fi
+}
+
+audit_target() {
+  local target="$1"
+  local memory_md="$target/MEMORY.md"
+
+  echo
+  echo "====== $target ======"
+
+  if [[ ! -d "$target" ]]; then
+    echo "  (directory does not exist, skipping)"
+    return 0
+  fi
+
+  local violations=() health=() stale=()
+  local orphan_files=() orphan_ptrs=()
+  local t_user=0 t_feedback=0 t_project=0 t_reference=0 t_other=0
+  local s_public=0 s_internal=0 s_restricted=0 s_privileged=0 s_missing=0
+  local missing_sens_files=()
+  local file_count=0
+
+  # -------- MEMORY.md index checks --------
+  if [[ ! -f "$memory_md" ]]; then
+    violations+=("MEMORY.md missing")
+  else
+    if head -1 "$memory_md" | grep -qE '^---[[:space:]]*$'; then
+      violations+=("MEMORY.md has frontmatter (should be index only)")
+    fi
+    local lc
+    lc=$(wc -l < "$memory_md" | tr -d ' ')
+    [[ $lc -gt 150 ]] && violations+=("MEMORY.md is $lc lines (>150 cap)")
+    local long
+    long=$(awk 'length > 150 && /^- \[/ { n++ } END { print n+0 }' "$memory_md")
+    [[ $long -gt 0 ]] && violations+=("MEMORY.md has $long pointer lines >150 chars")
+  fi
+
+  # -------- pointer / file set comparison --------
+  local ptr_file disk_file dupes
+  ptr_file=$(mktemp)
+  disk_file=$(mktemp)
+  extract_pointers "$memory_md" | sort > "$ptr_file"
+  dupes=$(sort "$ptr_file" | uniq -d)
+  if [[ -n "$dupes" ]]; then
+    while IFS= read -r d; do
+      [[ -n "$d" ]] && violations+=("Duplicate pointer in MEMORY.md: $d")
+    done <<< "$dupes"
+  fi
+  sort -u "$ptr_file" -o "$ptr_file"
+
+  (cd "$target" && ls *.md 2>/dev/null | grep -v '^MEMORY\.md$' | sort -u) > "$disk_file"
+
+  while IFS= read -r f; do
+    [[ -z "$f" ]] && continue
+    orphan_files+=("$f")
+  done < <(comm -23 "$disk_file" "$ptr_file")
+
+  while IFS= read -r p; do
+    [[ -z "$p" ]] && continue
+    orphan_ptrs+=("$p")
+  done < <(comm -13 "$disk_file" "$ptr_file")
+
+  for o in "${orphan_files[@]:-}"; do
+    [[ -n "$o" ]] && violations+=("Orphan file (no pointer): $o")
+  done
+  for o in "${orphan_ptrs[@]:-}"; do
+    [[ -n "$o" ]] && violations+=("Orphan pointer (no file): $o")
+  done
+
+  # -------- per-file frontmatter audit --------
+  local now_epoch stale_cutoff ledger_file
+  now_epoch=$(date +%s)
+  stale_cutoff=$((now_epoch - STALE_DAYS*86400))
+  ledger_file="$target/.last_used.json"
+
+  while IFS= read -r fname; do
+    [[ -z "$fname" ]] && continue
+    local fpath="$target/$fname"
+    local fm_out fm_name fm_desc fm_type fm_sens fm_has body_len has_why has_apply
+    fm_out=$(parse_frontmatter "$fpath")
+    fm_name=$(echo "$fm_out" | awk -F'\t' '$1=="NAME"{print $2}')
+    fm_desc=$(echo "$fm_out" | awk -F'\t' '$1=="DESC"{print $2}')
+    fm_type=$(echo "$fm_out" | awk -F'\t' '$1=="TYPE"{print $2}')
+    fm_sens=$(echo "$fm_out" | awk -F'\t' '$1=="SENSITIVITY"{print $2}')
+    fm_has=$(echo "$fm_out"  | awk -F'\t' '$1=="HASFM"{print $2}')
+    body_len=$(echo "$fm_out"| awk -F'\t' '$1=="BODYLEN"{print $2}')
+    has_why=$(echo "$fm_out" | awk -F'\t' '$1=="HASWHY"{print $2}')
+    has_apply=$(echo "$fm_out"| awk -F'\t' '$1=="HASAPPLY"{print $2}')
+
+    file_count=$((file_count+1))
+
+    if [[ "$fm_has" != "1" ]]; then
+      violations+=("$fname: no frontmatter block")
+    else
+      [[ -z "$fm_name" ]] && violations+=("$fname: missing 'name' in frontmatter")
+      [[ -z "$fm_desc" ]] && violations+=("$fname: missing 'description' in frontmatter")
+      [[ -z "$fm_type" ]] && violations+=("$fname: missing 'type' in frontmatter")
+    fi
+
+    case "$fm_type" in
+      user)      t_user=$((t_user+1)) ;;
+      feedback)  t_feedback=$((t_feedback+1)) ;;
+      project)   t_project=$((t_project+1)) ;;
+      reference) t_reference=$((t_reference+1)) ;;
+      "")        : ;;
+      *) violations+=("$fname: invalid type '$fm_type'"); t_other=$((t_other+1)) ;;
+    esac
+
+    case "$fm_sens" in
+      public)     s_public=$((s_public+1)) ;;
+      internal)   s_internal=$((s_internal+1)) ;;
+      restricted) s_restricted=$((s_restricted+1)) ;;
+      privileged) s_privileged=$((s_privileged+1)) ;;
+      "")
+        s_missing=$((s_missing+1))
+        missing_sens_files+=("$fname")
+        ;;
+      *)
+        violations+=("$fname: invalid sensitivity '$fm_sens' (must be public|internal|restricted|privileged)")
+        ;;
+    esac
+
+    if [[ "${body_len:-0}" -eq 0 ]]; then
+      violations+=("$fname: empty body")
+    fi
+
+    case "$fm_type" in
+      feedback|project)
+        [[ "$has_why"   != "1" ]] && health+=("$fname ($fm_type): missing **Why:** line")
+        [[ "$has_apply" != "1" ]] && health+=("$fname ($fm_type): missing **How to apply:** line")
+        ;;
+    esac
+
+    # Staleness: prefer the last_used ledger when present, fall back to mtime.
+    # The ledger is written by the memory-read-tracker PostToolUse hook in the
+    # Claude Code adapter. If a file has never been read (no ledger entry),
+    # fall back to mtime and annotate the output.
+    local last_used_ts=""
+    if [[ -f "$ledger_file" ]]; then
+      last_used_ts=$(jq -r --arg f "$fname" '.[$f] // empty' "$ledger_file" 2>/dev/null)
+    fi
+
+    if [[ -n "$last_used_ts" ]]; then
+      local last_used_epoch
+      last_used_epoch=$(python3 -c "import datetime,sys
+try:
+    print(int(datetime.datetime.strptime(sys.argv[1], '%Y-%m-%dT%H:%M:%SZ').replace(tzinfo=datetime.timezone.utc).timestamp()))
+except Exception:
+    print(0)" "$last_used_ts" 2>/dev/null || echo 0)
+      if [[ $last_used_epoch -gt 0 && $last_used_epoch -lt $stale_cutoff ]]; then
+        stale+=("$fname (last_used $last_used_ts)")
+      fi
+    else
+      local mtime
+      # Cross-platform mtime + date formatting via python3 (BSD `stat -f` and
+      # `date -r` are not available on Linux; OSS portability requires a
+      # portable substrate).
+      mtime=$(python3 -c "import os,sys; print(int(os.path.getmtime(sys.argv[1])))" "$fpath" 2>/dev/null || echo 0)
+      if [[ $mtime -gt 0 && $mtime -lt $stale_cutoff ]]; then
+        local mtime_iso
+        mtime_iso=$(python3 -c "import datetime,sys; print(datetime.date.fromtimestamp(int(sys.argv[1])).isoformat())" "$mtime")
+        if [[ -f "$ledger_file" ]]; then
+          stale+=("$fname (mtime $mtime_iso; never read)")
+        else
+          stale+=("$fname (mtime $mtime_iso)")
+        fi
+      fi
+    fi
+  done < "$disk_file"
+
+  # -------- report --------
+  echo
+  printf "  Files: %d  | user: %d  feedback: %d  project: %d  reference: %d  other: %d\n" \
+    "$file_count" "$t_user" "$t_feedback" "$t_project" "$t_reference" "$t_other"
+  printf "  Sensitivity: public: %d  internal: %d  restricted: %d  privileged: %d  (missing: %d)\n" \
+    "$s_public" "$s_internal" "$s_restricted" "$s_privileged" "$s_missing"
+  echo
+
+  if [[ ${#violations[@]} -gt 0 ]]; then
+    echo "  INTEGRITY VIOLATIONS (${#violations[@]}):"
+    for v in "${violations[@]}"; do echo "    - $v"; done
+    echo
+    TOTAL_VIOLATIONS=$((TOTAL_VIOLATIONS + ${#violations[@]}))
+  fi
+
+  if [[ ${#health[@]} -gt 0 ]]; then
+    echo "  HEALTH (${#health[@]}):"
+    for h in "${health[@]}"; do echo "    - $h"; done
+    echo
+  fi
+
+  if [[ ${#stale[@]} -gt 0 ]]; then
+    echo "  STALE >${STALE_DAYS}d (${#stale[@]}):"
+    for s in "${stale[@]}"; do echo "    - $s"; done
+    echo
+  fi
+
+  # -------- --add-defaults mode: write `sensitivity: internal` to files missing it --------
+  if [[ $ADD_DEFAULTS -eq 1 && ${#missing_sens_files[@]} -gt 0 ]]; then
+    echo "  --add-defaults: ${#missing_sens_files[@]} file(s) missing sensitivity field"
+    for f in "${missing_sens_files[@]}"; do
+      [[ -z "$f" ]] && continue
+      echo "    - $f"
+    done
+    read -r -p "    Add 'sensitivity: internal' to all of the above? [y/N] " ans
+    case "$ans" in
+      y|Y)
+        for f in "${missing_sens_files[@]}"; do
+          [[ -z "$f" ]] && continue
+          local fpath="$target/$f"
+          # Insert `sensitivity: internal` before the closing `---` of the frontmatter.
+          # Uses awk for reliability across macOS/Linux.
+          local tmp="${fpath}.addsens.tmp"
+          awk '
+            BEGIN { in_fm=0; done=0; seen_fm_open=0 }
+            NR==1 && /^---[[:space:]]*$/ { in_fm=1; seen_fm_open=1; print; next }
+            in_fm && !done && /^---[[:space:]]*$/ {
+              print "sensitivity: internal"
+              print
+              in_fm=0
+              done=1
+              next
+            }
+            { print }
+          ' "$fpath" > "$tmp" && mv "$tmp" "$fpath"
+          echo "      wrote sensitivity: internal to $f"
+        done
+        ;;
+      *) echo "    kept as-is (absence treated as internal at runtime)." ;;
+    esac
+    echo
+  fi
+
+  # -------- --fix mode: remove orphan pointers with y/N prompt --------
+  if [[ $FIX -eq 1 && ${#orphan_ptrs[@]} -gt 0 && -f "$memory_md" ]]; then
+    echo "  --fix: orphan pointer removal"
+    for p in "${orphan_ptrs[@]}"; do
+      [[ -z "$p" ]] && continue
+      read -r -p "    Remove pointer '$p' from $memory_md? [y/N] " ans
+      case "$ans" in
+        y|Y)
+          local esc
+          esc=$(printf '%s' "$p" | sed -E 's/[][\/.^$*]/\\&/g')
+          sed -i.bak -E "/\\($esc\\)/d" "$memory_md"
+          echo "      removed."
+          ;;
+        *) echo "      kept." ;;
+      esac
+    done
+    echo
+  fi
+
+  # -------- JSON report (collected, printed at end) --------
+  if [[ $JSON -eq 1 ]]; then
+    local blob
+    blob=$(jq -n \
+      --arg target "$target" \
+      --argjson file_count "$file_count" \
+      --argjson t_user "$t_user" \
+      --argjson t_feedback "$t_feedback" \
+      --argjson t_project "$t_project" \
+      --argjson t_reference "$t_reference" \
+      --argjson t_other "$t_other" \
+      --argjson violations  "$(json_array "${violations[@]:-}")" \
+      --argjson health      "$(json_array "${health[@]:-}")" \
+      --argjson stale       "$(json_array "${stale[@]:-}")" \
+      --argjson orphan_files "$(json_array "${orphan_files[@]:-}")" \
+      --argjson orphan_ptrs  "$(json_array "${orphan_ptrs[@]:-}")" \
+      '{target: $target,
+        file_count: $file_count,
+        types: {user: $t_user, feedback: $t_feedback, project: $t_project,
+                reference: $t_reference, other: $t_other},
+        violations: ($violations | map(select(. != ""))),
+        health:     ($health | map(select(. != ""))),
+        stale:      ($stale | map(select(. != ""))),
+        orphan_files: ($orphan_files | map(select(. != ""))),
+        orphan_pointers: ($orphan_ptrs | map(select(. != "")))}')
+    JSON_REPORTS+=("$blob")
+  fi
+
+  rm -f "$ptr_file" "$disk_file"
+}
+
+for t in "${PATHS[@]}"; do
+  audit_target "$t"
+done
+
+if [[ $JSON -eq 1 ]]; then
+  echo
+  echo "----- JSON -----"
+  printf '%s\n' "${JSON_REPORTS[@]}" | jq -s .
+fi
+
+echo
+echo "Total integrity violations across targets: $TOTAL_VIOLATIONS"
+
+if [[ $STRICT -eq 1 && $TOTAL_VIOLATIONS -gt 0 ]]; then
+  exit 1
+fi
+exit 0

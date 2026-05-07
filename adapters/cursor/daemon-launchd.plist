@@ -1,0 +1,51 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  macOS LaunchAgent for memforge memory-watch.
+
+  Setup:
+    1. Edit the ProgramArguments path below to point at your installed
+       memory-watch script. If you `pip install memforge`, use the
+       wrapper from your venv (e.g. /usr/local/bin/memory-watch). If
+       you cloned the repo, point at <repo>/tools/memory-watch.
+    2. Replace USER_HOME with your actual home directory ($HOME).
+    3. Copy to ~/Library/LaunchAgents/com.memforge.memory-watch.plist.
+    4. Load:
+         launchctl load ~/Library/LaunchAgents/com.memforge.memory-watch.plist
+       Status:
+         launchctl list | grep memforge-watch
+       Stop:
+         launchctl unload ~/Library/LaunchAgents/com.memforge.memory-watch.plist
+-->
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>Label</key>
+  <string>com.memforge.memory-watch</string>
+
+  <key>ProgramArguments</key>
+  <array>
+    <string>USER_HOME/claude-projects/memforge/tools/memory-watch</string>
+    <string>--quiet</string>
+  </array>
+
+  <key>RunAtLoad</key>
+  <true/>
+
+  <key>KeepAlive</key>
+  <true/>
+
+  <key>StandardOutPath</key>
+  <string>USER_HOME/Library/Logs/memforge-watch.log</string>
+
+  <key>StandardErrorPath</key>
+  <string>USER_HOME/Library/Logs/memforge-watch.err</string>
+
+  <key>EnvironmentVariables</key>
+  <dict>
+    <key>PATH</key>
+    <string>/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin</string>
+    <key>HOME</key>
+    <string>USER_HOME</string>
+  </dict>
+</dict>
+</plist>

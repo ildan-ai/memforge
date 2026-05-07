@@ -1,0 +1,251 @@
+#!/usr/bin/env python3
+# memory-query — first-class dynamic query layer for MemForge (Phase 1 T5).
+#
+# ADR: 0001 §Phase 1 T5
+# Spec: 0.3.0
+#
+# Pure-read query tool: walks memory folder(s) recursively, filters by
+# frontmatter fields, emits results as markdown (rollup-ready bullet list)
+# or JSON. Static rollups remain authoritative; dynamic queries are a
+# read-only convenience layer.
+#
+# Defaults: per-cwd memory + ~/.claude/global-memory/. Override --path.
+
+from __future__ import annotations
+
+import argparse
+import json
+import os
+import re
+import sys
+from dataclasses import dataclass, field
+from datetime import date, datetime, timedelta
+from pathlib import Path
+from typing import Optional
+
+_HERE = Path(__file__).resolve().parent
+sys.path.insert(0, str(_HERE.parent / "src"))
+from memforge.frontmatter import parse as _mf_parse  # noqa: E402
+
+
+@dataclass
+class Hit:
+    path: Path
+    folder: Path
+    rel: str
+    fm: dict = field(default_factory=dict)
+
+
+def parse_frontmatter(text: str) -> dict:
+    """Compatibility shim. Use memforge.frontmatter.parse() in new code."""
+    fm, _ = _mf_parse(text)
+    return fm
+
+
+def discover(folder: Path) -> list[Hit]:
+    out: list[Hit] = []
+    skip = {"archive", ".git", "__pycache__"}
+    for path in sorted(folder.rglob("*.md")):
+        parts = path.relative_to(folder).parts
+        if any(p in skip for p in parts):
+            continue
+        if path.name == "MEMORY.md":
+            continue
+        try:
+            text = path.read_text(encoding="utf-8")
+        except (OSError, UnicodeDecodeError):
+            continue
+        fm = parse_frontmatter(text)
+        if not fm:
+            continue
+        out.append(Hit(path=path, folder=folder, rel=path.relative_to(folder).as_posix(), fm=fm))
+    return out
+
+
+def parse_date_loose(s: str) -> Optional[date]:
+    if not s:
+        return None
+    for fmt in ("%Y-%m-%d", "%Y-%m-%dT%H:%M:%SZ", "%Y-%m-%dT%H:%M:%S"):
+        try:
+            return datetime.strptime(s, fmt).date()
+        except ValueError:
+            continue
+    return None
+
+
+def has_tag(fm: dict, ns: str, val: Optional[str]) -> bool:
+    tags = fm.get("tags", [])
+    if isinstance(tags, str):
+        tags = [tags]
+    if not isinstance(tags, list):
+        return False
+    if val is None:
+        return any(isinstance(t, str) and t.startswith(f"{ns}:") for t in tags)
+    target = f"{ns}:{val}"
+    return target in tags
+
+
+def matches(hit: Hit, args) -> bool:
+    fm = hit.fm
+    if args.topic and not has_tag(fm, "topic", args.topic):
+        return False
+    if args.tag:
+        tags = fm.get("tags", [])
+        if isinstance(tags, str):
+            tags = [tags]
+        if not isinstance(tags, list) or args.tag not in tags:
+            return False
+    if args.type and fm.get("type") != args.type:
+        return False
+    if args.status and fm.get("status", "active") != args.status:
+        return False
+    if args.pinned and not bool(fm.get("pinned", False)):
+        return False
+    if args.owner and fm.get("owner") != args.owner:
+        return False
+    if args.tier and fm.get("tier", "index") != args.tier:
+        return False
+    if args.sensitivity and fm.get("sensitivity") != args.sensitivity:
+        return False
+    if args.last_reviewed_before:
+        d = parse_date_loose(fm.get("last_reviewed", ""))
+        cutoff = parse_date_loose(args.last_reviewed_before)
+        if d is None or cutoff is None or not (d < cutoff):
+            return False
+    if args.last_reviewed_after:
+        d = parse_date_loose(fm.get("last_reviewed", ""))
+        cutoff = parse_date_loose(args.last_reviewed_after)
+        if d is None or cutoff is None or not (d > cutoff):
+            return False
+    if args.updated_within_days is not None:
+        u = parse_date_loose(fm.get("updated", ""))
+        if u is None:
+            return False
+        cutoff = date.today() - timedelta(days=args.updated_within_days)
+        if u < cutoff:
+            return False
+    if args.last_d is not None:
+        u = parse_date_loose(fm.get("updated", "")) or parse_date_loose(fm.get("last_reviewed", ""))
+        if u is None:
+            return False
+        cutoff = date.today() - timedelta(days=args.last_d)
+        if u < cutoff:
+            return False
+    if args.text:
+        try:
+            text = hit.path.read_text(encoding="utf-8")
+        except (OSError, UnicodeDecodeError):
+            return False
+        if args.text.lower() not in text.lower():
+            return False
+    return True
+
+
+def emit_markdown(hits: list[Hit]) -> str:
+    lines: list[str] = []
+    if not hits:
+        return "(no matches)\n"
+    lines.append(f"# memory-query results ({len(hits)} hits)")
+    lines.append("")
+    for h in hits:
+        name = h.fm.get("name", h.path.stem)
+        desc = h.fm.get("description", "")
+        topic = ""
+        tags = h.fm.get("tags", [])
+        if isinstance(tags, list):
+            for t in tags:
+                if isinstance(t, str) and t.startswith("topic:"):
+                    topic = t.split(":", 1)[1]
+                    break
+        suffix = f" — *topic:{topic}*" if topic else ""
+        if desc:
+            lines.append(f"- [{name}]({h.rel}): {desc}{suffix}")
+        else:
+            lines.append(f"- [{name}]({h.rel}){suffix}")
+    return "\n".join(lines) + "\n"
+
+
+def emit_json(hits: list[Hit]) -> str:
+    out = []
+    for h in hits:
+        out.append(
+            {
+                "folder": str(h.folder),
+                "path": str(h.path),
+                "rel": h.rel,
+                "frontmatter": h.fm,
+            }
+        )
+    return json.dumps(out, indent=2, default=str) + "\n"
+
+
+def emit_count(hits: list[Hit]) -> str:
+    return f"{len(hits)}\n"
+
+
+def default_paths() -> list[Path]:
+    out: list[Path] = []
+    home = Path.home()
+    user = os.environ.get("USER", "")
+    if user:
+        per_cwd = home / ".claude" / "projects" / f"{user}-claude-projects" / "memory"
+        if per_cwd.exists():
+            out.append(per_cwd)
+    glob = home / ".claude" / "global-memory"
+    if glob.exists():
+        out.append(glob)
+    return out
+
+
+def main() -> int:
+    p = argparse.ArgumentParser(
+        prog="memory-query",
+        description="Dynamic query layer for memory folders (Phase 1 T5).",
+    )
+    p.add_argument("--path", action="append", default=[], help="Folder (repeatable)")
+    p.add_argument("--topic", help="Filter by topic: tag value")
+    p.add_argument("--tag", help="Filter by exact tag (e.g. topic:aws)")
+    p.add_argument("--type", help="Filter by frontmatter type (user|feedback|project|reference)")
+    p.add_argument("--status", help="Filter by status (default: any)")
+    p.add_argument("--pinned", action="store_true", help="Pinned only")
+    p.add_argument("--owner", help="Filter by owner")
+    p.add_argument("--tier", help="Filter by tier (index|detail)")
+    p.add_argument("--sensitivity", help="Filter by sensitivity")
+    p.add_argument("--last-reviewed-before", help="last_reviewed before date (YYYY-MM-DD)")
+    p.add_argument("--last-reviewed-after", help="last_reviewed after date (YYYY-MM-DD)")
+    p.add_argument("--updated-within-days", type=int, help="Updated within N days")
+    p.add_argument("--last-d", type=int, dest="last_d", help="Shorthand for updated within N days")
+    p.add_argument("--text", help="Substring match anywhere in file (case-insensitive)")
+    p.add_argument("--format", choices=("markdown", "json", "count"), default="markdown")
+    p.add_argument("--limit", type=int, default=0, help="Cap result count (0 = no cap)")
+    args = p.parse_args()
+
+    folders = [Path(x).resolve() for x in args.path] if args.path else default_paths()
+    if not folders:
+        sys.stderr.write("error: no folders specified and no defaults found\n")
+        return 2
+
+    all_hits: list[Hit] = []
+    for f in folders:
+        if not f.exists():
+            sys.stderr.write(f"warning: skipping nonexistent {f}\n")
+            continue
+        for h in discover(f):
+            if matches(h, args):
+                all_hits.append(h)
+
+    all_hits.sort(key=lambda h: (h.fm.get("name", h.path.stem).lower(), h.rel))
+    if args.limit > 0:
+        all_hits = all_hits[: args.limit]
+
+    if args.format == "json":
+        sys.stdout.write(emit_json(all_hits))
+    elif args.format == "count":
+        sys.stdout.write(emit_count(all_hits))
+    else:
+        sys.stdout.write(emit_markdown(all_hits))
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

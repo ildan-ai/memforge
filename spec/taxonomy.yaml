@@ -1,0 +1,164 @@
+# MemForge example taxonomy
+# Spec version: 0.3.0
+#
+# This is a STARTER taxonomy meant to be replaced with your project's
+# own controlled vocabulary. The goal of this file is to demonstrate the
+# shape (namespaces -> values -> description + synonyms) and ship a
+# defensible default for the audit + cluster-suggest tools to chew on.
+#
+# Conventions:
+# - One canonical name per value (lowercase, hyphenated).
+# - Descriptions stay one sentence so audits can render them inline.
+# - Synonyms are free-form text that should resolve to the canonical
+#   value via the synonym map at the bottom of the file.
+# - When a memory legitimately spans multiple topics, use `area:` rather
+#   than stacking `topic:` tags.
+#
+# Updates require explicit revision; new tags should not appear in the
+# wild without first being added here. Audit tools warn on out-of-
+# vocabulary tags.
+
+version: 0.3.1
+spec_compatible: ">=0.3.0,<0.4.0"
+
+namespaces:
+
+  topic:
+    description: |
+      Primary topic anchor. Drives rollup clustering and session-start
+      surfacing. A memory should carry exactly one `topic:` tag (the
+      most specific applicable). Cross-cutting concerns use `area:`.
+    values:
+      auth:
+        description: Authentication, authorization, identity, session lifecycle.
+        synonyms: [authn, authz, login, sso, oauth, oidc, session]
+      api:
+        description: HTTP and RPC APIs, contract design, versioning, error shape.
+        synonyms: [rest, graphql, grpc, endpoint, contract]
+      build:
+        description: Build systems, package managers, lockfiles, dependency policy.
+        synonyms: [bundler, npm, yarn, bun, pip, cargo, gradle, lockfile]
+      ci:
+        description: Continuous integration pipelines, status checks, branch policy.
+        synonyms: [github-actions, circleci, gitlab-ci, jenkins, pipeline]
+      db:
+        description: Database schema, migrations, query patterns, indexing.
+        synonyms: [postgres, mysql, sqlite, mongo, schema, migration, index]
+      deploy:
+        description: Deployment topology, release process, rollback, environments.
+        synonyms: [release, rollout, canary, blue-green, staging, production]
+      docs:
+        description: Documentation conventions, README hygiene, ADR process.
+        synonyms: [readme, adr, runbook, changelog, comment-style]
+      frontend:
+        description: UI components, design tokens, accessibility, browser support.
+        synonyms: [ui, react, vue, svelte, components, css, a11y]
+      infra:
+        description: Infrastructure-as-code, cloud providers, networking, DNS.
+        synonyms: [terraform, pulumi, aws, gcp, azure, dns, network, vpc]
+      monitoring:
+        description: Logs, metrics, traces, alerting, on-call runbooks.
+        synonyms: [observability, logs, metrics, traces, alerts, slo, sli]
+      perf:
+        description: Performance budgets, profiling, latency, throughput.
+        synonyms: [performance, latency, throughput, profile, benchmark]
+      security:
+        description: Threat modeling, secrets handling, dependency CVEs, hardening.
+        synonyms: [threat-model, secrets, vulnerability, hardening, dlp]
+      testing:
+        description: Unit, integration, end-to-end, fixtures, flaky tests.
+        synonyms: [unit, integration, e2e, fixtures, mocks, snapshot]
+      tooling:
+        description: Local CLI tooling, editor configuration, language tooling.
+        synonyms: [cli, editor, linter, formatter, language-server]
+
+  area:
+    description: |
+      Cross-cutting concerns. A memory MAY carry multiple `area:` tags.
+      Used when a memory legitimately spans multiple topics.
+    values:
+      ops:
+        description: Day-to-day operational rules, environment, conventions.
+      governance:
+        description: Policy, compliance, audit, review processes.
+      research:
+        description: Benchmarking, evals, comparisons, literature review.
+      review:
+        description: Pull request review, design review, architecture review.
+
+  priority:
+    description: |
+      Operational priority for the memory's relevance.
+    values:
+      critical:
+        description: Must surface at session start; never archive without explicit operator decision.
+      high:
+        description: Surfaces on relevant trigger; routine archival on status change.
+      normal:
+        description: Default. Surfaces on direct topic match.
+      low:
+        description: Archive-eligible after standard staleness window.
+
+# Synonym map: free-form text -> canonical tag.
+# Used by tools to suggest tag corrections and by memory-cluster-suggest
+# to group memories that share an underlying topic despite different
+# wording. Replace with your own vocabulary as you accumulate memories.
+synonyms:
+  # topic:auth
+  oauth: topic:auth
+  oidc: topic:auth
+  session: topic:auth
+  # topic:build
+  npm: topic:build
+  bun: topic:build
+  pip: topic:build
+  # topic:ci
+  github-actions: topic:ci
+  pipeline: topic:ci
+  # topic:db
+  postgres: topic:db
+  schema: topic:db
+  migration: topic:db
+  # topic:deploy
+  release: topic:deploy
+  staging: topic:deploy
+  # topic:infra
+  terraform: topic:infra
+  aws: topic:infra
+  # topic:monitoring
+  observability: topic:monitoring
+  logs: topic:monitoring
+  # topic:security
+  threat-model: topic:security
+  dlp: topic:security
+  # topic:testing
+  e2e: topic:testing
+  fixtures: topic:testing
+
+# Access labels (independent of sensitivity).
+# Adapters MAY enforce; spec defines the controlled values + synonyms.
+access_labels:
+  public:
+    description: Anyone can read; OK for external publication.
+  internal:
+    description: Workspace members. Default when access is absent.
+  team:security:
+    description: Security team scope.
+  team:platform:
+    description: Platform engineering team scope.
+
+# Status lifecycle.
+# Generators move files between statuses; the field is the single source
+# of truth.
+statuses:
+  active: { description: Current state, surfaces normally. Default when absent. }
+  proposed: { description: Under review. Surfaces with draft tag. }
+  gated: { description: Contingent on external decision. Surfaces normally; gate-watch applies. }
+  superseded: { description: Replaced. superseded_by required. Generator archives. }
+  dropped: { description: Premise no longer applies; not replaced. Generator archives. }
+  archived: { description: Terminal. Lives in archive/. Excluded from integrity check. }
+
+# Tier values.
+tiers:
+  index: { description: Surfaces in MEMORY.md. Loaded at session start. }
+  detail: { description: Inside a rollup subfolder. Read on demand. }

@@ -1,0 +1,27 @@
+# ~/.aider.conf.yml — aider global config with MemForge memory loaded.
+#
+# Copy to ~/.aider.conf.yml (or your project root) and edit the read:
+# entries to point at your memory folders. Aider will inline these as
+# session-start context on every invocation.
+#
+# Reference: https://aider.chat/docs/config/aider_conf.html
+
+# Files aider always reads (read-only; provides context, not edits).
+read:
+  - ~/.claude/global-memory/MEMORY.md
+  # - ~/.claude/projects/<workspace>/memory/MEMORY.md
+  # - ~/claude-projects/memforge/spec/SPEC.md
+
+# Optional: instruct aider to honor v0.3.0 frontmatter when editing
+# memory files added via /add.
+read-only-style: file
+
+# Auto-commit aider's own edits (default true; safe to leave).
+auto-commits: true
+
+# Use a sensible commit-message prefix that distinguishes aider-driven
+# commits from operator commits.
+commit-prompt: |
+  Generate a one-line commit message in operator voice (no em-dashes,
+  no marketing language, no AI-disclaimer suffix). Prefix with the
+  affected area when obvious (e.g., "memory:", "spec:", "tools:").

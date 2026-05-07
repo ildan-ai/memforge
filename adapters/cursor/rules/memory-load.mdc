@@ -1,0 +1,28 @@
+---
+description: Loads MemForge MEMORY.md as session-start context for every chat.
+alwaysApply: true
+---
+
+# Memory context (MemForge)
+
+The following is the contents of the operator's MEMORY.md index. Treat it as session-start context: identity, accumulated feedback, ongoing project state, and references to external systems.
+
+When the operator references a memory by title (e.g., "the AWS infra rollup"), follow the link in MEMORY.md to read the underlying file before answering.
+
+When the operator asks you to remember something cross-session, write it to a new file in the memory folder using the v0.3.0 frontmatter schema (see `~/claude-projects/memforge/spec/SPEC.md`). The filesystem watcher will commit the file automatically.
+
+## MEMORY.md content
+
+@~/.claude/projects/PER_CWD_WORKSPACE_NAME/memory/MEMORY.md
+
+@~/.claude/global-memory/MEMORY.md
+
+<!--
+Setup:
+  1. Replace PER_CWD_WORKSPACE_NAME with your actual workspace folder name
+     (run: ls ~/.claude/projects/ | grep claude-projects).
+  2. Drop additional @-references for any other memory folders you want
+     loaded session-start.
+  3. Cursor's @-syntax inlines the referenced file's content into the rule.
+     Re-loaded on every chat; no caching to invalidate.
+-->

@@ -1,0 +1,23 @@
+{
+  "_comment_top": "Drop-in snippet for VS Code user or workspace settings.json. Wires GitHub Copilot Chat to read MemForge MEMORY.md files at session start. Edit paths to match your layout.",
+
+  "github.copilot.chat.codeGeneration.useInstructionFiles": true,
+
+  "github.copilot.chat.codeGeneration.instructions": [
+    {
+      "_comment": "Per-repo instructions (sits next to AGENTS.md in the same repo).",
+      "file": "${workspaceFolder}/.github/copilot-instructions.md"
+    },
+    {
+      "_comment": "Global memory loaded for every Copilot Chat session in every repo.",
+      "file": "${userHome}/.claude/global-memory/MEMORY.md"
+    },
+    {
+      "_comment": "Per-cwd memory; path includes USERNAME, edit accordingly.",
+      "file": "${userHome}/.claude/projects/USERNAME-claude-projects/memory/MEMORY.md"
+    }
+  ],
+
+  "_comment_bottom_1": "VS Code does not strip _comment_* keys; remove them before saving to settings.json or VS Code will warn.",
+  "_comment_bottom_2": "Some Copilot versions only support github.copilot.chat.codeGeneration.useInstructionFiles. The instructions[] array landed in later versions; check Copilot docs for your version."
+}

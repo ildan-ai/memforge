@@ -1,0 +1,172 @@
+#!/bin/bash
+# memory-promote — move a memory file from a per-cwd MemForge folder to
+# the global-memory folder (or between any two MemForge folders). Updates
+# MEMORY.md in both locations and commits each folder's git repo.
+
+set -u
+
+usage() {
+  cat <<'EOF'
+Usage: memory-promote <filename> [--source DIR] [--target DIR] [--dry-run] [--no-commit] [--yes]
+
+Moves a memory file from the source folder to the target folder, removes its
+pointer from the source MEMORY.md, appends it to the target MEMORY.md, and
+commits both folders.
+
+Arguments:
+  <filename>     Memory file to move. Accepts bare filename (feedback_x.md)
+                 or a full path in the source folder.
+
+Flags:
+  --source DIR   Source folder (default: ~/.claude/projects/${USER}-claude-projects/memory)
+  --target DIR   Target folder (default: ~/.claude/global-memory)
+  --dry-run      Print the plan, make no changes
+  --no-commit    Move and update indexes but skip the git commits
+  --yes          Skip the confirmation prompt
+  -h, --help     This message
+
+Exit: 0 success; 1 aborted; 2 validation error.
+EOF
+}
+
+FILENAME=""
+SOURCE="$HOME/.claude/projects/${USER}-claude-projects/memory"
+TARGET="$HOME/.claude/global-memory"
+DRY_RUN=0
+NO_COMMIT=0
+YES=0
+
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    --source) SOURCE="$2"; shift 2 ;;
+    --target) TARGET="$2"; shift 2 ;;
+    --dry-run) DRY_RUN=1; shift ;;
+    --no-commit) NO_COMMIT=1; shift ;;
+    --yes) YES=1; shift ;;
+    -h|--help) usage; exit 0 ;;
+    --*) echo "unknown flag: $1" >&2; usage >&2; exit 2 ;;
+    *)
+      if [[ -z "$FILENAME" ]]; then
+        FILENAME="$1"
+      else
+        echo "error: multiple filenames not supported" >&2
+        exit 2
+      fi
+      shift
+      ;;
+  esac
+done
+
+[[ -z "$FILENAME" ]] && { echo "error: filename required" >&2; usage >&2; exit 2; }
+
+FILENAME=$(basename "$FILENAME")
+
+src_file="$SOURCE/$FILENAME"
+tgt_file="$TARGET/$FILENAME"
+src_idx="$SOURCE/MEMORY.md"
+tgt_idx="$TARGET/MEMORY.md"
+
+# ---- validations ----
+[[ "$SOURCE" == "$TARGET" ]] && { echo "error: source and target are the same directory" >&2; exit 2; }
+[[ ! -d "$SOURCE" ]] && { echo "error: source directory missing: $SOURCE" >&2; exit 2; }
+[[ ! -d "$TARGET" ]] && { echo "error: target directory missing: $TARGET" >&2; exit 2; }
+[[ ! -f "$src_file" ]] && { echo "error: source file missing: $src_file" >&2; exit 2; }
+[[ -f "$tgt_file" ]] && { echo "error: target already has a file with this name: $tgt_file" >&2; exit 2; }
+[[ ! -f "$src_idx" ]] && { echo "error: source MEMORY.md missing: $src_idx" >&2; exit 2; }
+
+# target MEMORY.md will be created if missing
+tgt_idx_existed=1
+[[ ! -f "$tgt_idx" ]] && tgt_idx_existed=0
+
+# ---- extract pointer line ----
+pointer_match=$(grep -nE "\\($FILENAME\\)" "$src_idx" | head -1)
+if [[ -z "$pointer_match" ]]; then
+  echo "error: no pointer for $FILENAME in $src_idx (nothing to promote)" >&2
+  exit 2
+fi
+pointer_lineno=${pointer_match%%:*}
+pointer_text=${pointer_match#*:}
+
+# Second occurrence is a soft problem (means the index has a dupe; audit will catch)
+dupe_count=$(grep -cE "\\($FILENAME\\)" "$src_idx")
+if [[ "$dupe_count" -gt 1 ]]; then
+  echo "warning: $FILENAME pointer appears $dupe_count times in $src_idx; will remove only the first. Re-run memory-audit after." >&2
+fi
+
+src_in_git=0
+tgt_in_git=0
+[[ -d "$SOURCE/.git" ]] && src_in_git=1
+[[ -d "$TARGET/.git" ]] && tgt_in_git=1
+
+# ---- plan ----
+cat <<EOF
+Planned promotion:
+  file:       $FILENAME
+  from:       $SOURCE
+  to:         $TARGET
+  pointer:    $pointer_text
+  src MEMORY.md: remove line $pointer_lineno
+  tgt MEMORY.md: $( [[ $tgt_idx_existed -eq 1 ]] && echo "append pointer" || echo "create index and add pointer" )
+  src git:    $( [[ $src_in_git -eq 1 ]] && echo "commit enabled" || echo "not a git repo" )
+  tgt git:    $( [[ $tgt_in_git -eq 1 ]] && echo "commit enabled" || echo "not a git repo" )
+  commits:    $( [[ $NO_COMMIT -eq 1 ]] && echo "skipped (--no-commit)" || echo "yes" )
+EOF
+echo
+
+if [[ $DRY_RUN -eq 1 ]]; then
+  echo "--dry-run: no changes made."
+  exit 0
+fi
+
+if [[ $YES -ne 1 ]]; then
+  read -r -p "Proceed? [y/N] " ans
+  case "$ans" in
+    y|Y) ;;
+    *) echo "aborted."; exit 1 ;;
+  esac
+fi
+
+# ---- execute ----
+cp "$src_file" "$tgt_file"
+
+# Remove pointer line from source index
+sed -i.bak "${pointer_lineno}d" "$src_idx"
+rm -f "$src_idx.bak"
+
+# Append pointer to target index (create if missing)
+if [[ $tgt_idx_existed -eq 0 ]]; then
+  printf '# Memory Index\n\n' > "$tgt_idx"
+fi
+# Ensure the file ends with a newline before appending
+if [[ -s "$tgt_idx" ]] && [[ $(tail -c1 "$tgt_idx") != "" ]]; then
+  printf '\n' >> "$tgt_idx"
+fi
+printf '%s\n' "$pointer_text" >> "$tgt_idx"
+
+# Remove source file
+rm "$src_file"
+
+# ---- commits ----
+if [[ $NO_COMMIT -eq 0 ]]; then
+  src_rel=$(basename "$SOURCE")
+  tgt_rel=$(basename "$TARGET")
+
+  if [[ $src_in_git -eq 1 ]]; then
+    (cd "$SOURCE" \
+      && git add -A \
+      && git commit -q -m "memory: promote $FILENAME out to $tgt_rel/" \
+      && echo "src committed: $(git log --oneline -1)")
+  fi
+
+  if [[ $tgt_in_git -eq 1 ]]; then
+    (cd "$TARGET" \
+      && git add -A \
+      && git commit -q -m "memory: promote $FILENAME in from $src_rel/" \
+      && echo "tgt committed: $(git log --oneline -1)")
+  fi
+fi
+
+echo
+echo "Promoted $FILENAME."
+echo "Next: run memory-audit to confirm both folders are still well-formed,"
+echo "and re-sort $tgt_idx if your target index groups pointers by section."

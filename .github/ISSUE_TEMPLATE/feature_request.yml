@@ -1,0 +1,73 @@
+name: Feature request
+description: Propose a spec extension, new tooling, or a new adapter.
+title: "[feat] "
+labels:
+  - "type: feature"
+  - "needs-triage"
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for proposing a feature. A few things to keep in mind:
+
+        - **External PRs are paused** until the CLA infrastructure lands (see the banner in [README.md](../../README.md) and `CONTRIBUTING.md`). Discussions and feature issues are open and welcome in the meantime.
+        - **Spec additions must stay agent-neutral.** Anything that couples to a single agent (Claude Code, Cursor, Aider, Codex, Copilot, etc.) belongs in `adapters/<agent>/`, not in `spec/` or `tools/`.
+        - **Search first.** Check open and closed issues, plus the open [Discussions](../../discussions) thread, for existing context.
+
+  - type: dropdown
+    id: scope
+    attributes:
+      label: Where does this feature land?
+      options:
+        - "spec/ (cross-agent, on-disk format)"
+        - "tools/ (cross-agent shared tooling)"
+        - "adapters/<agent> (single-agent integration)"
+        - "src/memforge/ (Python library API)"
+        - "tests/ or CI"
+        - "documentation only"
+    validations:
+      required: true
+
+  - type: textarea
+    id: problem
+    attributes:
+      label: The problem
+      description: |
+        What concrete situation are you running into where the current state of MemForge does not work? "Nice to have" is fine, but please name the situation, not the solution.
+    validations:
+      required: true
+
+  - type: textarea
+    id: proposal
+    attributes:
+      label: Proposed change
+      description: A sketch of what you think the right answer is. Pseudo-spec, pseudo-code, or a frontmatter example are all fine.
+    validations:
+      required: true
+
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Alternatives considered
+      description: Anything you ruled out, and why. Optional but useful.
+    validations:
+      required: false
+
+  - type: textarea
+    id: agent-neutrality
+    attributes:
+      label: Agent-neutrality check
+      description: |
+        If this lands in `spec/` or `tools/`, explain why it does not couple to a single agent's surface. If this lands in `adapters/<agent>/`, name the agent.
+    validations:
+      required: true
+
+  - type: checkboxes
+    id: confirmations
+    attributes:
+      label: Confirmations
+      options:
+        - label: I understand external PRs are currently paused; this is a feature *issue*, not a PR.
+          required: true
+        - label: I have searched existing issues and Discussions.
+          required: true

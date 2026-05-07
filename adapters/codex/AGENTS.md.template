@@ -1,0 +1,41 @@
+# AGENTS.md
+
+This file follows the AGENTS.md convention (https://agents.md/) for agent-readable repository instructions. It bootstraps any AGENTS.md-aware agent (OpenAI Codex CLI, Cline, Continue, Windsurf, etc.) with MemForge memory context.
+
+## Memory context
+
+Read the following files at session start. They are the operator's persistent memory: identity, accumulated feedback, ongoing project state, references to external systems. Treat them as authoritative for cross-session context.
+
+- @~/.claude/global-memory/MEMORY.md
+- @~/.claude/projects/PER_CWD_WORKSPACE_NAME/memory/MEMORY.md
+
+When the operator references a memory by title, follow the link in `MEMORY.md` to read the underlying file before answering.
+
+When the operator asks you to remember something cross-session, write it to a new file in the appropriate memory folder using the v0.3.0 frontmatter schema (see `~/claude-projects/memforge/spec/SPEC.md`). The filesystem watcher (memforge `memory-watch`) will commit the file automatically.
+
+## MemForge tools available on PATH
+
+You can invoke these directly when the operator asks for memory operations:
+
+- `memory-audit-deep --strict` — verify memory integrity (UID uniqueness, taxonomy compliance, supersedes resolution, broken links, rollup staleness).
+- `memory-query --topic <X> --type <Y>` — find memories by frontmatter.
+- `memory-cluster-suggest` — surface candidate rollup clusters.
+- `memory-rollup create --slug <name> <files>` — pull files into a topic subfolder + generate README parent.
+- `memory-dlp-scan --staged --strict` — pre-commit scan for credentials / secrets / PII.
+- `memory-audit-log verify` — validate the tamper-evident audit chain.
+
+All tools are documented at `~/claude-projects/memforge/README.md`.
+
+## Sensitivity
+
+The memory folder may contain entries with `sensitivity: restricted` or `sensitivity: privileged` (counsel work product, IP-evidence, trade secrets). Honor those classifications:
+
+- Do not include privileged content in messages, code comments, or commit messages.
+- Do not export privileged content to external services without operator confirmation.
+- The operator may pre-filter via `memory-index-gen --print --viewer-tier internal > MEMORY.public.md` and reference the filtered file from this AGENTS.md instead.
+
+## Setup notes (for the operator, not the agent)
+
+- Replace `PER_CWD_WORKSPACE_NAME` with your actual workspace folder name.
+- Drop or add `@`-references for any other memory folders you want loaded.
+- The `@`-syntax is the AGENTS.md convention for inlining a file's content. If your specific agent does not honor `@`-syntax, replace with explicit instructions ("Read $HOME/.claude/global-memory/MEMORY.md before responding").

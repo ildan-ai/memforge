@@ -1,0 +1,13 @@
+version: 2
+
+# SHA-pinned actions stay current via dependabot PRs.
+# memforge has no Python/Node runtime deps; only github-actions tracked.
+
+updates:
+  - package-ecosystem: "github-actions"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+    open-pull-requests-limit: 5
+    commit-message:
+      prefix: "ci(actions)"

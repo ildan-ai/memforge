@@ -1,0 +1,103 @@
+name: Bug report
+description: A tool, adapter, or spec behavior that is not working as documented.
+title: "[bug] "
+labels:
+  - "type: bug"
+  - "needs-triage"
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for filing a bug report. Before continuing, please confirm:
+
+        - This is **not a security vulnerability**. Security issues go through the private channel in [SECURITY.md](../../SECURITY.md), not public issues.
+        - You have searched [open issues](../) and [closed issues](../?q=is%3Aissue+is%3Aclosed) for a duplicate.
+        - You have read the relevant section of `spec/SPEC.md` if the bug touches on-disk format behavior.
+
+  - type: input
+    id: memforge-version
+    attributes:
+      label: MemForge version
+      description: Output of `python -c "import memforge; print(memforge.__version__)"` or the package version from your install.
+      placeholder: "0.3.0"
+    validations:
+      required: true
+
+  - type: input
+    id: spec-version
+    attributes:
+      label: Spec version on the affected memory folder
+      description: Contents of `spec/VERSION` for repo-side reports, or `name` field of the folder index for on-disk reports. Leave blank if not applicable.
+      placeholder: "0.3.0"
+    validations:
+      required: false
+
+  - type: dropdown
+    id: agent
+    attributes:
+      label: Coding agent
+      description: Which agent's adapter exhibits the bug? Pick `none / shared tooling` for bugs in `tools/` or `src/memforge/`.
+      options:
+        - "none / shared tooling"
+        - claude-code
+        - aider
+        - codex
+        - cursor
+        - vscode-copilot
+        - other
+    validations:
+      required: true
+
+  - type: input
+    id: os
+    attributes:
+      label: OS and Python version
+      description: e.g. "macOS 14.5 / Python 3.11.7" or "Ubuntu 22.04 / Python 3.10.12"
+      placeholder: "macOS 14.5 / Python 3.11.7"
+    validations:
+      required: true
+
+  - type: textarea
+    id: what-happened
+    attributes:
+      label: What happened
+      description: A concrete description of the observed behavior.
+    validations:
+      required: true
+
+  - type: textarea
+    id: expected
+    attributes:
+      label: What you expected to happen
+      description: Reference the section of `spec/SPEC.md` or the relevant ADR if applicable.
+    validations:
+      required: true
+
+  - type: textarea
+    id: repro
+    attributes:
+      label: Minimal reproduction
+      description: |
+        Smallest set of files / commands that reproduces the bug. If it touches the on-disk format, please paste the exact frontmatter (with secrets redacted) rather than describing it.
+      render: shell
+    validations:
+      required: true
+
+  - type: textarea
+    id: logs
+    attributes:
+      label: Tool output and tracebacks
+      description: Paste the full stderr / traceback. If your repro touches `memory-audit`, also paste `--strict` output.
+      render: shell
+    validations:
+      required: false
+
+  - type: checkboxes
+    id: confirmations
+    attributes:
+      label: Confirmations
+      options:
+        - label: I have not pasted secrets, credentials, or PII into the reproduction.
+          required: true
+        - label: I have searched existing issues for a duplicate.
+          required: true

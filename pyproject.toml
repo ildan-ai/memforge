@@ -1,0 +1,37 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "memforge"
+version = "0.3.0"
+description = "Portable, agent-neutral persistent memory for coding agents."
+readme = "README.md"
+license = { text = "Apache-2.0" }
+authors = [
+    { name = "ILDAN" },
+]
+requires-python = ">=3.10"
+dependencies = [
+    "PyYAML>=6.0",
+    "watchdog>=4.0",
+]
+
+[project.optional-dependencies]
+dlp = [
+    "detect-secrets>=1.5",
+]
+dev = [
+    "pytest>=8",
+    "pip-audit>=2.7",
+]
+
+[project.urls]
+Homepage = "https://github.com/ildan-ai/memforge"
+Issues = "https://github.com/ildan-ai/memforge/issues"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.setuptools.package-data]
+memforge = ["py.typed"]

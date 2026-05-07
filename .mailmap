@@ -1,0 +1,14 @@
+# Canonical author / committer identities for the MemForge project.
+#
+# Format: <canonical name> <canonical-email> [<other-name>] [<other-email>]
+# Lines without a mapping target declare the canonical form for that
+# (name, email) pair without rewriting it. See `git help mailmap`.
+#
+# GitHub's web UI honors this file for commit-attribution rendering;
+# `git log --use-mailmap` and `git shortlog` honor it on the CLI.
+#
+# To normalize a future contributor's commits whose name or email
+# drifted across machines, add a line of the form:
+#   Canonical Name <canonical@example.com> Other Name <other@example.com>
+
+Mike Hiltz <mike@ildan.ai>

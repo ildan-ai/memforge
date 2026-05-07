@@ -1,0 +1,11 @@
+blank_issues_enabled: false
+contact_links:
+  - name: Security vulnerability
+    url: https://github.com/ildan-ai/memforge/security/policy
+    about: Please report security issues privately via SECURITY.md, not via public issues.
+  - name: Question or discussion
+    url: https://github.com/ildan-ai/memforge/discussions
+    about: For open-ended questions, design discussions, or "is this a bug or a feature" triage, please open a Discussion thread.
+  - name: Spec interpretation
+    url: https://github.com/ildan-ai/memforge/blob/main/spec/SPEC.md
+    about: Read the spec first. Most "is this a bug" questions resolve here.

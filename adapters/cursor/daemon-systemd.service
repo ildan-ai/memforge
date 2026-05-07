@@ -1,0 +1,28 @@
+# Linux systemd user-service for memforge memory-watch.
+#
+# Setup:
+#   1. Edit ExecStart to point at your memory-watch script.
+#   2. Copy to ~/.config/systemd/user/memforge-watch.service.
+#   3. Enable + start:
+#        systemctl --user daemon-reload
+#        systemctl --user enable --now memforge-watch.service
+#      Status:
+#        systemctl --user status memforge-watch.service
+#      Stop:
+#        systemctl --user stop memforge-watch.service
+#
+# inotify-tools must be installed (apt install inotify-tools or distro
+# equivalent).
+
+[Unit]
+Description=MemForge memory-folder filesystem watcher (auto-commit on write)
+After=default.target
+
+[Service]
+Type=simple
+ExecStart=%h/claude-projects/memforge/tools/memory-watch --quiet
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=default.target

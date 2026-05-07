@@ -1,0 +1,37 @@
+# Copilot custom instructions (MemForge)
+
+This file is the per-repo Copilot Chat instruction surface. Copilot inlines its content into every chat request when `github.copilot.chat.codeGeneration.useInstructionFiles` is enabled.
+
+## Memory context
+
+The operator maintains persistent memory in MemForge folders. Treat the following as session-start context: identity, accumulated feedback, ongoing project state, references to external systems.
+
+Read these files at session start:
+
+- `~/.claude/global-memory/MEMORY.md`
+- `~/.claude/projects/PER_CWD_WORKSPACE_NAME/memory/MEMORY.md`
+
+(Replace `PER_CWD_WORKSPACE_NAME` with your actual workspace folder name. Run `ls ~/.claude/projects/` to find it.)
+
+When the operator references a memory by title, follow the link in `MEMORY.md` to read the underlying file before answering.
+
+When the operator asks you to remember something cross-session, write it as a new file in the appropriate memory folder using the v0.3.0 frontmatter schema (see `~/claude-projects/memforge/spec/SPEC.md`). The filesystem watcher (memforge `memory-watch`) will commit the file automatically.
+
+## MemForge tools available on PATH
+
+You can invoke these directly when the operator asks for memory operations:
+
+- `memory-audit-deep --strict` — verify memory integrity (UID uniqueness, taxonomy compliance, supersedes resolution, broken links, rollup staleness).
+- `memory-query --topic <X> --type <Y>` — find memories by frontmatter.
+- `memory-cluster-suggest` — surface candidate rollup clusters.
+- `memory-rollup create --slug <name> <files>` — pull files into a topic subfolder + generate README parent.
+- `memory-dlp-scan --staged --strict` — pre-commit scan for credentials / secrets / PII.
+- `memory-audit-log verify` — validate the tamper-evident audit chain.
+
+## Sensitivity
+
+The memory folder may contain entries with `sensitivity: restricted` or `sensitivity: privileged`. Honor those classifications:
+
+- Do not include privileged content in code comments, commit messages, or PR descriptions.
+- Do not echo privileged content back to the operator in chat unless the operator explicitly asks for it.
+- For Copilot suggestions: privileged content should not influence suggestions visible in shared / pair-programming sessions.
