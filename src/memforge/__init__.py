@@ -9,7 +9,7 @@ from memforge.paths import default_memory_paths, ARCHIVE_DIRNAME
 from memforge.discovery import walk_memory_files, is_memory_file
 from memforge.models import Memory, FolderIndex, Link
 
-__version__ = "0.3.0"
+__version__ = "0.3.1"
 
 __all__ = [
     "parse",

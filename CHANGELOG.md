@@ -8,7 +8,46 @@ The version number tracked here is the **package / tooling** version. The on-dis
 
 ## [Unreleased]
 
-Pre-public-OSS readiness work in progress. The Contributor License Agreement infrastructure is counsel-blocked; external pull requests are paused until the CLA flow lands.
+The Contributor License Agreement infrastructure is counsel-blocked; external pull requests are paused until the CLA flow lands.
+
+## [0.3.1] - 2026-05-07
+
+Patch release wiring proper console scripts so `pip install memforge` actually
+ships the CLI. Same on-disk format as 0.3.0; no schema or behavior changes.
+
+### Added
+
+- **`[project.scripts]` entry points for all 15 CLI tools.** After
+  `pip install memforge`, the following commands land on `$PATH`:
+  `memory-audit`, `memory-audit-deep`, `memory-audit-log`,
+  `memory-cluster-suggest`, `memory-dedup`, `memory-dlp-scan`,
+  `memory-frontmatter-backfill`, `memory-index-gen`, `memory-link-rewriter`,
+  `memory-preamble-extract`, `memory-promote`, `memory-query`,
+  `memory-rollup`, `memory-watch`, `agents-md-gen`. Previously the package
+  was importable but none of the tools were on `$PATH`.
+
+### Changed
+
+- **Tool source moved into `src/memforge/cli/<name>.py` modules.** Each tool
+  is now an importable module with a `main()` function; the corresponding
+  `tools/<name>` script is now a thin shim that re-enters through the
+  module's `main()`. Both invocation paths share the same code.
+- **`memory-audit` rewritten in Python** (was bash). Cross-platform, uses
+  `memforge.frontmatter.parse` for YAML parsing instead of awk, and gives a
+  clearer error when frontmatter YAML fails to parse (single
+  `"frontmatter YAML failed to parse"` violation instead of a misleading
+  trio of `missing name/description/type`).
+- **`memory-promote` rewritten in Python** (was bash). Cross-platform git
+  operations via `subprocess`; same flag surface (`--source`, `--target`,
+  `--dry-run`, `--no-commit`, `--yes`).
+
+### Removed
+
+- Bash sys.path / `_HERE` shims at the top of each tool (no longer needed
+  now that tools live inside the installed package).
+
+[Unreleased]: https://github.com/ildan-ai/memforge/compare/v0.3.1...HEAD
+[0.3.1]: https://github.com/ildan-ai/memforge/releases/tag/v0.3.1
 
 ## [0.3.0] - 2026-05-07
 
@@ -58,5 +97,4 @@ First public release.
 - DLP pass is now part of `memory-audit` health checks rather than a separate manual step.
 - `memory-dedup` redacts memory descriptions before any optional remote LLM dispatch.
 
-[Unreleased]: https://github.com/ildan-ai/memforge/compare/v0.3.0...HEAD
 [0.3.0]: https://github.com/ildan-ai/memforge/releases/tag/v0.3.0

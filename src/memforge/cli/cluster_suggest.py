@@ -1,0 +1,325 @@
+# memory-cluster-suggest — surface candidate rollup clusters (Phase 1 T2 v1).
+#
+# ADR: 0001 §Phase 1 T2, §Phase 2 D1
+# Spec: 0.3.0
+#
+# v1: filename-prefix + tag-overlap scoring. No embedding dependency.
+# v2 (deferred): cosine-similarity layer pending operator decision on
+# embedding model + threshold + vendor. Mark v2 hook in score_pair below.
+#
+# Pure-read tool. Suggestions queue, not auto-applied. Operator reviews
+# the output and runs memory-rollup create on chosen clusters.
+
+from __future__ import annotations
+
+import argparse
+import os
+import re
+import sys
+from dataclasses import dataclass, field
+from pathlib import Path
+from typing import Optional
+
+from memforge.frontmatter import parse as _mf_parse  # noqa: E402
+
+
+@dataclass
+class FileRec:
+    path: Path
+    name: str
+    fm: dict = field(default_factory=dict)
+    prefix_tokens: list[str] = field(default_factory=list)
+    topic_tags: set[str] = field(default_factory=set)
+    other_tags: set[str] = field(default_factory=set)
+
+
+def parse_frontmatter(text: str) -> dict:
+    """Compatibility shim. Use memforge.frontmatter.parse() in new code."""
+    fm, _ = _mf_parse(text)
+    return fm
+
+
+def filename_tokens(stem: str) -> list[str]:
+    parts = re.split(r"[_\-]", stem.lower())
+    type_prefixes = {"feedback", "project", "user", "reference"}
+    return [p for p in parts if p and p not in type_prefixes]
+
+
+def discover_top_level(folder: Path) -> list[FileRec]:
+    out: list[FileRec] = []
+    for p in sorted(folder.glob("*.md")):
+        if p.name == "MEMORY.md":
+            continue
+        try:
+            text = p.read_text(encoding="utf-8")
+        except (OSError, UnicodeDecodeError):
+            continue
+        fm = parse_frontmatter(text)
+        tokens = filename_tokens(p.stem)
+        tags = fm.get("tags", [])
+        if isinstance(tags, str):
+            tags = [tags]
+        topic = set()
+        other = set()
+        if isinstance(tags, list):
+            for t in tags:
+                if not isinstance(t, str):
+                    continue
+                if t.startswith("topic:"):
+                    topic.add(t.split(":", 1)[1])
+                else:
+                    other.add(t)
+        out.append(
+            FileRec(
+                path=p,
+                name=p.name,
+                fm=fm,
+                prefix_tokens=tokens,
+                topic_tags=topic,
+                other_tags=other,
+            )
+        )
+    return out
+
+
+def jaccard(a: set, b: set) -> float:
+    if not a and not b:
+        return 0.0
+    if not a or not b:
+        return 0.0
+    return len(a & b) / len(a | b)
+
+
+def score_pair(a: FileRec, b: FileRec) -> dict:
+    """Returns {score, breakdown}. v1 components: filename-prefix tokens
+    (Jaccard) + topic-tag exact overlap + other-tag overlap. v2 (deferred):
+    cosine-similarity on body embeddings."""
+    fn = jaccard(set(a.prefix_tokens[:3]), set(b.prefix_tokens[:3]))
+    topic = jaccard(a.topic_tags, b.topic_tags)
+    other = jaccard(a.other_tags, b.other_tags)
+    score = 0.55 * fn + 0.35 * topic + 0.10 * other
+    return {
+        "score": round(score, 3),
+        "filename_prefix_jaccard": round(fn, 3),
+        "topic_jaccard": round(topic, 3),
+        "other_tag_jaccard": round(other, 3),
+    }
+
+
+def _candidate_pairs(files: list[FileRec]) -> set[tuple[int, int]]:
+    """Pre-filter pass: emit (i, j) pairs where i<j AND the pair shares
+    at least one topic-tag OR at least one filename-prefix token.
+
+    Uses inverted indexes (topic → file-indices, token → file-indices) so
+    cost is O(sum of co-occurrence-counts), not O(n²). Files with no
+    topic-tags and no shared prefix tokens are dropped from candidacy
+    because score_pair would award them at most 0.10 (other-tag Jaccard
+    only), well below typical thresholds.
+    """
+    by_topic: dict[str, list[int]] = {}
+    by_token: dict[str, list[int]] = {}
+    for i, f in enumerate(files):
+        for t in f.topic_tags:
+            by_topic.setdefault(t, []).append(i)
+        for tok in f.prefix_tokens[:3]:
+            by_token.setdefault(tok, []).append(i)
+
+    pairs: set[tuple[int, int]] = set()
+    for buckets in (by_topic, by_token):
+        for indices in buckets.values():
+            if len(indices) < 2:
+                continue
+            for a in range(len(indices)):
+                for b in range(a + 1, len(indices)):
+                    i, j = indices[a], indices[b]
+                    if i > j:
+                        i, j = j, i
+                    pairs.add((i, j))
+    return pairs
+
+
+def cluster(files: list[FileRec], threshold: float) -> list[list[FileRec]]:
+    """Transitive-closure clustering above threshold.
+
+    Pre-filters candidate pairs via shared topic-tag or shared filename-prefix
+    tokens (O(n*k) where k is co-occurrence count) before invoking the
+    O(matched-pairs) Jaccard scorer. Restores interactive SLO at n=500-1000
+    per code-review-panel performance-reviewer:1 (2026-05-07).
+    """
+    parent = {i: i for i in range(len(files))}
+
+    def find(x: int) -> int:
+        while parent[x] != x:
+            parent[x] = parent[parent[x]]
+            x = parent[x]
+        return x
+
+    def union(x: int, y: int) -> None:
+        rx, ry = find(x), find(y)
+        if rx != ry:
+            parent[rx] = ry
+
+    candidates = _candidate_pairs(files)
+    for i, j in candidates:
+        s = score_pair(files[i], files[j])
+        if s["score"] >= threshold:
+            union(i, j)
+
+    groups: dict[int, list[FileRec]] = {}
+    for i, f in enumerate(files):
+        groups.setdefault(find(i), []).append(f)
+
+    return [g for g in groups.values() if len(g) >= 2]
+
+
+def common_prefix_tokens(group: list[FileRec], top_n: int = 3) -> list[str]:
+    counts: dict[str, int] = {}
+    for f in group:
+        for t in set(f.prefix_tokens[:4]):
+            counts[t] = counts.get(t, 0) + 1
+    threshold = max(2, len(group) // 2)
+    common = sorted(
+        ((tok, c) for tok, c in counts.items() if c >= threshold),
+        key=lambda x: (-x[1], x[0]),
+    )
+    return [tok for tok, _ in common[:top_n]]
+
+
+def common_topic_tags(group: list[FileRec]) -> list[str]:
+    if not group:
+        return []
+    base = group[0].topic_tags.copy()
+    for f in group[1:]:
+        base &= f.topic_tags
+    return sorted(base)
+
+
+def suggest_slug(group: list[FileRec]) -> str:
+    common_topics = common_topic_tags(group)
+    if common_topics:
+        return common_topics[0]
+    common_tokens = common_prefix_tokens(group)
+    if common_tokens:
+        return "-".join(common_tokens[:2])
+    return "candidate-rollup"
+
+
+def emit_markdown(folder: Path, clusters: list[list[FileRec]], min_size: int) -> str:
+    eligible = [c for c in clusters if len(c) >= min_size]
+    if not eligible:
+        return f"# memory-cluster-suggest: {folder}\n\nNo clusters with >= {min_size} files found above threshold.\n"
+    lines: list[str] = []
+    lines.append(f"# memory-cluster-suggest: {folder}")
+    lines.append("")
+    lines.append(
+        f"{len(eligible)} candidate rollup cluster(s) found "
+        f"(min size {min_size}; v1 scoring: filename-prefix + topic-tag + other-tag overlap)."
+    )
+    lines.append("")
+    for i, group in enumerate(sorted(eligible, key=lambda g: -len(g)), start=1):
+        slug = suggest_slug(group)
+        common_tokens = common_prefix_tokens(group)
+        common_topics = common_topic_tags(group)
+        why = _suggested_why(group, common_tokens, common_topics)
+        lines.append(f"## Cluster {i} -- suggested slug: `{slug}` ({len(group)} files)")
+        lines.append("")
+        lines.append(f"**Why (suggested stub):** {why}")
+        lines.append("")
+        if common_topics:
+            lines.append(f"**Common topic tags:** {', '.join(common_topics)}")
+        if common_tokens:
+            lines.append(f"**Common filename tokens:** {', '.join(common_tokens)}")
+        lines.append("")
+        lines.append("**Files:**")
+        for f in sorted(group, key=lambda x: x.name):
+            lines.append(f"  - {f.name}")
+        lines.append("")
+        cmd_files = " ".join(f.name for f in sorted(group, key=lambda x: x.name))
+        lines.append("**Suggested rollup command:**")
+        lines.append(f"```")
+        lines.append(f"memory-rollup --path {folder} create --slug {slug} {cmd_files}")
+        lines.append(f"```")
+        lines.append("")
+    lines.append("---")
+    lines.append("")
+    lines.append(
+        "*v1 scoring uses filename-prefix + tag-overlap only. v2 (deferred) "
+        "adds cosine-similarity on body embeddings pending operator decision "
+        "on embedding model + vendor.*"
+    )
+    return "\n".join(lines) + "\n"
+
+
+def _suggested_why(group: list[FileRec], common_tokens: list[str], common_topics: list[str]) -> str:
+    parts: list[str] = []
+    parts.append(f"Cluster of {len(group)} files")
+    if common_topics:
+        parts.append(f"sharing topic tag(s) {', '.join(common_topics)}")
+    if common_tokens:
+        parts.append(f"with filename prefix tokens {', '.join(common_tokens)}")
+    parts.append(
+        "above the rollup threshold (Phase 2 D1: 5+ topic-coherent memories)"
+    )
+    return ". ".join(parts) + "."
+
+
+def default_paths() -> list[Path]:
+    out: list[Path] = []
+    home = Path.home()
+    user = os.environ.get("USER", "")
+    if user:
+        per_cwd = home / ".claude" / "projects" / f"{user}-claude-projects" / "memory"
+        if per_cwd.exists():
+            out.append(per_cwd)
+    glob = home / ".claude" / "global-memory"
+    if glob.exists():
+        out.append(glob)
+    return out
+
+
+def main() -> int:
+    p = argparse.ArgumentParser(
+        prog="memory-cluster-suggest",
+        description="Surface candidate rollup clusters (Phase 1 T2 v1).",
+    )
+    p.add_argument("--path", action="append", default=[], help="Folder (repeatable)")
+    p.add_argument(
+        "--threshold",
+        type=float,
+        default=0.20,
+        help=(
+            "Pairwise similarity threshold for clustering (default 0.20). "
+            "0.20 calibrated for current pre-backfill data (filename-only "
+            "signal); raise toward 0.30+ once topic tags backfill."
+        ),
+    )
+    p.add_argument(
+        "--min-size",
+        type=int,
+        default=5,
+        help="Minimum cluster size to surface (default 5; matches Phase 2 D1)",
+    )
+    args = p.parse_args()
+
+    folders = [Path(x).resolve() for x in args.path] if args.path else default_paths()
+    if not folders:
+        sys.stderr.write("error: no folders specified and no defaults found\n")
+        return 2
+
+    rc = 0
+    for folder in folders:
+        if not folder.exists():
+            sys.stderr.write(f"warning: skipping nonexistent {folder}\n")
+            continue
+        files = discover_top_level(folder)
+        if not files:
+            sys.stdout.write(f"# {folder}\n\n(no top-level files)\n\n")
+            continue
+        clusters = cluster(files, args.threshold)
+        sys.stdout.write(emit_markdown(folder, clusters, args.min_size))
+        sys.stdout.write("\n")
+    return rc
+
+
+if __name__ == "__main__":
+    sys.exit(main())

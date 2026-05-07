@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "memforge"
-version = "0.3.0"
+version = "0.3.1"
 description = "Portable, agent-neutral persistent memory for coding agents."
 readme = "README.md"
 license = { text = "Apache-2.0" }
@@ -29,6 +29,23 @@ dev = [
 [project.urls]
 Homepage = "https://github.com/ildan-ai/memforge"
 Issues = "https://github.com/ildan-ai/memforge/issues"
+
+[project.scripts]
+memory-audit = "memforge.cli.audit:main"
+memory-audit-deep = "memforge.cli.audit_deep:main"
+memory-promote = "memforge.cli.promote:main"
+memory-audit-log = "memforge.cli.audit_log:main"
+memory-cluster-suggest = "memforge.cli.cluster_suggest:main"
+memory-dedup = "memforge.cli.dedup:main"
+memory-dlp-scan = "memforge.cli.dlp_scan:main"
+memory-frontmatter-backfill = "memforge.cli.frontmatter_backfill:main"
+memory-index-gen = "memforge.cli.index_gen:main"
+memory-link-rewriter = "memforge.cli.link_rewriter:main"
+memory-preamble-extract = "memforge.cli.preamble_extract:main"
+memory-query = "memforge.cli.query:main"
+memory-rollup = "memforge.cli.rollup:main"
+memory-watch = "memforge.cli.watch:main"
+agents-md-gen = "memforge.cli.agents_md_gen:main"
 
 [tool.setuptools.packages.find]
 where = ["src"]
