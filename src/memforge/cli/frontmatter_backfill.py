@@ -43,7 +43,11 @@ from datetime import date, datetime
 from pathlib import Path
 from typing import Optional
 
-from memforge.frontmatter import parse as _mf_parse, has_frontmatter as _mf_has_fm  # noqa: E402
+from memforge.frontmatter import (  # noqa: E402
+    parse as _mf_parse,
+    has_frontmatter as _mf_has_fm,
+    render as _mf_render,
+)
 
 
 FRONTMATTER_RE = re.compile(r"^---\s*\n(.*?)\n---\s*\n", re.DOTALL)
@@ -72,6 +76,27 @@ def parse_frontmatter(text: str) -> tuple[dict, str, str]:
         raw_end += 1
     raw_block = text[:raw_end]
     return fm, raw_block, body
+
+
+def _frontmatter_present_but_unparseable(text: str) -> bool:
+    """True iff the file has frontmatter delimiters with substantive content
+    but yaml.safe_load returned an empty dict.
+
+    Distinguishes broken YAML (unquoted colon-space, duplicate keys, etc.)
+    from genuinely empty frontmatter blocks. Backfill must skip these — the
+    line-based field-append in apply_change otherwise produced duplicate
+    keys (observed 2026-05-08 on a rollup README whose `description` value
+    contained `: `, which yaml.safe_load rejects as a nested mapping)."""
+    if not _mf_has_fm(text):
+        return False
+    fm, _ = _mf_parse(text)
+    if fm:
+        return False
+    end = text.find("\n---", 4)
+    if end == -1:
+        return False
+    block = text[4:end]
+    return bool(block.strip())
 
 
 def filename_slug(path: Path) -> str:
@@ -128,6 +153,13 @@ def plan_change(path: Path, folder_root: Path) -> Optional[PlannedChange]:
     try:
         text = path.read_text(encoding="utf-8")
     except (OSError, UnicodeDecodeError):
+        return None
+    if _frontmatter_present_but_unparseable(text):
+        sys.stderr.write(
+            f"warning: skipping {path} "
+            "(frontmatter present but YAML parse failed; "
+            "check for unquoted colon-space or duplicate keys)\n"
+        )
         return None
     fm, raw_block, after = parse_frontmatter(text)
     if not raw_block:
@@ -215,16 +247,26 @@ def render_value(v) -> str:
 
 
 def apply_change(path: Path, additions: dict) -> None:
+    """Merge `additions` into the file's existing frontmatter and re-render
+    via memforge.frontmatter.render (PyYAML safe_dump round-trip).
+
+    The previous implementation appended new field lines to the raw
+    frontmatter text. That worked when YAML parsed cleanly, but on broken
+    YAML (e.g., unquoted colon-space) every backfill run added the same
+    fields again, producing growing blocks of duplicate keys. Round-trip
+    rendering avoids that class entirely: the dict-level merge can't have
+    duplicate keys, and PyYAML quotes any value that needs it.
+    """
     try:
         text = path.read_text(encoding="utf-8")
     except (OSError, UnicodeDecodeError):
         return
-    m = FRONTMATTER_RE.match(text)
-    if not m:
+    if not _mf_has_fm(text):
         return
-    fm_body = m.group(1)
-    after = text[m.end():]
-    new_lines = [line for line in fm_body.splitlines()]
+    if _frontmatter_present_but_unparseable(text):
+        # Defense in depth: should already be filtered in plan_change.
+        return
+    fm, body = _mf_parse(text)
     field_order = [
         "name", "description", "type", "sensitivity", "uid", "tier", "tags",
         "owner", "created", "updated", "last_reviewed", "status",
@@ -232,13 +274,12 @@ def apply_change(path: Path, additions: dict) -> None:
         "dynamic_supplement", "references_global", "referenced_by_global",
         "access",
     ]
+    merged: dict = dict(fm)
     for key in field_order:
-        if key not in additions:
-            continue
-        line = f"{key}: {render_value(additions[key])}"
-        new_lines.append(line)
-    rebuilt = "---\n" + "\n".join(new_lines) + "\n---\n" + after
-    path.write_text(rebuilt, encoding="utf-8")
+        if key in additions and key not in merged:
+            merged[key] = additions[key]
+    new_text = _mf_render(merged, body)
+    path.write_text(new_text, encoding="utf-8")
 
 
 def cmd_run(folders: list[Path], apply: bool, limit: int) -> int:

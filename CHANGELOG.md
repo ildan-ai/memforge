@@ -10,6 +10,18 @@ The version number tracked here is the **package / tooling** version. The on-dis
 
 The Contributor License Agreement infrastructure is counsel-blocked; external pull requests are paused until the CLA flow lands.
 
+## [0.4.3] - 2026-05-08
+
+Patch release: closes the duplicate-keys / growing-frontmatter regression in `memory-frontmatter-backfill` that surfaced when a memory file's `description:` value contained an unquoted colon-space. No spec changes (spec stays at 0.4.0).
+
+### Fixed
+
+- `memory-frontmatter-backfill` no longer corrupts files whose YAML frontmatter fails to parse. Previously, when `yaml.safe_load` raised on a value like `description: A: B description with embedded colon-space`, the parser collapsed the failure to an empty dict, every required field appeared "missing", and `apply_change` line-appended a fresh set of fields. The `memory-auto-commit.sh` PostToolUse hook then re-ran backfill on every Write/Edit, producing growing blocks of duplicate keys. Two-layer fix: (1) `plan_change` detects "frontmatter present but YAML parse failed" via the new `_frontmatter_present_but_unparseable` helper and skips with a stderr warning; (2) `apply_change` now does a dict-merge round trip via `memforge.frontmatter.render` instead of line-level appending, so duplicate keys are structurally impossible in the output even when called repeatedly.
+
+### Tests
+
+- New `tests/test_frontmatter_backfill.py` covers the colon-space detection path, the duplicate-key edge case (PyYAML silently last-wins, helper correctly returns False), the round-trip render of valid YAML, idempotency under repeated `apply_change` calls, preservation of existing operator-set fields, and the defense-in-depth skip in `apply_change` when fed broken YAML directly.
+
 ## [0.4.2] - 2026-05-08
 
 Patch release: completes the `memory-audit` recursive-validation gap surfaced after v0.4.1, and bumps GitHub Actions to Node.js 24-compatible versions. No spec changes (spec stays at 0.4.0).
