@@ -245,6 +245,20 @@ def audit_target(
                 else:
                     stale.append(f"{fname} (mtime {mtime_iso})")
 
+    # ---- v0.4 multi-agent concurrency invariants ----
+    # Tier 1 (HEAD-pure) is always run; Tier 2 (commit-log walk) is best-effort.
+    try:
+        from memforge.cli._concurrency_audit import run_concurrency_audit
+        blockers_v04, majors_v04, warns_v04 = run_concurrency_audit(target)
+        for _, msg in blockers_v04:
+            violations.append(f"[v0.4] {msg}")
+        for _, msg in majors_v04:
+            health.append(f"[v0.4 MAJOR] {msg}")
+        for _, msg in warns_v04:
+            health.append(f"[v0.4 WARN] {msg}")
+    except Exception as e:  # noqa: BLE001 — never let v0.4 audit kill the existing audit
+        health.append(f"[v0.4] concurrency audit raised {type(e).__name__}: {e}")
+
     # ---- report ----
     print()
     print(
