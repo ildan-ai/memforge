@@ -1,0 +1,61 @@
+name: Release to PyPI
+
+on:
+  push:
+    tags:
+      - 'v*'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  build:
+    name: Build sdist + wheel
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5  # v4
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065  # v5
+        with:
+          python-version: "3.11"
+      - name: Install build backend
+        run: pip install 'build==1.2.2'
+      - name: Verify pyproject version matches tag
+        shell: bash
+        run: |
+          tag="${GITHUB_REF_NAME#v}"
+          pkg=$(python -c 'import tomllib,sys; print(tomllib.loads(open("pyproject.toml","rb").read().decode())["project"]["version"])')
+          echo "tag=${tag}  pkg=${pkg}"
+          if [ "${tag}" != "${pkg}" ]; then
+            echo "ERROR: tag '${tag}' does not match pyproject version '${pkg}'"
+            exit 1
+          fi
+      - name: Build distributions
+        run: python -m build
+      - name: Inspect dist
+        run: ls -la dist/
+      - uses: actions/upload-artifact@b4b15b8c7c6ac21ea08fcf65892d2ee8f75cf882  # v4
+        with:
+          name: dist
+          path: dist/
+          if-no-files-found: error
+
+  publish:
+    name: Publish to PyPI
+    needs: build
+    runs-on: ubuntu-latest
+    environment:
+      name: pypi
+      url: https://pypi.org/project/ildan-memforge/
+    steps:
+      - uses: actions/download-artifact@fa0a91b85d4f404e444e00e005971372dc801d16  # v4
+        with:
+          name: dist
+          path: dist/
+      - uses: pypa/gh-action-pypi-publish@76f52bc884231f62b9a034ebfe128415bbaabdfc  # release/v1
+        with:
+          password: ${{ secrets.PYPI_API_TOKEN }}
+          skip-existing: true

@@ -10,9 +10,34 @@ The version number tracked here is the **package / tooling** version. The on-dis
 
 The Contributor License Agreement infrastructure is counsel-blocked; external pull requests are paused until the CLA flow lands.
 
+## [0.4.0] - 2026-05-08
+
+Package release carrying spec v0.4.0.
+
+### Added
+
+- `memforge-resolve` CLI: walk the operator through reconciling competing claims for a `decision_topic`. Mutates winner / loser frontmatter, deletes any active snooze, and commits with `memforge: resolve <topic>` prefix.
+- `memforge-migrate-claim-block` CLI: idempotent depth-aware fixer for the canonical reader-side competing-claim block in `MEMORY.md`.
+- `memory-audit --export-tier=<level>` flag: v0.4 sensitivity export-tier gate. Reads `audit.default_export_tier` from `.memforge/config.yaml` when the flag is absent. Privileged-tier files always block when the gate runs, regardless of `audit.enforce_sensitivity_export_gate` config.
+- `memory-dlp-scan --no-sensitivity-cross-check` flag: per-invocation override for the v0.4 `sensitivity_label_mismatch` BLOCKER. Cannot disable when implied tier is `privileged` (hard floor).
+- `memforge.cli._config` module: shared loader for `.memforge/config.yaml` with auto-discovery, defaults merge, frontmatter sensitivity parser, and canonical `TIER_ORDER` constant.
+- `memforge.cli._concurrency_audit` module: layered Tier 1 (HEAD-pure) and Tier 2 (commit-log) audit invariants for the v0.4 multi-agent concurrency surface.
+- `tests/conformance/sensitivity/`: five conformance scenarios covering export-tier-{public, internal, restricted, privileged} and label-mismatch-blocked.
+- `.gitleaks.toml` allowlist for the DLP scanner files (their own regex patterns are detected by gitleaks otherwise).
+
+### Changed
+
+- `memory-dlp-scan`: `Pattern` dataclass gains `implied_tier` field; PATTERNS table maps every detector to a tier (secret-class -> restricted, PII -> restricted, high-entropy heuristic -> internal). Cross-check fires by default; emits BLOCKER `sensitivity_label_mismatch` when declared sensitivity is below the highest implied tier across findings.
+- `memory-audit`: integrates the v0.4 concurrency audit (`run_concurrency_audit`) and the export-tier gate. Surfaces `[v0.4]` and `[v0.4 MAJOR]` / `[v0.4 WARN]` prefixes in the violation list.
+- `memory-index-gen`: `render_competing_claims_block(folder_root)` emits the canonical fenced YAML block per the v0.4 reader-side contract; byte-match CI on the rendered block.
+
+### Test coverage
+
+- 163 tests pass on Python 3.10 / 3.11 / 3.12 (39 new in this release).
+
 ## [spec 0.4.0] - 2026-05-08
 
-v0.4 is a major bump per SemVer applied to spec semantics. Tooling stays at 0.3.x; the package release carrying this spec will land separately once dogfooding settles.
+v0.4 is a major bump per SemVer applied to spec semantics. The package release carrying this spec is `[0.4.0]` (above).
 
 ### Added (spec)
 
