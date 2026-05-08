@@ -413,6 +413,8 @@ The `references_global` and `referenced_by_global` fields support cross-folder r
 
 ## Versioning
 
+**Current spec version**: 0.4.0-draft.
+
 The spec version lives in `spec/VERSION`. Breaking changes bump per semantic versioning applied to spec semantics:
 
 - **Major**: invariants change in a way that existing well-formed folders can become malformed.
