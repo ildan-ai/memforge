@@ -1,0 +1,18 @@
+# gitleaks configuration for memforge.
+#
+# The DLP scanner shipped in this package (memory-dlp-scan / dlp_scan.py)
+# contains regex patterns that match the secrets it is designed to detect.
+# gitleaks correctly fires on those patterns when scanning the source code,
+# even though no real secret is present. We allowlist those specific files
+# rather than disabling rules globally; any other path stays under full
+# scrutiny.
+
+[extend]
+useDefault = true
+
+[allowlist]
+description = "Allowlist for the DLP scanner source files: pattern regexes look like the secrets they detect."
+paths = [
+    '''src/memforge/cli/dlp_scan\.py''',
+    '''tools/memory-dlp-scan''',
+]

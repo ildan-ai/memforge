@@ -45,9 +45,9 @@ GitHub Security Advisory CVE flow.
 ## Supported versions
 
 | Version | Status |
-|---------|--------|
-| 0.3.x   | Supported (current) |
-| < 0.3   | Not supported |
+| --- | --- |
+| 0.3.x | Supported (current) |
+| < 0.3 | Not supported |
 
 Once 0.4.x lands, 0.3.x will receive security fixes only for 90 days.
 

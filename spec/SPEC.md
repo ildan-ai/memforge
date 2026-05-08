@@ -238,7 +238,7 @@ The **resolve operation** is the canonical operator-mediated reconciliation flow
 Implementation surface (informative):
 
 | Surface | How the resolve operation appears |
-|---|---|
+| --- | --- |
 | CLI reference (load-bearing) | `memforge resolve <topic>` binary, ships in the canonical reference package. |
 | Claude Code | Skill at `~/.claude/skills/consolidate-memory/SKILL.md` wrapping the CLI or implementing natively. |
 | Cursor / Continue.dev / Aider | Slash command or rule that runs the CLI. |

@@ -7,13 +7,13 @@ Reference adapters for wiring MemForge into specific coding agents. The spec, ta
 
 Optional extras (some agents support them, others don't):
 
-3. **Read tracking** — update `<folder>/.last_used.json` when a memory file is read so `memory-audit` can flag staleness based on real use, not filesystem mtime.
-4. **Slash commands / skills** that wrap memory-management workflows (`consolidate-memory`, etc.).
+- **Read tracking** — update `<folder>/.last_used.json` when a memory file is read so `memory-audit` can flag staleness based on real use, not filesystem mtime.
+- **Slash commands / skills** that wrap memory-management workflows (`consolidate-memory`, etc.).
 
 ## Adapter status
 
 | Adapter | Auto-load | Auto-commit | Read tracking | Skills |
-|---|---|---|---|---|
+| --- | --- | --- | --- | --- |
 | `claude-code/` | `autoMemoryDirectory` | `PostToolUse` Write/Edit hook | `PostToolUse` Read hook | `consolidate-memory` skill |
 | `cursor/` | `.cursor/rules/` rule with `@MEMORY.md` | `memory-watch` (or daemon) | none | none |
 | `aider/` | `--read MEMORY.md` (or `.aider.conf.yml`) | aider native + `memory-watch` for external writes | none | none |
