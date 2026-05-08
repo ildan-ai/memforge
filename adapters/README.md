@@ -44,6 +44,7 @@ The MemForge spec is explicit on what an adapter MAY and MUST do:
 - **MAY** honor `sensitivity` and `access` frontmatter labels for filtering exports.
 - **MAY** add encryption layers for shared / multi-developer scenarios.
 - **MUST** treat absent `sensitivity` as `internal` (not `public`) for safe-default filtering.
+- **Secure-mode adapters (v0.4.0+) MUST** run `memory-audit --export-tier=<level> --strict` and `memory-dlp-scan --strict` before exporting memory to any external surface, and MUST pass the conformance suite at `tests/conformance/sensitivity/`. The privileged tier is a hard floor that no config knob disables. See `docs/adapter-implementation-guide.md` §"Secure-mode sensitivity enforcement (v0.4.0+)".
 
 Loading semantics (how the agent sees the folder) are entirely the adapter's responsibility. The spec defines only the file format.
 

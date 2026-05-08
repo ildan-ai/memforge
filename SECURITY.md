@@ -61,6 +61,10 @@ In-scope for security reports:
 - RBAC bypass in `memory-index-gen` (file leaks across access tiers).
 - Audit-log integrity defects (`memory-audit-log` chain forge / replay).
 - DLP scanner evasion (`memory-dlp-scan`) where a known-bad pattern is missed.
+- Sensitivity-enforcement evasion (v0.4.0+): bypassing the export-tier gate
+  (`memory-audit --export-tier`), the DLP label / content cross-check
+  (`sensitivity_label_mismatch`), or the privileged-tier hard floor through
+  unintended config paths, frontmatter parsing, or pattern coverage gaps.
 - Frontmatter parser exploits causing tool misclassification (`memforge.frontmatter`).
 - Supply-chain risks: dependency vulnerabilities exposed by memforge's pin set.
 

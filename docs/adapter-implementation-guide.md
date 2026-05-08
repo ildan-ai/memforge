@@ -119,6 +119,16 @@ Adapters that do NOT claim secure-mode MUST emit an informative startup notice: 
 
 Solo-operator deployments running without branch protection are explicitly OK to run; the operator accepts the residual force-push threat as part of running solo. Don't refuse to start in solo mode just because branch protection is missing — that's a false-positive.
 
+#### Secure-mode sensitivity enforcement (v0.4.0+)
+
+A secure-mode adapter additionally MUST (these are obligations 4 through 6, in addition to the three listed above):
+
+- Run `memory-audit --export-tier=<level> --strict` as a CI / pre-export gate when the adapter exports memory to any external surface. The level is whatever the adapter's destination accepts. The gate fails BLOCKER on any file whose declared `sensitivity` exceeds `<level>`. Privileged-tier files always block when the gate runs, regardless of `audit.enforce_sensitivity_export_gate` config.
+- Run `memory-dlp-scan --strict` (default `dlp.enforce_sensitivity_cross_check: true`) before any export. The cross-check emits a BLOCKER `sensitivity_label_mismatch` finding when body content's implied tier exceeds the declared label. The check cannot be disabled when implied tier is `privileged`.
+- Pass the conformance suite at `tests/conformance/sensitivity/`. Five scenarios: `export_tier_public`, `export_tier_internal`, `export_tier_restricted`, `export_tier_privileged`, `label_mismatch_blocked`. Adapter authors run `pytest tests/conformance/sensitivity/` to verify.
+
+Operators MAY disable the export-tier gate or the DLP cross-check at non-privileged levels by setting `audit.enforce_sensitivity_export_gate: false` and / or `dlp.enforce_sensitivity_cross_check: false` in `.memforge/config.yaml`. Privileged enforcement is a hard floor that no config knob can override.
+
 ## Conformance test approach
 
 Before declaring your adapter v0.4-conformant, run the following test scenarios. All produce known states the spec catches; passing tests verify that your UX surfaces the right data and that mutations land in the right commit shape.

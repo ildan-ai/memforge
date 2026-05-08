@@ -67,3 +67,14 @@ memory-index-gen --print --viewer-tier internal --path ~/.claude/global-memory \
 ```
 
 Then in `AGENTS.md`, reference `MEMORY.public.md` instead of `MEMORY.md`. Re-generate when memory changes (or wire it as a pre-commit hook on the memory folder).
+
+### v0.4 enforcement
+
+Pair the filtered index with the v0.4 enforcement gates so mislabeled memories cannot leak into the agent context:
+
+```bash
+memory-audit --export-tier=internal --strict --path ~/.claude/global-memory
+memory-dlp-scan --paths ~/.claude/global-memory/*.md --strict
+```
+
+The audit's export-tier gate fails BLOCKER on declared-tier > export-tier; the DLP cross-check fails BLOCKER on body content whose implied tier exceeds the declared label. Privileged-tier enforcement is a hard floor. See `docs/adapter-implementation-guide.md` §"Secure-mode sensitivity enforcement (v0.4.0+)".

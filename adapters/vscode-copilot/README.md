@@ -69,6 +69,17 @@ memory-index-gen --print --viewer-tier internal \
 
 Then point `.github/copilot-instructions.md` (or settings.json) at `MEMORY.public.md`. Re-generate when memory changes (or wire it as a pre-commit hook on the memory folder).
 
+### v0.4 enforcement
+
+Pair the filtered index with the v0.4 enforcement gates so mislabeled memories cannot leak into Copilot context:
+
+```bash
+memory-audit --export-tier=internal --strict --path ~/.claude/global-memory
+memory-dlp-scan --paths ~/.claude/global-memory/*.md --strict
+```
+
+The audit's export-tier gate fails BLOCKER on declared-tier > export-tier; the DLP cross-check fails BLOCKER on body content whose implied tier exceeds the declared label. Privileged-tier enforcement is a hard floor. See `docs/adapter-implementation-guide.md` §"Secure-mode sensitivity enforcement (v0.4.0+)".
+
 ## Why this is a separate adapter from `codex/`
 
 GitHub Copilot Chat does NOT honor the AGENTS.md convention. It uses its own `.github/copilot-instructions.md` file plus VS Code settings as the loading surfaces. The content can be the same (memory-folder paths + instructions to read them) but the file location is different. If you're running multiple agents in the same repo, you can have both AGENTS.md (for AGENTS.md-aware agents) and `.github/copilot-instructions.md` (for Copilot) point at the same MEMORY.md.

@@ -52,3 +52,14 @@ Cursor's rules system loads all matching rules. To load both per-cwd and global 
 ## Honoring sensitivity
 
 If you want Cursor to ignore `restricted` or `privileged` memories, run `memory-index-gen --viewer-tier internal --print` and pipe the output to a Cursor rule body. Re-generate when memory changes.
+
+### v0.4 enforcement
+
+Pair the filtered rule body with the v0.4 enforcement gates so mislabeled memories cannot leak into Cursor:
+
+```bash
+memory-audit --export-tier=internal --strict --path ~/your-memory-folder
+memory-dlp-scan --paths ~/your-memory-folder/*.md --strict
+```
+
+The audit's export-tier gate fails BLOCKER on declared-tier > export-tier; the DLP cross-check fails BLOCKER on body content whose implied tier exceeds the declared label. Privileged-tier enforcement is a hard floor. See `docs/adapter-implementation-guide.md` §"Secure-mode sensitivity enforcement (v0.4.0+)".
