@@ -50,12 +50,28 @@ def _extract_pointers(memory_md: Path) -> list[str]:
 
 
 def _disk_md_files(folder: Path) -> list[str]:
-    """Top-level .md files (NOT MEMORY.md). Sorted."""
-    out = []
+    """Files comparable to MEMORY.md pointers.
+
+    Returns top-level .md files (excluding MEMORY.md itself) plus rollup-
+    subfolder README.md files. Per spec §"Rollup subfolders", a rollup
+    README.md is a tier:index file that surfaces in the parent MEMORY.md;
+    detail-tier files inside the same subfolder do NOT. The archive/
+    subfolder is excluded from recursion.
+
+    Returns sorted POSIX-relative paths (subfolder READMEs as
+    "<topic>/README.md").
+    """
+    out: list[str] = []
     for p in sorted(folder.glob("*.md")):
         if p.name == "MEMORY.md":
             continue
         out.append(p.name)
+    for sub in sorted(folder.iterdir()):
+        if not sub.is_dir() or sub.name == "archive":
+            continue
+        readme = sub / "README.md"
+        if readme.is_file():
+            out.append(f"{sub.name}/README.md")
     return out
 
 

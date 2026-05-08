@@ -29,13 +29,38 @@ pip install ildan-memforge
 
 The PyPI distribution is published under `ildan-memforge` because the
 shorter `memforge` name is held by an unrelated project. The Python
-import path is still `memforge`, and the 15 CLI commands install with
-the same names (`memory-audit`, `memory-watch`, `memory-dlp-scan`, etc.).
+import path is still `memforge`, and the 17 CLI commands install with
+the same names (`memory-audit`, `memory-watch`, `memory-dlp-scan`,
+`memforge-resolve`, etc.).
 You can also install straight from source:
 
 ```bash
 pip install git+https://github.com/ildan-ai/memforge.git
 ```
+
+### macOS / Homebrew Python (PEP 668)
+
+On macOS with Homebrew Python, `pip install` against the system
+interpreter is blocked by [PEP 668](https://peps.python.org/pep-0668/)
+(`error: externally-managed-environment`). Use one of:
+
+```bash
+# Option A: pipx (recommended; isolates the install)
+brew install pipx
+pipx install ildan-memforge
+
+# Option B: dedicated venv
+python3 -m venv ~/.local/share/memforge/.venv
+~/.local/share/memforge/.venv/bin/pip install ildan-memforge
+# then symlink the binaries into a directory on $PATH
+
+# Option C: --user --break-system-packages (last resort; pollutes brew Python)
+python3 -m pip install --user --break-system-packages ildan-memforge
+```
+
+The same caveat applies on most Linux distributions that mark their
+system Python `EXTERNALLY-MANAGED` (Debian 12+, Ubuntu 23.04+, Fedora
+38+, etc.).
 
 Pick a folder for your memory. The defaults the tooling assumes:
 

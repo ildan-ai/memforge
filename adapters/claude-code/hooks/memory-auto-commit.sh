@@ -25,6 +25,15 @@ esac
 
 cd "$repo_root" || exit 0
 
+# Auto-normalize frontmatter to v0.4 shape if backfill CLI is available.
+# Closes the gap when an agent writes v0.3-shaped frontmatter (e.g., the
+# Claude Code harness auto-memory instruction emits 3 fields). Idempotent;
+# silently skipped if memory-frontmatter-backfill is not on PATH.
+backfill_bin=$(command -v memory-frontmatter-backfill 2>/dev/null)
+if [[ -n "$backfill_bin" ]]; then
+  "$backfill_bin" --apply --path "$repo_root" >/dev/null 2>&1 || true
+fi
+
 if git diff --quiet && git diff --cached --quiet && [[ -z "$(git ls-files --others --exclude-standard)" ]]; then
   exit 0
 fi
