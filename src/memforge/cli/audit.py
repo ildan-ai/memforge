@@ -75,6 +75,32 @@ def _disk_md_files(folder: Path) -> list[str]:
     return out
 
 
+def _files_to_audit(folder: Path) -> list[str]:
+    """All files whose frontmatter must be validated.
+
+    Per spec §"Rollup subfolders": "Audit tools MUST recurse into rollup
+    subfolders (excluding archive/) to validate frontmatter, but MUST NOT
+    generate parent-MEMORY.md pointers for detail files." This function
+    is the recursion target: top-level .md files (excluding MEMORY.md)
+    plus every .md file inside any first-level subfolder (excluding
+    archive/). The orphan-pointer check still runs against
+    `_disk_md_files()`, which only includes pointer-comparable files.
+
+    Returns sorted POSIX-relative paths.
+    """
+    out: list[str] = []
+    for p in sorted(folder.glob("*.md")):
+        if p.name == "MEMORY.md":
+            continue
+        out.append(p.name)
+    for sub in sorted(folder.iterdir()):
+        if not sub.is_dir() or sub.name == "archive":
+            continue
+        for p in sorted(sub.glob("*.md")):
+            out.append(f"{sub.name}/{p.name}")
+    return out
+
+
 def _file_has_why(body: str) -> bool:
     return "**Why:**" in body
 
@@ -202,11 +228,15 @@ def audit_target(
         violations.append(f"Orphan pointer (no file): {p}")
 
     # ---- per-file frontmatter audit ----
+    # Per spec §"Rollup subfolders", audit MUST recurse into rollup
+    # subfolders (excluding archive/) for frontmatter validation. The
+    # pointer comparison above stays scoped to disk_set (top-level + rollup
+    # READMEs); only the per-file audit recurses to detail-tier files.
     now = datetime.now(timezone.utc)
     stale_cutoff = now.timestamp() - (stale_days * 86400)
     ledger = _read_ledger(target)
 
-    for fname in sorted(disk_set):
+    for fname in _files_to_audit(target):
         fpath = target / fname
         try:
             text = fpath.read_text(encoding="utf-8")
