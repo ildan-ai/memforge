@@ -10,6 +10,30 @@ The version number tracked here is the **package / tooling** version. The on-dis
 
 The Contributor License Agreement infrastructure is counsel-blocked; external pull requests are paused until the CLA flow lands.
 
+## [0.4.2] - 2026-05-08
+
+Patch release: completes the `memory-audit` recursive-validation gap surfaced after v0.4.1, and bumps GitHub Actions to Node.js 24-compatible versions. No spec changes (spec stays at 0.4.0).
+
+### Fixed
+
+- `memory-audit` per-file frontmatter validation now recurses into rollup subfolders (excluding `archive/`), as required by spec §"Rollup subfolders" ("Audit tools MUST recurse into rollup subfolders to validate frontmatter, but MUST NOT generate parent-MEMORY.md pointers for detail files"). Previously the per-file audit reused the pointer-comparable file set, so detail-tier files inside rollups were silently skipped — YAML parse failures, missing frontmatter, invalid types, sensitivity issues, and staleness in those files all went unreported. v0.4.1 closed the orphan-pointer half of this gap; v0.4.2 closes the per-file half.
+
+### Changed
+
+- New helper `_files_to_audit()` in `memforge.cli.audit` returns the recursive audit set (top-level `.md` plus every `.md` inside any first-level subfolder, excluding `archive/`). The orphan-pointer comparison still runs against `_disk_md_files()` (top-level + rollup READMEs only), so detail-tier files do NOT generate spurious `Orphan file (no pointer)` violations. The per-file audit at `audit_target` line ~193 now iterates `_files_to_audit()`.
+- `.github/workflows/release.yml`: bumped pinned action SHAs to Node.js 24-compatible major versions:
+  - `actions/checkout` v4 -> v6.0.2
+  - `actions/setup-python` v5 -> v6.2.0
+  - `actions/upload-artifact` v4 -> v7.0.1
+  - `actions/download-artifact` v4 -> v8.0.1
+  - `pypa/gh-action-pypi-publish` `release/v1` -> v1.14.0
+
+  Closes the v0.4.1 publish-workflow annotation about Node.js 20 deprecation (forced default June 2, 2026; runner removal September 16, 2026).
+
+### Added
+
+- `tests/test_audit.py` grows from 5 to 9 cases. New: `_files_to_audit` semantics (top-level only / recurses into rollups / excludes archive recursively) plus an end-to-end test asserting that a YAML parse failure in a rollup detail file is correctly reported (regression coverage for the silent-skip behavior pre-v0.4.2).
+
 ## [0.4.1] - 2026-05-08
 
 Patch release: audit fix, adapter improvement, install docs. No spec changes (spec stays at 0.4.0).
