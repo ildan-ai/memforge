@@ -10,6 +10,24 @@ The version number tracked here is the **package / tooling** version. The on-dis
 
 The Contributor License Agreement infrastructure is counsel-blocked; external pull requests are paused until the CLA flow lands.
 
+## [0.4.1] - 2026-05-08
+
+Patch release: audit fix, adapter improvement, install docs. No spec changes (spec stays at 0.4.0).
+
+### Fixed
+
+- `memory-audit` no longer fires false-positive `Orphan pointer (no file)` for rollup-subfolder README files. `_disk_md_files` now returns top-level `.md` files plus `<topic>/README.md` for each first-level subfolder (excluding `archive/`), matching the spec's §"Rollup subfolders" rule that rollup READMEs are tier:index files surfacing in the parent `MEMORY.md`. Per-file frontmatter validation also extends to those READMEs as a side effect, narrowing the audit-vs-spec gap on subfolder coverage. Closes #8.
+
+### Changed
+
+- Adapter `adapters/claude-code/hooks/memory-auto-commit.sh` now runs `memory-frontmatter-backfill --apply` before committing on every Write/Edit inside a memory folder. Auto-normalizes v0.3-shaped frontmatter (the Claude Code harness auto-memory instruction emits 3 fields) to v0.4 shape on write. Portable: uses `command -v` to find the backfill CLI; silently skips if absent (works on machines without the package installed).
+
+### Documentation
+
+- README adds a "macOS / Homebrew Python (PEP 668)" subsection covering pipx, dedicated venv, and `--user --break-system-packages` install variants. Same guidance applies to most current Linux distributions that mark their system Python `EXTERNALLY-MANAGED`.
+- `tools/README.md` clarifies that the `.py` shim scripts are reference implementations, not the canonical install path. `pip install ildan-memforge` installs all CLI commands as `console_scripts` entry points on `$PATH`, which is the supported install path.
+- Tool-count references updated from "15 CLI commands" / "15+ commands" to "17 commands" (v0.4.0 added `memforge-resolve` and `memforge-migrate-claim-block`).
+
 ## [0.4.0] - 2026-05-08
 
 Package release carrying spec v0.4.0.
