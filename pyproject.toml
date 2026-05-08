@@ -3,9 +3,9 @@ requires = ["setuptools>=68", "wheel"]
 build-backend = "setuptools.build_meta"
 
 [project]
-name = "memforge"
+name = "ildan-memforge"
 version = "0.3.1"
-description = "Portable, agent-neutral persistent memory for coding agents."
+description = "MemForge: portable, agent-neutral persistent memory for coding agents (ILDAN)."
 readme = "README.md"
 license = { text = "Apache-2.0" }
 authors = [

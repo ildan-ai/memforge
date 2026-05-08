@@ -24,8 +24,16 @@ That state belongs in *memory*: typed entries that the agent can read, write, au
 ## 60-second install
 
 ```bash
-pip install memforge   # publish target; not yet on PyPI as of v0.3.0
-# Or, until then:
+pip install ildan-memforge
+```
+
+The PyPI distribution is published under `ildan-memforge` because the
+shorter `memforge` name is held by an unrelated project. The Python
+import path is still `memforge`, and the 15 CLI commands install with
+the same names (`memory-audit`, `memory-watch`, `memory-dlp-scan`, etc.).
+You can also install straight from source:
+
+```bash
 pip install git+https://github.com/ildan-ai/memforge.git
 ```
 

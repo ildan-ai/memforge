@@ -12,13 +12,21 @@ The Contributor License Agreement infrastructure is counsel-blocked; external pu
 
 ## [0.3.1] - 2026-05-07
 
-Patch release wiring proper console scripts so `pip install memforge` actually
-ships the CLI. Same on-disk format as 0.3.0; no schema or behavior changes.
+Patch release wiring proper console scripts so `pip install ildan-memforge`
+actually ships the CLI. Same on-disk format as 0.3.0; no schema or behavior
+changes.
+
+### Distribution name
+
+The PyPI distribution is published under **`ildan-memforge`** because the
+shorter `memforge` name on PyPI is already held by an unrelated project.
+The Python import path is still `memforge`, and the CLI command names are
+still `memory-audit`, `memory-watch`, etc. Only the install command differs.
 
 ### Added
 
 - **`[project.scripts]` entry points for all 15 CLI tools.** After
-  `pip install memforge`, the following commands land on `$PATH`:
+  `pip install ildan-memforge`, the following commands land on `$PATH`:
   `memory-audit`, `memory-audit-deep`, `memory-audit-log`,
   `memory-cluster-suggest`, `memory-dedup`, `memory-dlp-scan`,
   `memory-frontmatter-backfill`, `memory-index-gen`, `memory-link-rewriter`,
