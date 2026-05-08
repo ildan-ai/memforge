@@ -50,11 +50,12 @@ jobs:
     environment:
       name: pypi
       url: https://pypi.org/project/ildan-memforge/
-    permissions:
-      id-token: write
     steps:
       - uses: actions/download-artifact@fa0a91b85d4f404e444e00e005971372dc801d16  # v4
         with:
           name: dist
           path: dist/
       - uses: pypa/gh-action-pypi-publish@76f52bc884231f62b9a034ebfe128415bbaabdfc  # release/v1
+        with:
+          password: ${{ secrets.PYPI_API_TOKEN }}
+          skip-existing: true
