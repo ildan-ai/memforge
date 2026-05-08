@@ -46,6 +46,7 @@ memory-query = "memforge.cli.query:main"
 memory-rollup = "memforge.cli.rollup:main"
 memory-watch = "memforge.cli.watch:main"
 agents-md-gen = "memforge.cli.agents_md_gen:main"
+memforge-resolve = "memforge.cli.resolve:main"
 
 [tool.setuptools.packages.find]
 where = ["src"]
