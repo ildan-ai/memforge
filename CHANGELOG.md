@@ -10,9 +10,9 @@ The version number tracked here is the **package / tooling** version. The on-dis
 
 The Contributor License Agreement infrastructure is counsel-blocked; external pull requests are paused until the CLA flow lands.
 
-## [spec 0.4.0-draft] - 2026-05-08
+## [spec 0.4.0] - 2026-05-08
 
-Spec-only draft on the `v0.4-draft` branch. v0.4 is a major bump per SemVer applied to spec semantics. Tooling stays at 0.3.x; the package release carrying this spec will land separately once v0.4 stabilizes.
+v0.4 is a major bump per SemVer applied to spec semantics. Tooling stays at 0.3.x; the package release carrying this spec will land separately once dogfooding settles.
 
 ### Added (spec)
 
