@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "ildan-memforge"
-version = "0.3.1"
+version = "0.4.0"
 description = "MemForge: portable, agent-neutral persistent memory for coding agents (ILDAN)."
 readme = "README.md"
 license = { text = "Apache-2.0" }
