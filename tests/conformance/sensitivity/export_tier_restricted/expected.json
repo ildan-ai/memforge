@@ -1,0 +1,14 @@
+{
+  "tool": "audit",
+  "input_dir": "../shared_input",
+  "args": ["--export-tier", "restricted", "--strict"],
+  "expected_violation_substrings": [
+    "mem-privileged-rule.md: sensitivity 'privileged' exceeds export tier 'restricted'"
+  ],
+  "expected_clean_substrings": [
+    "mem-public-rule.md: sensitivity",
+    "mem-internal-rule.md: sensitivity",
+    "mem-restricted-rule.md: sensitivity"
+  ],
+  "expected_exit_nonzero": true
+}

@@ -1,0 +1,11 @@
+{
+  "tool": "audit",
+  "input_dir": "../shared_input",
+  "args": ["--export-tier", "privileged", "--strict"],
+  "expected_violation_substrings": [],
+  "expected_clean_substrings": [
+    "exceeds export tier"
+  ],
+  "expected_exit_nonzero": false,
+  "tolerate_other_violations": true
+}

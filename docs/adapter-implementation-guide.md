@@ -172,7 +172,7 @@ Before declaring your adapter v0.4-conformant, run the following test scenarios.
 2. Run `memforge-migrate-claim-block`.
 3. **Assert**: per-group `status:` rewritten to `state:`; per-member `status:` (under `members:`) untouched; running again is a no-op.
 
-A reference test fixture set is at `tests/conformance/` (TODO; populated as adapters land).
+A reference test fixture set is at `tests/conformance/sensitivity/` (covers spec §"Sensitivity enforcement (v0.4.0+)" with five scenarios: `export_tier_public`, `export_tier_internal`, `export_tier_restricted`, `export_tier_privileged`, `label_mismatch_blocked`). Run `pytest tests/conformance/sensitivity/` to verify your secure-mode adapter honors the export-tier gate and the DLP label-vs-implied-tier cross-check. Adapters claiming secure-mode MUST pass all five.
 
 ## Authority threat model summary (for adapter authors)
 

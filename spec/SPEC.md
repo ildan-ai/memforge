@@ -159,6 +159,65 @@ Sensitivity is metadata, not access control. Adapters MAY honor it (for example 
 
 Sensitivity is the memory author's declaration at the time of writing. Tooling MAY suggest upgrades but MUST NOT downgrade automatically.
 
+### Sensitivity enforcement (v0.4.0+)
+
+Three layered checks enforce sensitivity labels by default. Each is operator-disable-able through `.memforge/config.yaml`. A hard floor protects `privileged`-labeled content: no config knob can disable enforcement at the privileged tier.
+
+Tier ordering (used by all three checks):
+
+```
+public < internal < restricted < privileged
+```
+
+Absent `sensitivity` field is treated as `internal` for ordering comparisons (consistent with §"Sensitivity classification").
+
+#### Export-tier gate (audit-side)
+
+`memory-audit --export-tier=<level>` MUST exit BLOCKER when any file's declared `sensitivity` exceeds `<level>`. Adapter export paths that filter by tier MUST run this audit before export. The check is operator-disable for `restricted` and below via `enforce_sensitivity_export_gate: false`; `privileged` is always enforced regardless of config.
+
+When `--export-tier` is not supplied, the audit reads `audit.default_export_tier` from config (default: not set, meaning the gate is no-op). Operators who want CI to gate every plain `memory-audit` invocation set `audit.default_export_tier: public` (or another level).
+
+#### Label / content cross-check (DLP-side)
+
+`memory-dlp-scan` MUST flag a BLOCKER `sensitivity_label_mismatch` finding when a memory file's body contains content whose implied sensitivity tier exceeds its declared `sensitivity`. Pattern-to-tier mapping:
+
+| Content class | Implied tier |
+| --- | --- |
+| Secret material (API keys, private keys, tokens, passwords) | flagged regardless of label; secrets must not be in memory at all |
+| Identifiers (AWS ARNs, JWT tokens, account numbers, DocuSign account IDs) | `restricted` |
+| PII (SSN, credit-card-like) | `restricted` |
+| Generic high-entropy near a secret-keyword (entropy heuristic) | `internal` |
+
+Disable for `restricted` and below via `dlp.enforce_sensitivity_cross_check: false`; cannot disable for `privileged` (reserved for future privileged-tier markers). The CLI flag `--no-sensitivity-cross-check` provides a per-invocation override at the same scope.
+
+The cross-check runs only on files that parse as MemForge memory (frontmatter present with `name`, `type`). Plain markdown without frontmatter is exempt (no false positives on docs).
+
+#### Conformance fixtures (adapter-side)
+
+The repository ships `tests/conformance/sensitivity/` with documented scenarios that secure-mode adapters MUST pass. Each scenario is a directory containing `input/` (a synthetic memory folder) and `expected.json` (assertions about what the adapter should expose). Required scenarios:
+
+- `export-tier-public`: only `public`-labeled files appear in the export.
+- `export-tier-internal`: `public` + `internal` only.
+- `export-tier-restricted`: `public` + `internal` + `restricted`.
+- `export-tier-privileged`: all four levels.
+- `label-mismatch-blocked`: a file claiming `sensitivity: public` with restricted-tier body content; the export tooling MUST refuse the file (BLOCKER from DLP cross-check before export).
+
+The conformance harness (`pytest tests/conformance/sensitivity/`) is enabled by default. Adapter authors who deliberately target a non-secure-mode profile MAY skip via `pytest.skip("non-secure-mode")` with the rationale documented in their adapter README; spec-conformance claims are forfeit for the skipped scenarios.
+
+#### Config keys (added to `.memforge/config.yaml`)
+
+```yaml
+audit:
+  default_export_tier: null            # null | public | internal | restricted | privileged
+  enforce_sensitivity_export_gate: true # cannot disable for privileged
+dlp:
+  enforce_sensitivity_cross_check: true # cannot disable for privileged
+conformance:
+  enforce_sensitivity_fixtures: true    # advisory; CI integration is adapter-side
+```
+
+Validation rules (HEAD-pure): `audit.default_export_tier` MUST be `null` or one of the four levels. `enforce_sensitivity_export_gate` and `dlp.enforce_sensitivity_cross_check` MUST be boolean. Any attempt to set either to `false` while a `privileged`-labeled memory exists in the folder is BLOCKER (the floor takes precedence over the disable).
+
 ## Access labels
 
 The `access` field (v0.3.0+) is independent of `sensitivity`. Where sensitivity describes containment-by-content-type, access describes who can read the memory in a multi-tenant context. Adapters MAY enforce access labels via RBAC.
@@ -454,4 +513,4 @@ Adapters MAY add encryption layers if they target a multi-developer or shared-wo
 - v0.1.0 — initial format; flat folder, name+description+type required.
 - v0.2.0 — sensitivity classification (4 levels) + consumer obligations.
 - v0.3.0 — schema expansion (uid, tier, tags, owner, status, last_reviewed, etc.); rollup-subfolder formalization; access labels; cross-folder references; tag taxonomy.
-- v0.4.0 (in draft) — major bump: `uid`, `tier`, `tags`, `owner`, `status`, `created` required (was optional in v0.3.x). v0.3.x files load in degraded mode. Reader contract tightened for byte-match CI on generated `MEMORY.md`. New §"Multi-agent concurrency" section adds five frontmatter keys (`decision_topic`, `replaces`, `superseded_by`, `topic_aliases`, `ever_multi_member`), a snooze record (`.memforge/snoozes/<topic>.yaml`), a config file (`.memforge/config.yaml`), the resolve operation contract, the canonical reader-side competing-claim block, and a layered Tier 1 + Tier 2 audit rule set. Status enumeration is now strictly enforced (BLOCKER on any value outside the six listed). Closes the v0.3.x §"Not in scope" deferral on multi-user concurrency.
+- v0.4.0 (in draft) — major bump: `uid`, `tier`, `tags`, `owner`, `status`, `created` required (was optional in v0.3.x). v0.3.x files load in degraded mode. Reader contract tightened for byte-match CI on generated `MEMORY.md`. New §"Multi-agent concurrency" section adds five frontmatter keys (`decision_topic`, `replaces`, `superseded_by`, `topic_aliases`, `ever_multi_member`), a snooze record (`.memforge/snoozes/<topic>.yaml`), a config file (`.memforge/config.yaml`), the resolve operation contract, the canonical reader-side competing-claim block, and a layered Tier 1 + Tier 2 audit rule set. Status enumeration is now strictly enforced (BLOCKER on any value outside the six listed). Sensitivity enforcement (`§"Sensitivity enforcement"`) adds three default-on, operator-disable-able checks (export-tier gate, DLP label/content cross-check, conformance fixtures) with a hard floor at `privileged`. Closes the v0.3.x §"Not in scope" deferral on multi-user concurrency.
