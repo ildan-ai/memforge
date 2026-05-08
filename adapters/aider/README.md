@@ -61,3 +61,14 @@ aider --read /tmp/aider-memory.md ...
 ```
 
 Re-run when memory changes. (Could be wired as a pre-aider shell function.)
+
+### v0.4 enforcement
+
+Pair the filtered index with the v0.4 enforcement gates so a mislabeled memory cannot leak into the aider context:
+
+```bash
+memory-audit --export-tier=internal --strict --path ~/your-memory-folder
+memory-dlp-scan --paths ~/your-memory-folder/*.md --strict
+```
+
+The audit's export-tier gate fails BLOCKER on declared-tier > export-tier; the DLP cross-check fails BLOCKER on body content whose implied tier exceeds the declared label. Privileged-tier enforcement is a hard floor. See `docs/adapter-implementation-guide.md` §"Secure-mode sensitivity enforcement (v0.4.0+)".

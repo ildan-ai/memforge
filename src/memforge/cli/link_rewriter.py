@@ -1,6 +1,6 @@
 # memory-link-rewriter — link integrity + UID rewriting for MemForge folders.
 #
-# Spec: 0.3.0
+# Spec: 0.4.0
 #
 # Subcommands:
 #   check   — validate UID uniqueness + link integrity (path links + mem:uid)
@@ -9,6 +9,14 @@
 #
 # Lays the foundation for the index generator + memory-rollup tool, both
 # of which depend on stable UID resolution.
+#
+# v0.4 remit (normative, per SPEC.md §"Multi-agent concurrency / Tool-side
+# contract"): this tool MUST NOT mirror-write the `superseded_by:` field as
+# a side effect of any operation. Mirror-writing `superseded_by:` is
+# exclusively the responsibility of the resolve operation
+# (memforge-resolve), which writes it inside its atomic
+# `memforge: resolve <topic>` commit. Adding mirror-write logic here would
+# reintroduce an unguarded authority channel.
 #
 # Defaults: per-cwd memory folder ($USER-claude-projects/memory/) +
 # ~/.claude/global-memory/. Override with --path (repeatable).

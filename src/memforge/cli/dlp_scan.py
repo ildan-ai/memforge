@@ -38,43 +38,55 @@ class Pattern:
     name: str
     regex: re.Pattern
     severity: str
+    implied_tier: str = "internal"
     examples: str = ""
 
 
+# `implied_tier` drives the v0.4 sensitivity_label_mismatch cross-check.
+# Secret-class patterns are tagged `restricted` because if a secret slips into
+# memory it must at minimum be contained at restricted-tier. The secret-class
+# BLOCKER finding still fires on its own; the cross-check is additional signal.
 PATTERNS: list[Pattern] = [
-    Pattern("aws_access_key_id", re.compile(r"\bAKIA[0-9A-Z]{16}\b"), "BLOCKER"),
-    Pattern("aws_secret_access_key", re.compile(r"(?i)aws(.{0,20})?secret(.{0,20})?[:=]\s*['\"]?[A-Za-z0-9/+=]{40}\b"), "BLOCKER"),
-    Pattern("aws_arn", re.compile(r"\barn:aws:[a-z0-9\-]+:[a-z0-9\-]*:[0-9]+:[A-Za-z0-9_\-/.:*]+"), "MAJOR"),
-    Pattern("github_pat", re.compile(r"\bghp_[A-Za-z0-9]{36}\b"), "BLOCKER"),
-    Pattern("github_oauth", re.compile(r"\bgho_[A-Za-z0-9]{36}\b"), "BLOCKER"),
-    Pattern("github_app_token", re.compile(r"\b(ghu|ghs)_[A-Za-z0-9]{36}\b"), "BLOCKER"),
-    Pattern("github_refresh_token", re.compile(r"\bghr_[A-Za-z0-9]{76}\b"), "BLOCKER"),
-    Pattern("openai_api_key", re.compile(r"\bsk-[A-Za-z0-9_\-]{20,}\b"), "BLOCKER"),
-    Pattern("anthropic_api_key", re.compile(r"\bsk-ant-[A-Za-z0-9_\-]{40,}\b"), "BLOCKER"),
-    Pattern("xai_api_key", re.compile(r"\bxai-[A-Za-z0-9]{40,}\b"), "BLOCKER"),
-    Pattern("google_api_key", re.compile(r"\bAIza[A-Za-z0-9_\-]{35}\b"), "BLOCKER"),
-    Pattern("slack_bot_token", re.compile(r"\bxox[bpars]-[0-9A-Za-z\-]{10,}\b"), "BLOCKER"),
-    Pattern("slack_webhook", re.compile(r"https://hooks\.slack\.com/services/T[A-Za-z0-9]+/B[A-Za-z0-9]+/[A-Za-z0-9]{20,}"), "BLOCKER"),
+    Pattern("aws_access_key_id", re.compile(r"\bAKIA[0-9A-Z]{16}\b"), "BLOCKER", "restricted"),
+    Pattern("aws_secret_access_key", re.compile(r"(?i)aws(.{0,20})?secret(.{0,20})?[:=]\s*['\"]?[A-Za-z0-9/+=]{40}\b"), "BLOCKER", "restricted"),
+    Pattern("aws_arn", re.compile(r"\barn:aws:[a-z0-9\-]+:[a-z0-9\-]*:[0-9]+:[A-Za-z0-9_\-/.:*]+"), "MAJOR", "restricted"),
+    Pattern("github_pat", re.compile(r"\bghp_[A-Za-z0-9]{36}\b"), "BLOCKER", "restricted"),
+    Pattern("github_oauth", re.compile(r"\bgho_[A-Za-z0-9]{36}\b"), "BLOCKER", "restricted"),
+    Pattern("github_app_token", re.compile(r"\b(ghu|ghs)_[A-Za-z0-9]{36}\b"), "BLOCKER", "restricted"),
+    Pattern("github_refresh_token", re.compile(r"\bghr_[A-Za-z0-9]{76}\b"), "BLOCKER", "restricted"),
+    Pattern("openai_api_key", re.compile(r"\bsk-[A-Za-z0-9_\-]{20,}\b"), "BLOCKER", "restricted"),
+    Pattern("anthropic_api_key", re.compile(r"\bsk-ant-[A-Za-z0-9_\-]{40,}\b"), "BLOCKER", "restricted"),
+    Pattern("xai_api_key", re.compile(r"\bxai-[A-Za-z0-9]{40,}\b"), "BLOCKER", "restricted"),
+    Pattern("google_api_key", re.compile(r"\bAIza[A-Za-z0-9_\-]{35}\b"), "BLOCKER", "restricted"),
+    Pattern("slack_bot_token", re.compile(r"\bxox[bpars]-[0-9A-Za-z\-]{10,}\b"), "BLOCKER", "restricted"),
+    Pattern("slack_webhook", re.compile(r"https://hooks\.slack\.com/services/T[A-Za-z0-9]+/B[A-Za-z0-9]+/[A-Za-z0-9]{20,}"), "BLOCKER", "restricted"),
     Pattern(
         "private_key_pem",
         re.compile(
             r"-----BEGIN ((RSA|DSA|EC|OPENSSH|PGP|ENCRYPTED) )?PRIVATE KEY-----"
         ),
         "BLOCKER",
+        "restricted",
     ),
     Pattern(
         "ssh_private_key_body",
         re.compile(r"-----BEGIN OPENSSH PRIVATE KEY-----[\s\S]{100,}?-----END OPENSSH PRIVATE KEY-----"),
         "BLOCKER",
+        "restricted",
     ),
-    Pattern("jwt_token", re.compile(r"\beyJ[A-Za-z0-9_\-]{10,}\.[A-Za-z0-9_\-]{10,}\.[A-Za-z0-9_\-]{10,}\b"), "MAJOR"),
-    Pattern("ssn_us", re.compile(r"\b(?!000|666|9\d{2})\d{3}-(?!00)\d{2}-(?!0000)\d{4}\b"), "BLOCKER"),
-    Pattern("credit_card_visa_mc", re.compile(r"\b(?:4\d{3}|5[1-5]\d{2})[\s\-]?\d{4}[\s\-]?\d{4}[\s\-]?\d{4}\b"), "BLOCKER"),
-    Pattern("docusign_api_account", re.compile(r"\bdocusign[A-Za-z0-9._-]{0,30}[:=]\s*['\"]?[A-Za-z0-9_\-]{16,}"), "MAJOR"),
-    Pattern("stripe_secret_key", re.compile(r"\b(sk_live|rk_live)_[A-Za-z0-9]{24,}\b"), "BLOCKER"),
-    Pattern("twilio_auth_token", re.compile(r"\bSK[a-f0-9]{32}\b"), "MAJOR"),
-    Pattern("generic_password_assignment", re.compile(r"(?i)(password|passwd|pwd|secret|api[_\-]?key|token)\s*[:=]\s*['\"][^'\"]{8,}['\"]"), "MAJOR"),
+    Pattern("jwt_token", re.compile(r"\beyJ[A-Za-z0-9_\-]{10,}\.[A-Za-z0-9_\-]{10,}\.[A-Za-z0-9_\-]{10,}\b"), "MAJOR", "restricted"),
+    Pattern("ssn_us", re.compile(r"\b(?!000|666|9\d{2})\d{3}-(?!00)\d{2}-(?!0000)\d{4}\b"), "BLOCKER", "restricted"),
+    Pattern("credit_card_visa_mc", re.compile(r"\b(?:4\d{3}|5[1-5]\d{2})[\s\-]?\d{4}[\s\-]?\d{4}[\s\-]?\d{4}\b"), "BLOCKER", "restricted"),
+    Pattern("docusign_api_account", re.compile(r"\bdocusign[A-Za-z0-9._-]{0,30}[:=]\s*['\"]?[A-Za-z0-9_\-]{16,}"), "MAJOR", "restricted"),
+    Pattern("stripe_secret_key", re.compile(r"\b(sk_live|rk_live)_[A-Za-z0-9]{24,}\b"), "BLOCKER", "restricted"),
+    Pattern("twilio_auth_token", re.compile(r"\bSK[a-f0-9]{32}\b"), "MAJOR", "restricted"),
+    Pattern("generic_password_assignment", re.compile(r"(?i)(password|passwd|pwd|secret|api[_\-]?key|token)\s*[:=]\s*['\"][^'\"]{8,}['\"]"), "MAJOR", "restricted"),
 ]
+
+
+PATTERN_TIER_BY_NAME: dict[str, str] = {p.name: p.implied_tier for p in PATTERNS}
+# high_entropy_near_keyword is generated dynamically (not in PATTERNS); tier internal.
+PATTERN_TIER_BY_NAME["high_entropy_near_keyword"] = "internal"
 
 
 @dataclass
@@ -226,6 +238,81 @@ def scan_file(path: Path) -> list[Finding]:
     return scan_text(text, path)
 
 
+def check_sensitivity_mismatch(
+    text: str, file: Path, findings: list[Finding]
+) -> Optional[Finding]:
+    """Compare declared `sensitivity` against the highest implied tier across
+    findings. Emit a BLOCKER `sensitivity_label_mismatch` when declared is below.
+
+    Returns None for files that do not parse as MemForge memory (no
+    frontmatter with name+type) and for files where the declared label
+    already covers the implied content tier.
+    """
+    from memforge.cli._config import (
+        TIER_ORDER,
+        parse_frontmatter_sensitivity,
+        tier_rank,
+    )
+
+    is_memforge, declared = parse_frontmatter_sensitivity(text)
+    if not is_memforge:
+        return None
+    if not findings:
+        return None
+
+    max_tier = "public"
+    max_rank = tier_rank("public")
+    for f in findings:
+        implied = PATTERN_TIER_BY_NAME.get(f.pattern)
+        if implied is None:
+            continue
+        r = tier_rank(implied)
+        if r > max_rank:
+            max_rank = r
+            max_tier = implied
+
+    declared_rank = tier_rank(declared)
+    if declared_rank >= max_rank:
+        return None
+
+    return Finding(
+        file=file,
+        line_no=1,
+        pattern="sensitivity_label_mismatch",
+        severity="BLOCKER",
+        excerpt=(
+            f"declared sensitivity '{declared}' is below implied "
+            f"'{max_tier}' from body content (tier order: "
+            f"{' < '.join(TIER_ORDER)})"
+        ),
+    )
+
+
+def _cross_check_enabled(cli_disabled: bool, config_enabled: bool) -> bool:
+    """Cross-check enable resolution: CLI override beats config; both must
+    explicitly disable for the check to skip. Hard-floor at the privileged
+    tier is enforced inside the check itself, not here.
+    """
+    if cli_disabled:
+        return False
+    return config_enabled
+
+
+def _privileged_floor_engaged(findings: list[Finding]) -> bool:
+    """Return True if any finding implies privileged tier — cross-check
+    cannot be disabled in that case (spec hard floor)."""
+    from memforge.cli._config import tier_rank
+
+    privileged_rank = tier_rank("privileged")
+    for f in findings:
+        implied = PATTERN_TIER_BY_NAME.get(f.pattern)
+        if implied is None:
+            continue
+        if tier_rank(implied) >= privileged_rank:
+            return True
+    return False
+
+
 def staged_files() -> list[Path]:
     try:
         out = subprocess.check_output(
@@ -300,7 +387,15 @@ def main() -> int:
                    help="Skip Shannon-entropy heuristic")
     p.add_argument("--entropy-threshold", type=float, default=4.5,
                    help="Bits-per-char entropy threshold for high-entropy heuristic (default 4.5)")
+    p.add_argument("--no-sensitivity-cross-check", action="store_true",
+                   help="Skip the v0.4 sensitivity_label_mismatch check. "
+                        "Hard-floor: cannot disable when implied tier is privileged.")
     args = p.parse_args()
+
+    from memforge.cli._config import load_config
+    cfg = load_config()
+    config_xcheck = bool(cfg.get("dlp", {}).get("enforce_sensitivity_cross_check", True))
+    cross_check_active = _cross_check_enabled(args.no_sensitivity_cross_check, config_xcheck)
 
     files: list[Path]
     if args.paths:
@@ -325,7 +420,13 @@ def main() -> int:
             text = f.read_text(encoding="utf-8")
         except (OSError, UnicodeDecodeError):
             continue
-        findings.extend(scan_text(text, f, entropy_threshold=entropy_threshold))
+        per_file = scan_text(text, f, entropy_threshold=entropy_threshold)
+        findings.extend(per_file)
+
+        if cross_check_active or _privileged_floor_engaged(per_file):
+            mismatch = check_sensitivity_mismatch(text, f, per_file)
+            if mismatch is not None:
+                findings.append(mismatch)
 
     if not args.no_detect_secrets:
         findings.extend(run_detect_secrets([f for f in files if f.exists() and f.is_file()]))

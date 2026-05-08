@@ -71,3 +71,28 @@ In `~/.claude/settings.json`:
 ```
 
 Restart Claude Code for the registration to take effect.
+
+## Honoring sensitivity
+
+Claude Code loads `MEMORY.md` verbatim at session start; it does not filter by `sensitivity` label on its own. To exclude `restricted` or `privileged` memories from sessions, pre-generate a filtered index and point `autoMemoryDirectory` at a folder containing the filtered version:
+
+```bash
+memory-index-gen --print --viewer-tier internal \
+  --path ~/.claude/global-memory \
+  > ~/.claude/global-memory/MEMORY.md
+```
+
+Re-run when memory changes (or wire it into the auto-commit hook).
+
+### v0.4 enforcement
+
+When the CC adapter exports memory to external surfaces (cloud-IDE bridges, shared workspaces, AGENTS.md generation), run the v0.4 enforcement gates:
+
+```bash
+memory-audit --export-tier=internal --strict
+memory-dlp-scan --memory-folders --strict
+```
+
+The audit's export-tier gate fails BLOCKER on declared-tier > export-tier; the DLP scan's cross-check fails BLOCKER on body content whose implied tier exceeds the declared label. Both have config disable knobs in `.memforge/config.yaml`, except for `privileged` which is a hard floor.
+
+Solo-operator deployments accept the residual git-layer threat and typically run with default config (everything default-on). Multi-writer or regulated deployments should also wire the conformance suite at `tests/conformance/sensitivity/` into CI.

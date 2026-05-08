@@ -87,6 +87,33 @@ def _parse_iso_z(ts: str) -> Optional[datetime]:
 # ---------- core audit ----------
 
 
+def _export_tier_gate(
+    sens: str,
+    export_tier: Optional[str],
+    enforce: bool,
+) -> Optional[str]:
+    """Return a violation message if the declared sensitivity exceeds the
+    export tier; None otherwise. Privileged-labeled files always block when
+    export_tier is set below privileged, regardless of the enforce flag.
+    """
+    if export_tier is None:
+        return None
+    from memforge.cli._config import tier_rank
+    sens_effective = sens if sens else "internal"
+    sens_r = tier_rank(sens_effective)
+    export_r = tier_rank(export_tier)
+    if sens_r <= export_r:
+        return None
+    is_privileged = sens_effective == "privileged"
+    if not enforce and not is_privileged:
+        return None
+    suffix = " (privileged hard-floor)" if is_privileged and not enforce else ""
+    return (
+        f"sensitivity '{sens_effective}' exceeds export tier "
+        f"'{export_tier}'{suffix}"
+    )
+
+
 def audit_target(
     target: Path,
     *,
@@ -95,6 +122,8 @@ def audit_target(
     fix: bool,
     add_defaults: bool,
     json_out: bool,
+    export_tier: Optional[str] = None,
+    enforce_sensitivity_export_gate: bool = True,
 ) -> tuple[int, Optional[dict]]:
     """Audit one folder. Returns (violation_count, optional json blob)."""
     print()
@@ -216,6 +245,10 @@ def audit_target(
                 "(must be public|internal|restricted|privileged)"
             )
 
+        gate_msg = _export_tier_gate(sens, export_tier, enforce_sensitivity_export_gate)
+        if gate_msg:
+            violations.append(f"{fname}: {gate_msg}")
+
         if not body.strip():
             violations.append(f"{fname}: empty body")
 
@@ -244,6 +277,20 @@ def audit_target(
                     stale.append(f"{fname} (mtime {mtime_iso}; never read)")
                 else:
                     stale.append(f"{fname} (mtime {mtime_iso})")
+
+    # ---- v0.4 multi-agent concurrency invariants ----
+    # Tier 1 (HEAD-pure) is always run; Tier 2 (commit-log walk) is best-effort.
+    try:
+        from memforge.cli._concurrency_audit import run_concurrency_audit
+        blockers_v04, majors_v04, warns_v04 = run_concurrency_audit(target)
+        for _, msg in blockers_v04:
+            violations.append(f"[v0.4] {msg}")
+        for _, msg in majors_v04:
+            health.append(f"[v0.4 MAJOR] {msg}")
+        for _, msg in warns_v04:
+            health.append(f"[v0.4 WARN] {msg}")
+    except Exception as e:  # noqa: BLE001 — never let v0.4 audit kill the existing audit
+        health.append(f"[v0.4] concurrency audit raised {type(e).__name__}: {e}")
 
     # ---- report ----
     print()
@@ -371,7 +418,27 @@ def main(argv: list[str] | None = None) -> int:
                    help="Prompt to add 'sensitivity: internal' to files missing the field.")
     p.add_argument("--stale-days", type=int, default=90,
                    help="Flag files older than N days (default: 90).")
+    p.add_argument(
+        "--export-tier",
+        choices=["public", "internal", "restricted", "privileged"],
+        default=None,
+        help=(
+            "v0.4 sensitivity export-tier gate: fail BLOCKER on any file whose "
+            "declared sensitivity exceeds <tier>. Defaults to "
+            "audit.default_export_tier from .memforge/config.yaml when set, "
+            "otherwise the gate is no-op. Privileged files always block when "
+            "the gate runs, regardless of config disable."
+        ),
+    )
     args = p.parse_args(argv)
+
+    from memforge.cli._config import load_config
+    cfg = load_config()
+    audit_cfg = cfg.get("audit", {})
+    export_tier = args.export_tier or audit_cfg.get("default_export_tier")
+    if export_tier == "":
+        export_tier = None
+    enforce_export = bool(audit_cfg.get("enforce_sensitivity_export_gate", True))
 
     targets: list[Path] = [pp.expanduser().resolve() for pp in args.path] or _default_paths()
 
@@ -386,6 +453,8 @@ def main(argv: list[str] | None = None) -> int:
             fix=args.fix,
             add_defaults=args.add_defaults,
             json_out=args.json_out,
+            export_tier=export_tier,
+            enforce_sensitivity_export_gate=enforce_export,
         )
         total_violations += nv
         if blob is not None:

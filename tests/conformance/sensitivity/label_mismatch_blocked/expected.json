@@ -1,0 +1,10 @@
+{
+  "tool": "dlp",
+  "input_dir": "input",
+  "args_template": ["--paths", "{input_dir}/mem-public-with-arn.md", "--strict"],
+  "expected_violation_substrings": [
+    "sensitivity_label_mismatch",
+    "declared sensitivity 'public' is below implied 'restricted'"
+  ],
+  "expected_exit_nonzero": true
+}

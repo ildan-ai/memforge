@@ -42,7 +42,11 @@ jobs:
         run: npm install -g markdownlint-cli@0.48.0
       - name: Lint markdown
         # grandfather noisy style rules on pre-existing docs; strict on new content comes later.
-        run: markdownlint '**/*.md' --ignore node_modules --disable MD013 MD025 MD026 MD031 MD032 MD033 MD034 MD040 MD041
+        # MD024 disabled because Keep a Changelog format mandates duplicate
+        # `### Added` / `### Changed` headings across version blocks; siblings_only
+        # config would cover this, but blanket-disabling it is cleaner and the
+        # CHANGELOG headings are the only recurring duplicates in the tree.
+        run: markdownlint '**/*.md' --ignore node_modules --disable MD013 MD024 MD025 MD026 MD031 MD032 MD033 MD034 MD040 MD041
 
   spec-version-check:
     name: Spec version consistency

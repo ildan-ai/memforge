@@ -10,6 +10,26 @@ The version number tracked here is the **package / tooling** version. The on-dis
 
 The Contributor License Agreement infrastructure is counsel-blocked; external pull requests are paused until the CLA flow lands.
 
+## [spec 0.4.0-draft] - 2026-05-08
+
+Spec-only draft on the `v0.4-draft` branch. v0.4 is a major bump per SemVer applied to spec semantics. Tooling stays at 0.3.x; the package release carrying this spec will land separately once v0.4 stabilizes.
+
+### Added (spec)
+
+- **§"Multi-agent concurrency: competing claims" section** in SPEC.md. Five new frontmatter keys (`decision_topic`, `replaces`, `superseded_by`, `topic_aliases`, `ever_multi_member`), a snooze record at `.memforge/snoozes/<topic>.yaml`, a config file at `.memforge/config.yaml` with hard-floor + edit-gate protection, the resolve operation contract (tool-neutral; CLI reference + Claude Code skill + Cursor / Continue / Aider / shell wrappers), the canonical reader-side competing-claim YAML block (byte-match CI), and a layered Tier 1 (HEAD-pure) + Tier 2 (commit-log) audit rule set. Closes the v0.3.x "Multi-user concurrency semantics (Phase 2+ concern)" deferral.
+- **Status enumeration BLOCKER**: any value outside `{active, proposed, gated, superseded, dropped, archived}` is a HEAD-pure audit BLOCKER.
+- **Status transition gating**: transitions to `superseded` MUST occur in a `memforge: resolve <decision_topic>` commit (Tier 2 BLOCKER if violated). Transitions to `archived` go through the generator (existing Phase-1 contract).
+- **Secure-mode adapter conformance** (informative): adapters MAY claim secure-mode by detecting branch protection + required signed commits at startup; informative startup notice required when not in secure-mode.
+- **Reserved-name slug denylist** for `decision_topic` (Windows device names: `con`, `aux`, `nul`, `prn`, `com[0-9]`, `lpt[0-9]`).
+- **§"Sensitivity enforcement (v0.4.0+)"** in SPEC.md. Three default-on, operator-disable-able checks tied to a hard floor at the `privileged` tier: an audit-side **export-tier gate** (`memory-audit --export-tier=<level>` or `audit.default_export_tier` config), a DLP-side **label/content cross-check** that emits BLOCKER `sensitivity_label_mismatch` when declared sensitivity is below the implied tier of body content, and a **conformance fixture set** (`tests/conformance/sensitivity/`) covering five scenarios that secure-mode adapters MUST pass. Adds three config keys (`audit.default_export_tier`, `audit.enforce_sensitivity_export_gate`, `dlp.enforce_sensitivity_cross_check`); a `--no-sensitivity-cross-check` CLI flag on `memory-dlp-scan`; and a `--export-tier` flag on `memory-audit`. Privileged-tier enforcement cannot be disabled by config.
+
+### Changed (spec)
+
+- **Required frontmatter fields expanded.** `uid`, `tier`, `tags`, `owner`, `status`, `created` are now required (formerly optional in v0.3.x). A v0.4-conformant memory must carry: `name`, `description`, `type`, `uid`, `tier`, `tags`, `owner`, `status`, `created`. The `sensitivity` field remains independent.
+- **v0.3.x backward compatibility: degraded mode.** Files written under v0.3.x that lack the newly-required fields load in degraded mode. Adapters MUST accept them, MAY warn, and SHOULD prompt the operator to backfill. Degraded-mode memories appear in `MEMORY.md` but cannot participate in rollup contracts, status-driven archival, or any v0.4 reader-side contract that depends on a v0.4-required field. Backfill is one-shot per file.
+- **Integrity invariants** extended (rules 11-15) to cover the asymmetric-supersession contract, exactly-one-active per `ever_multi_member: true` group, `ever_multi_member` monotonicity, status enumeration, and the layered audit rule set.
+- **§"Not in scope"** retitled to v0.4.0; multi-user concurrency removed (now in scope), v0.5.0 deferrals enumerated (centralized taxonomy, per-decision ledger, DAG cycle rejection, UUIDv7, vector-clock tie-breaker, CRDT, cryptographic provenance).
+
 ## [0.3.1] - 2026-05-07
 
 Patch release wiring proper console scripts so `pip install ildan-memforge`

@@ -1,12 +1,16 @@
 # memory-index-gen — generate MEMORY.md from frontmatter as a build artifact.
 #
-# Spec: 0.3.0
-# ADR: 0001 §Phase 1 T3
+# Spec: 0.4.0
 #
 # Reads all top-level *.md files plus all <topic>/README.md rollup parents in
 # a memory folder, extracts frontmatter, and emits a MEMORY.md whose bullet
 # section is fully derived from frontmatter. Operator-curated preamble lives
 # in an optional `_memforge.yaml` next to MEMORY.md.
+#
+# v0.4.0: emits a fenced competing-claim block per SPEC.md §"Multi-agent
+# concurrency / Reader-side competing-claim contract" when the folder has
+# any decision_topic group with two or more live members (or an active
+# snooze). Canonical serialization is byte-stable for CI byte-match.
 #
 # Modes:
 #   --write   Write the generated MEMORY.md to disk (default).
@@ -20,14 +24,16 @@
 from __future__ import annotations
 
 import argparse
+import datetime as _datetime
 import os
 import re
 import sys
+import unicodedata
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Optional
+from typing import Any, Optional
 
-from memforge.frontmatter import parse as _mf_parse  # noqa: E402
+from memforge.frontmatter import has_frontmatter, parse as _mf_parse  # noqa: E402
 
 try:
     import yaml  # type: ignore
@@ -287,6 +293,188 @@ def load_preamble(folder_root: Path) -> dict:
     }
 
 
+_CLAIM_LIVE_STATUSES = {"active", "proposed", "gated"}
+_CLAIM_BEGIN = "# memforge:competing-claims:begin"
+_CLAIM_END = "# memforge:competing-claims:end"
+_CLAIM_RESERVED_YAML_CHARS = set(":#&*!|>'\"%@`")
+
+
+def _yaml_escape(value: Any) -> str:
+    """Emit a value per the canonical serialization rules:
+    single-quoted only when the string contains reserved YAML characters,
+    starts with whitespace, ends with whitespace, or starts with a leading
+    `-`/`[`/`{`. Otherwise plain. Dates and bools are stringified.
+    """
+    if value is None:
+        return "''"
+    if isinstance(value, bool):
+        return "true" if value else "false"
+    if isinstance(value, (_datetime.date, _datetime.datetime)):
+        return value.isoformat()
+    s = str(value)
+    if s == "":
+        return "''"
+    needs_quote = (
+        s != s.strip()
+        or s[0] in "-[{"
+        or any(c in _CLAIM_RESERVED_YAML_CHARS for c in s)
+    )
+    if needs_quote:
+        return "'" + s.replace("'", "''") + "'"
+    return s
+
+
+def _truncate_first_line(body: str) -> str:
+    """Per spec: NFKD normalize first non-empty body line, then take the
+    first 117 UTF-8 bytes (split safely on UTF-8 boundary), then append
+    the literal three-character string `...` only if any truncation
+    occurred."""
+    line = ""
+    for raw in body.splitlines():
+        stripped = raw.strip()
+        if stripped:
+            line = stripped
+            break
+    if not line:
+        return ""
+    normalized = unicodedata.normalize("NFKD", line)
+    encoded = normalized.encode("utf-8")
+    if len(encoded) <= 117:
+        return normalized
+    cap = 117
+    while cap > 0:
+        try:
+            truncated = encoded[:cap].decode("utf-8")
+            return truncated + "..."
+        except UnicodeDecodeError:
+            cap -= 1
+    return ""
+
+
+def _read_snooze(folder_root: Path, topic: str) -> Optional[dict[str, Any]]:
+    """Return parsed snooze record if the topic has an active snooze, else None."""
+    if not _HAVE_YAML:
+        return None
+    snooze_path = folder_root / ".memforge" / "snoozes" / f"{topic}.yaml"
+    if not snooze_path.is_file():
+        return None
+    try:
+        record = yaml.safe_load(snooze_path.read_text(encoding="utf-8"))
+    except (OSError, yaml.YAMLError):
+        return None
+    if not isinstance(record, dict):
+        return None
+    snoozed_until = record.get("snoozed_until")
+    if isinstance(snoozed_until, (_datetime.date, _datetime.datetime)):
+        snoozed_until = snoozed_until.isoformat()
+    if not isinstance(snoozed_until, str):
+        return None
+    today_iso = _datetime.date.today().isoformat()
+    if today_iso > snoozed_until:
+        return None  # snooze expired
+    return record
+
+
+def _collect_decision_groups(folder_root: Path) -> dict[str, list[dict[str, Any]]]:
+    """Walk all .md files under folder_root (excluding MEMORY.md and archive/),
+    parse frontmatter, group memories by decision_topic. Returns
+    {topic: [{uid, owner, status, updated, first_line, file_path}, ...]}.
+    Only live members (status in {active, proposed, gated}) are included.
+    """
+    groups: dict[str, list[dict[str, Any]]] = {}
+    for path in sorted(folder_root.rglob("*.md")):
+        if path.name == "MEMORY.md":
+            continue
+        if "archive" in path.parts:
+            continue
+        try:
+            text = path.read_text(encoding="utf-8")
+        except OSError:
+            continue
+        if not has_frontmatter(text):
+            continue
+        fm, body = _mf_parse(text)
+        if not fm:
+            continue
+        topic = fm.get("decision_topic")
+        if not topic or not isinstance(topic, str):
+            continue
+        status = fm.get("status")
+        if status not in _CLAIM_LIVE_STATUSES:
+            continue
+        member = {
+            "uid": fm.get("uid", ""),
+            "owner": fm.get("owner", ""),
+            "status": status,
+            "updated": fm.get("updated", ""),
+            "first_line": _truncate_first_line(body),
+            "file_path": path.relative_to(folder_root).as_posix(),
+        }
+        groups.setdefault(topic, []).append(member)
+    return groups
+
+
+def render_competing_claims_block(folder_root: Path) -> str:
+    """Emit the canonical competing-claim YAML fenced block, or empty string
+    if no group qualifies. Byte-stable for CI byte-match.
+    """
+    groups = _collect_decision_groups(folder_root)
+    block_topics: list[tuple[str, list[dict[str, Any]], Optional[dict[str, Any]]]] = []
+    for topic in sorted(groups):
+        members = groups[topic]
+        snooze = _read_snooze(folder_root, topic)
+        if len(members) < 2 and snooze is None:
+            continue  # nothing to surface
+        if len(members) < 2 and snooze is not None:
+            continue  # snoozed but no live conflict; orphan-snooze handled by audit
+        members_sorted = sorted(
+            members,
+            key=lambda m: (m.get("updated", "") or ""),
+            reverse=True,
+        )
+        # Tie-break by uid ascending.
+        members_sorted = sorted(
+            members_sorted,
+            key=lambda m: (
+                "" if (m.get("updated") or "") else "zz",  # keep dated-first ordering
+            ),
+        )
+        # Two-key sort: updated DESC, uid ASC. Use a tuple key with reverse on first.
+        members_sorted = sorted(
+            members,
+            key=lambda m: (m.get("uid", "") or ""),
+        )
+        members_sorted = sorted(
+            members_sorted,
+            key=lambda m: (m.get("updated", "") or ""),
+            reverse=True,
+        )
+        block_topics.append((topic, members_sorted, snooze))
+
+    if not block_topics:
+        return ""
+
+    lines: list[str] = [_CLAIM_BEGIN]
+    for topic, members, snooze in block_topics:
+        lines.append(f"- decision_topic: {_yaml_escape(topic)}")
+        if snooze is not None:
+            lines.append("  state: snoozed")
+            lines.append(f"  snoozed_until: {_yaml_escape(snooze.get('snoozed_until', ''))}")
+            lines.append(f"  snooze_reason: {_yaml_escape(snooze.get('snooze_reason', ''))}")
+        else:
+            lines.append("  state: competing")
+        lines.append("  members:")
+        for m in members:
+            lines.append(f"    - uid: {_yaml_escape(m.get('uid', ''))}")
+            lines.append(f"      owner: {_yaml_escape(m.get('owner', ''))}")
+            lines.append(f"      status: {_yaml_escape(m.get('status', ''))}")
+            lines.append(f"      updated: {_yaml_escape(m.get('updated', ''))}")
+            lines.append(f"      first_line: {_yaml_escape(m.get('first_line', ''))}")
+            lines.append(f"      file_path: {_yaml_escape(m.get('file_path', ''))}")
+    lines.append(_CLAIM_END)
+    return "\n".join(lines) + "\n"
+
+
 def render(folder_root: Path, files: list[MemoryFile]) -> str:
     cfg = load_preamble(folder_root)
     pinned = [f for f in files if f.pinned]
@@ -322,6 +510,18 @@ def render(folder_root: Path, files: list[MemoryFile]) -> str:
                 current_topic = t
                 topic_header_emitted = True
             lines.append(_bullet(mf))
+        lines.append("")
+    # v0.4.0+: emit competing-claim block when any decision_topic group has
+    # 2+ live members. Empty otherwise.
+    claim_block = render_competing_claims_block(folder_root)
+    if claim_block:
+        lines.append("## Competing claims")
+        lines.append("")
+        lines.append("```yaml")
+        # claim_block already ends with newline; split into lines for the join.
+        for cl in claim_block.rstrip("\n").split("\n"):
+            lines.append(cl)
+        lines.append("```")
         lines.append("")
     return "\n".join(lines).rstrip() + "\n"
 

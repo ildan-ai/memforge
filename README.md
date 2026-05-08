@@ -84,7 +84,7 @@ That file is the unit. Every tool, every adapter, every check operates on files 
 ## How it compares
 
 | | **MemForge** | mem0 | letta | `.cursorrules` / `AGENTS.md` |
-|---|---|---|---|---|
+| --- | --- | --- | --- | --- |
 | Storage | Markdown files in git | Hosted vector store | Hosted agent state | Single text file |
 | Typed entries | Yes (4 types + status) | No | Partial | No |
 | Cross-agent | Yes (adapters) | Per-SDK | Per-SDK | Per-agent |
@@ -121,7 +121,7 @@ Adapters are thin: they translate "load this folder at session start" into the a
 Run `--help` on any of them.
 
 | Tool | What it does |
-|---|---|
+| --- | --- |
 | `memory-audit` | Schema + integrity check. Pass `--strict` in CI. |
 | `memory-audit-deep` | Recursive audit: UID uniqueness, taxonomy membership, supersedes resolution, link integrity. |
 | `memory-index-gen` | Build `MEMORY.md` from frontmatter as a CI artifact. RBAC-aware filtering for shared folders. |
@@ -144,11 +144,11 @@ Format invariants are in [`spec/SPEC.md`](./spec/SPEC.md). Topic taxonomy is in 
 ## Status
 
 | Version | Date | Headline |
-|---|---|---|
+| --- | --- | --- |
 | v0.1.0 | 2026-04-19 | First spec release. |
-| v0.2.0 |  | Sensitivity classification (4 levels) + consumer obligations. |
+| v0.2.0 | (unreleased) | Sensitivity classification (4 levels) + consumer obligations. |
 | v0.3.0 | 2026-05-07 | Schema expansion (uid, tier, tags, owner, last_reviewed, status), rollup-with-subfolder formalization, access labels, controlled topic taxonomy, full Phase 1 tooling, audit log, DLP scan. |
-| v0.4.0 | planned | Make `uid`, `tier`, `tags`, `owner`, `status`, `created` required (breaking). |
+| v0.4.0-draft | (in draft) | Required-field expansion: `uid`, `tier`, `tags`, `owner`, `status`, `created` required (was optional in v0.3.x). v0.3.x files load in degraded mode. Multi-agent concurrency: five new frontmatter keys, snooze record, config file, resolve operation, canonical competing-claim block, layered Tier 1 + Tier 2 audit rule set, status enumeration BLOCKER, secure-mode adapter conformance. Sensitivity enforcement: default-on export-tier gate (`memory-audit --export-tier`), DLP label/content cross-check, conformance fixture set; hard floor protects `privileged` tier from config-disable. Closes the v0.3.x multi-user concurrency deferral. |
 
 The reference implementation is running in production. External adoption is welcome once the CLA flow is live.
 

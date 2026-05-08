@@ -7,13 +7,13 @@ Reference adapters for wiring MemForge into specific coding agents. The spec, ta
 
 Optional extras (some agents support them, others don't):
 
-3. **Read tracking** — update `<folder>/.last_used.json` when a memory file is read so `memory-audit` can flag staleness based on real use, not filesystem mtime.
-4. **Slash commands / skills** that wrap memory-management workflows (`consolidate-memory`, etc.).
+- **Read tracking** — update `<folder>/.last_used.json` when a memory file is read so `memory-audit` can flag staleness based on real use, not filesystem mtime.
+- **Slash commands / skills** that wrap memory-management workflows (`consolidate-memory`, etc.).
 
 ## Adapter status
 
 | Adapter | Auto-load | Auto-commit | Read tracking | Skills |
-|---|---|---|---|---|
+| --- | --- | --- | --- | --- |
 | `claude-code/` | `autoMemoryDirectory` | `PostToolUse` Write/Edit hook | `PostToolUse` Read hook | `consolidate-memory` skill |
 | `cursor/` | `.cursor/rules/` rule with `@MEMORY.md` | `memory-watch` (or daemon) | none | none |
 | `aider/` | `--read MEMORY.md` (or `.aider.conf.yml`) | aider native + `memory-watch` for external writes | none | none |
@@ -44,6 +44,7 @@ The MemForge spec is explicit on what an adapter MAY and MUST do:
 - **MAY** honor `sensitivity` and `access` frontmatter labels for filtering exports.
 - **MAY** add encryption layers for shared / multi-developer scenarios.
 - **MUST** treat absent `sensitivity` as `internal` (not `public`) for safe-default filtering.
+- **Secure-mode adapters (v0.4.0+) MUST** run `memory-audit --export-tier=<level> --strict` and `memory-dlp-scan --strict` before exporting memory to any external surface, and MUST pass the conformance suite at `tests/conformance/sensitivity/`. The privileged tier is a hard floor that no config knob disables. See `docs/adapter-implementation-guide.md` §"Secure-mode sensitivity enforcement (v0.4.0+)".
 
 Loading semantics (how the agent sees the folder) are entirely the adapter's responsibility. The spec defines only the file format.
 
