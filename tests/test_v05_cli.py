@@ -575,14 +575,13 @@ def test_revocation_walk_handles_empty_history(tmp_path):
 
 def test_secure_read_text_refuses_symlink(tmp_path):
     """v0.5.3: secure_read_text refuses to follow a symlink on POSIX."""
-    from memforge._security import IS_WINDOWS, SecurityError, secure_read_text
+    from memforge._security import IS_WINDOWS, SecurityError, restrict_dir_to_owner, restrict_file_to_owner, secure_read_text
     if IS_WINDOWS:
         pytest.skip("O_NOFOLLOW is POSIX-specific")
     target = tmp_path / "real.yaml"
     target.write_text("data: ok\n", encoding="utf-8")
-    import stat as _stat
-    target.chmod(0o600)
-    target.parent.chmod(0o700)
+    restrict_dir_to_owner(target.parent)
+    restrict_file_to_owner(target)
     link = tmp_path / "link.yaml"
     link.symlink_to(target)
     with pytest.raises(SecurityError):
@@ -590,23 +589,23 @@ def test_secure_read_text_refuses_symlink(tmp_path):
 
 
 def test_secure_read_text_succeeds_on_proper_file(tmp_path):
-    """v0.5.3: secure_read_text reads correctly when mode + ownership are right."""
-    from memforge._security import secure_read_text
+    """v0.5.3: secure_read_text reads correctly when file is owner-restricted via the platform primitives."""
+    from memforge._security import restrict_dir_to_owner, restrict_file_to_owner, secure_read_text
     target = tmp_path / "ok.yaml"
     target.write_text("hello\n", encoding="utf-8")
-    target.parent.chmod(0o700)
-    target.chmod(0o600)
+    restrict_dir_to_owner(target.parent)
+    restrict_file_to_owner(target)
     assert secure_read_text(target) == "hello\n"
 
 
 def test_secure_read_text_rejects_relaxed_mode(tmp_path):
     """v0.5.3: secure_read_text fails closed when mode != expected."""
-    from memforge._security import IS_WINDOWS, SecurityError, secure_read_text
+    from memforge._security import IS_WINDOWS, SecurityError, restrict_dir_to_owner, secure_read_text
     if IS_WINDOWS:
-        pytest.skip("POSIX mode check; Windows uses ACLs")
+        pytest.skip("POSIX mode check; Windows uses ACLs (covered by SDDL parser tests)")
     target = tmp_path / "loose.yaml"
     target.write_text("data\n", encoding="utf-8")
-    target.parent.chmod(0o700)
+    restrict_dir_to_owner(target.parent)
     target.chmod(0o644)  # group + others readable
     with pytest.raises(SecurityError, match=r"fd-mode"):
         secure_read_text(target)
