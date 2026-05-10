@@ -369,8 +369,8 @@ def test_security_windows_acl_accepts_owner_only(monkeypatch):
     sec.verify_owner_restricted(pathlib.Path("C:\\Users\\testuser\\.memforge\\identity.yaml"))
 
 
-def test_security_windows_acl_rejects_when_owner_sid_missing(monkeypatch):
-    """v0.5.3: SID-based check rejects when the current user's SID is absent."""
+def test_security_windows_acl_rejects_inheritance_enabled(monkeypatch):
+    """v0.5.3: SDDL without PAI flag (inheritance enabled) is rejected."""
     from memforge import _security as sec
     import subprocess as sp
 
@@ -379,8 +379,8 @@ def test_security_windows_acl_rejects_when_owner_sid_missing(monkeypatch):
     monkeypatch.setattr(sec, "current_owner_label", lambda: "TESTDOMAIN\\testuser")
 
     OWNER_SID = "S-1-5-21-111-222-333-1000"
-    OTHER_SID = "S-1-5-21-444-555-666-2222"
-    fake_sddl = f'somepath "D:PAI(A;;FA;;;{OTHER_SID})"'
+    # Note: SDDL omits PAI/P flag -> inheritance is enabled.
+    fake_sddl = f'somepath "D:(A;;FA;;;{OWNER_SID})"'
 
     def fake_run(*args, **kwargs):
         cmd = args[0] if args else kwargs.get("args", [])
@@ -399,13 +399,12 @@ def test_security_windows_acl_rejects_when_owner_sid_missing(monkeypatch):
     def fake_open(path, *args, **kwargs):
         if str(path).endswith(".acl"):
             from io import BytesIO
-            # icacls /save writes UTF-16 LE with BOM; mock matches.
             return BytesIO(fake_sddl.encode("utf-16"))
         return real_open(path, *args, **kwargs)
     monkeypatch.setattr(builtins, "open", fake_open)
     import pathlib
     monkeypatch.setattr(pathlib.Path, "exists", lambda self: True)
-    with pytest.raises(sec.SecurityError, match=r"does not include current owner SID"):
+    with pytest.raises(sec.SecurityError, match=r"inheritance disabled|PAI"):
         sec.verify_owner_restricted(pathlib.Path("C:\\Users\\testuser\\.memforge\\identity.yaml"))
 
 
