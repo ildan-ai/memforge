@@ -88,24 +88,60 @@ def check_fs_mode(path: Path, *, file_mode: int = 0o600, parent_mode: int = 0o70
 
 
 def write_secure_yaml(path: Path, data: dict, *, file_mode: int = 0o600, parent_mode: int = 0o700) -> None:
-    """Write YAML with 0600 file mode + 0700 parent. Used for identity files."""
+    """Write YAML with 0600 file mode + 0700 parent atomically.
+
+    Closes the TOCTOU window where the file would exist at default umask
+    between create and chmod: opens with O_CREAT|O_EXCL|file_mode on a
+    sibling tmp path, writes content, fsyncs, then atomically renames over
+    the target. Parent dir mode is enforced before the create so a hostile
+    parent cannot be substituted mid-write.
+    """
     path.parent.mkdir(parents=True, exist_ok=True)
     os.chmod(path.parent, parent_mode)
-    with open(path, "w", encoding="utf-8") as f:
-        yaml.safe_dump(data, f, sort_keys=False, default_flow_style=False)
-    os.chmod(path, file_mode)
+    tmp_path = path.with_suffix(path.suffix + f".tmp-{os.getpid()}-{secrets.token_hex(4)}")
+    fd = os.open(str(tmp_path), os.O_WRONLY | os.O_CREAT | os.O_EXCL, file_mode)
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as f:
+            yaml.safe_dump(data, f, sort_keys=False, default_flow_style=False)
+            f.flush()
+            os.fsync(f.fileno())
+        os.replace(tmp_path, path)
+    except Exception:
+        try:
+            os.unlink(tmp_path)
+        except OSError:
+            pass
+        raise
 
 
 def write_secure_bytes(path: Path, data: bytes, *, file_mode: int = 0o600, parent_mode: int = 0o700) -> None:
-    """Write bytes with 0600 file mode + 0700 parent. Used for recovery-secret."""
+    """Write bytes with 0600 file mode + 0700 parent atomically.
+
+    Same TOCTOU-closing pattern as `write_secure_yaml`: O_CREAT|O_EXCL on a
+    sibling tmp file, fsync, atomic rename. The previous implementation
+    used O_CREAT|O_TRUNC at the target directly, which created a brief
+    window where any concurrent reader would see the partial / truncated
+    state.
+    """
     path.parent.mkdir(parents=True, exist_ok=True)
     os.chmod(path.parent, parent_mode)
-    fd = os.open(str(path), os.O_WRONLY | os.O_CREAT | os.O_TRUNC, file_mode)
+    tmp_path = path.with_suffix(path.suffix + f".tmp-{os.getpid()}-{secrets.token_hex(4)}")
+    fd = os.open(str(tmp_path), os.O_WRONLY | os.O_CREAT | os.O_EXCL, file_mode)
     try:
         os.write(fd, data)
-    finally:
+        os.fsync(fd)
         os.close(fd)
-    os.chmod(path, file_mode)
+        os.replace(tmp_path, path)
+    except Exception:
+        try:
+            os.close(fd)
+        except OSError:
+            pass
+        try:
+            os.unlink(tmp_path)
+        except OSError:
+            pass
+        raise
 
 
 def load_operator_identity(path: Optional[Path] = None) -> dict:

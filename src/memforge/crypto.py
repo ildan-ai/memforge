@@ -16,6 +16,7 @@ import os
 import re
 import shutil
 import subprocess
+import unicodedata
 from typing import Any, Iterable, Optional
 
 
@@ -297,15 +298,40 @@ def gpg_gen_key_batch(*, name_real: str, name_email: str, expire: str = "0") -> 
     return short
 
 
+def _nfc_normalize(value: Any) -> Any:
+    """Recursively NFC-normalize every string in a JSON-shaped structure.
+
+    Closes the Unicode-normalization repudiation vector: two visually
+    identical inputs in different normalization forms (NFC vs NFD) would
+    otherwise produce different byte outputs from json.dumps and therefore
+    different signatures. We canonicalize to NFC before serialization so
+    the envelope is determined by visual identity, not codepoint sequence.
+    """
+    if isinstance(value, str):
+        return unicodedata.normalize("NFC", value)
+    if isinstance(value, dict):
+        return {_nfc_normalize(k): _nfc_normalize(v) for k, v in value.items()}
+    if isinstance(value, (list, tuple)):
+        return [_nfc_normalize(v) for v in value]
+    return value
+
+
 def canonical_envelope(fields: dict) -> bytes:
     """Serialize a dict deterministically for signing/verification.
 
     Spec §"Signed envelope scope (normative)" requires that the signature
     cover a canonical serialization of {memory_body, identity, sender_uid,
-    sequence_number, signing_time}. We use JSON with sorted keys + no
-    whitespace as the canonical form (UTF-8 encoded).
+    sequence_number, signing_time}. The canonical form is:
+    1. NFC-normalize every string (keys and values, recursively).
+    2. JSON with sorted keys + no whitespace + ensure_ascii=False.
+    3. UTF-8 encode.
+
+    Step 1 closes a repudiation vector where a sender could ship one
+    normalization form and later claim the verifier received a different
+    one.
     """
-    return json.dumps(fields, sort_keys=True, separators=(",", ":"), ensure_ascii=False).encode("utf-8")
+    normalized = _nfc_normalize(fields)
+    return json.dumps(normalized, sort_keys=True, separators=(",", ":"), ensure_ascii=False).encode("utf-8")
 
 
 def sha256_hex(data: bytes) -> str:

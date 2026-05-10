@@ -203,13 +203,26 @@ def is_nonce_seen(memory_root: Path, operator_uuid: str, nonce: str) -> bool:
 
 
 def record_seen_nonce(memory_root: Path, operator_uuid: str, nonce: str, *, expires_at: str) -> None:
-    """Append a nonce to the per-operator seen-set with its expiry. FS mode 0600."""
+    """Append a nonce to the per-operator seen-set + garbage-collect expired entries.
+
+    Closes the unbounded-seen-set DoS surfaced by both v0.5.1 panels. Per
+    spec §"Seen-nonce set bounding (SHOULD; operational risk)", receivers
+    SHOULD bound the seen-nonce set; we GC entries whose `expires_at` has
+    already passed (relative to current wall-clock + the default
+    backdating clock-skew window of 10 minutes, to stay safe for in-flight
+    writes whose signing_time is within the legitimate skew window).
+    """
     path = seen_nonce_path(memory_root, operator_uuid)
     data = {}
     if path.is_file():
         check_fs_mode(path)
         with open(path, "r", encoding="utf-8") as f:
             data = yaml.safe_load(f) or {}
-    data.setdefault("nonces", {})
-    data["nonces"][nonce] = {"expires_at": expires_at, "first_seen_at": now_iso()}
+    nonces = data.setdefault("nonces", {})
+    nonces[nonce] = {"expires_at": expires_at, "first_seen_at": now_iso()}
+    # GC: drop entries whose expires_at + 10 min skew has already passed.
+    cutoff = (datetime.now(timezone.utc) - timedelta(minutes=10)).isoformat().replace("+00:00", "Z")
+    expired = [n for n, meta in nonces.items() if meta.get("expires_at", "") < cutoff]
+    for n in expired:
+        del nonces[n]
     write_secure_yaml(path, data)

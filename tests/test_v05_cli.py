@@ -147,6 +147,29 @@ def test_canonical_envelope_distinguishes_values():
     assert a != b
 
 
+def test_canonical_envelope_nfc_normalizes_strings():
+    """v0.5.2: NFC normalization closes repudiation via Unicode form drift."""
+    # "café" in NFC (precomposed é) vs NFD (e + combining acute).
+    nfc = "café"
+    nfd = "café"
+    assert nfc != nfd  # different codepoint sequences
+    assert crypto.canonical_envelope({"v": nfc}) == crypto.canonical_envelope({"v": nfd})
+
+
+def test_canonical_envelope_nfc_normalizes_keys():
+    nfc_key = "café"
+    nfd_key = "café"
+    assert crypto.canonical_envelope({nfc_key: 1}) == crypto.canonical_envelope({nfd_key: 1})
+
+
+def test_canonical_envelope_nfc_normalizes_nested():
+    nfc = "café"
+    nfd = "café"
+    a = crypto.canonical_envelope({"outer": {"inner": [nfc, {"k": nfc}]}})
+    b = crypto.canonical_envelope({"outer": {"inner": [nfd, {"k": nfd}]}})
+    assert a == b
+
+
 def test_gpg_check_algo_accepted_passes():
     crypto.gpg_check_algo_accepted("gpg-rsa4096")
     crypto.gpg_check_algo_accepted("gpg-ed25519")
@@ -186,6 +209,63 @@ def test_revoke_body_requires_reason_length():
 def test_parse_revoke_commit_body_rejects_wrong_prefix():
     msg = "not-a-revoke-commit\n\nkey_id: AAA\n"
     assert revocation.parse_revoke_commit_body(msg) is None
+
+
+def test_write_secure_yaml_atomic_mode(tmp_path):
+    """v0.5.2: write_secure_yaml must create file at 0600 atomically, never at default umask."""
+    import stat as _stat
+
+    target = tmp_path / "subdir" / "secret.yaml"
+    identity.write_secure_yaml(target, {"k": "v"})
+    assert target.is_file()
+    assert _stat.S_IMODE(target.stat().st_mode) == 0o600
+    # Parent dir mode.
+    assert _stat.S_IMODE(target.parent.stat().st_mode) == 0o700
+    # No leftover tmp files.
+    leftovers = [p for p in target.parent.iterdir() if ".tmp-" in p.name]
+    assert not leftovers, f"leftover tmp files: {leftovers}"
+
+
+def test_write_secure_yaml_overwrite_preserves_mode(tmp_path):
+    """v0.5.2: re-writing an existing secure file must keep 0600 + leave no tmp."""
+    import stat as _stat
+
+    target = tmp_path / "secret.yaml"
+    identity.write_secure_yaml(target, {"v": 1})
+    identity.write_secure_yaml(target, {"v": 2})
+    assert _stat.S_IMODE(target.stat().st_mode) == 0o600
+    leftovers = [p for p in target.parent.iterdir() if ".tmp-" in p.name]
+    assert not leftovers
+
+
+def test_write_secure_bytes_atomic_mode(tmp_path):
+    """v0.5.2: write_secure_bytes follows the same atomic 0600 contract."""
+    import stat as _stat
+
+    target = tmp_path / "secret.bin"
+    identity.write_secure_bytes(target, b"\x00\x01\x02")
+    assert target.read_bytes() == b"\x00\x01\x02"
+    assert _stat.S_IMODE(target.stat().st_mode) == 0o600
+    leftovers = [p for p in target.parent.iterdir() if ".tmp-" in p.name]
+    assert not leftovers
+
+
+def test_record_seen_nonce_gcs_expired(tmp_path, monkeypatch):
+    """v0.5.2: record_seen_nonce GCs expired entries on every call."""
+    from datetime import datetime, timedelta, timezone
+
+    from memforge import agent_session
+
+    op_uuid = identity.generate_uuidv7()
+    memory_root = tmp_path
+    # Pre-seed with an expired nonce (expires_at deep in the past).
+    long_expired = (datetime.now(timezone.utc) - timedelta(days=30)).isoformat().replace("+00:00", "Z")
+    agent_session.record_seen_nonce(memory_root, op_uuid, "stale-nonce", expires_at=long_expired)
+    # Add a fresh nonce; the stale one should be GC'd in the same call.
+    fresh_expires = (datetime.now(timezone.utc) + timedelta(hours=1)).isoformat().replace("+00:00", "Z")
+    agent_session.record_seen_nonce(memory_root, op_uuid, "fresh-nonce", expires_at=fresh_expires)
+    assert agent_session.is_nonce_seen(memory_root, op_uuid, "fresh-nonce")
+    assert not agent_session.is_nonce_seen(memory_root, op_uuid, "stale-nonce"), "expired nonce should have been GC'd"
 
 
 # ---------- end-to-end happy path (requires gpg + writable HOME) ----------

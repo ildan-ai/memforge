@@ -10,6 +10,33 @@ The version number tracked here is the **package / tooling** version. The on-dis
 
 The Contributor License Agreement infrastructure is counsel-blocked; external pull requests are paused until the CLA flow lands.
 
+## [0.5.2] - 2026-05-10
+
+**Patch release.** Spec bump 0.5.1 -> 0.5.2. Closes 2 BLOCKERs + 1 MAJOR surfaced by the post-v0.5.1 retrospective code + spec panel pass (critic voice + threat-modeler voice on the new code surface; the panel scope skipped during the v0.5.1 first ship and run separately afterward).
+
+### Spec changes
+
+- New normative subsection at §"Signed envelope scope (normative)": **Canonical-form Unicode NFC normalization MUST on signed envelopes.** Closes the repudiation vector where two visually-identical inputs in different normalization forms (NFC vs NFD) would produce different signed envelopes and therefore different signatures, letting a sender repudiate a signature by claiming the verifier received the "other" form.
+- §"Seen-nonce set bounding" promoted from MAY to SHOULD with explicit garbage-collection contract: discard each nonce once its corresponding attestation's `expires_at + backdating_max_skew` (default 10 minutes) has passed. Implementations that do NOT bound the set are vulnerable to a disk + memory DoS and SHOULD warn the operator at startup.
+
+### Reference implementation changes
+
+- `memforge.crypto.canonical_envelope` now NFC-normalizes every string in the envelope (keys + values, recursively) before JSON serialization. Backward-compatible for inputs that were already in NFC form (the common case for ASCII + standard composed Unicode). Inputs in NFD form will produce different envelope bytes (and therefore different signatures) under v0.5.2 vs v0.5.1; this is intentional and closes the repudiation vector.
+- `memforge.identity.write_secure_yaml` + `write_secure_bytes` now use `O_CREAT|O_EXCL` on a sibling tmp path + `fsync` + atomic `os.replace` to close the TOCTOU window where the file would exist at default umask between create and chmod. Previously, a same-user concurrent reader could observe a file at the default umask permission for a brief window between `open(path, "w")` and `os.chmod(path, 0o600)`.
+- `memforge.agent_session.record_seen_nonce` now garbage-collects expired entries on every call, per the new SHOULD-bounding contract.
+
+### Pre-ship review
+
+This release ran the full release-rigor playbook the v0.5.1 retrospective surfaced as missing: architect-voice + critic-voice + threat-modeler-on-new-code-surface. Findings:
+
+- Critic (gemini-pro on spec delta): 1 MAJOR — seen-nonce set unbounded-DoS. Closed by promoting MAY to SHOULD with explicit GC contract in §"Seen-nonce set bounding".
+- Threat-modeler (gemini-pro on src/memforge/ code): 2 BLOCKERs (TOCTOU on file create in identity.py write_secure_yaml; Unicode normalization missing in crypto.py canonical_envelope) + 4 MAJORs. Both BLOCKERs closed in this release. 3 MAJORs deferred to v0.5.3 backlog (registry-layer cool-down enforcement, bounded git-log walk in revocation set, TOCTOU between mode-check and read). 1 MAJOR (unbounded seen-nonce set) was the consensus finding from critic + threat-modeler and is closed here.
+
+### Spec compatibility
+
+- v0.5.1 folders remain well-formed under v0.5.2 readers IF the envelope inputs were already in NFC form (ASCII + standard composed Unicode covers the common case). Inputs in NFD form produce different envelope bytes under v0.5.2 vs v0.5.1; a v0.5.1 signature over NFD content will NOT verify under v0.5.2. Operators with mixed-normalization-form historic content should re-sign affected memories via `memforge upgrade-v04-memories --apply` (the upgrade signs over the v0.5.2-canonical NFC form).
+- Filesystem atomicity changes are transparent: existing files at the target paths are replaced atomically; no operator action required.
+
 ## [0.5.1] - 2026-05-10
 
 **Patch release.** Spec bump 0.5.0 -> 0.5.1. Closes the v0.5.0 agent-session-attestation content-scope MAJOR + 3 MINORs in normative text and ships the reference CLI binaries (14 commands).
