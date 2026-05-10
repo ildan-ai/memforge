@@ -10,6 +10,51 @@ The version number tracked here is the **package / tooling** version. The on-dis
 
 The Contributor License Agreement infrastructure is counsel-blocked; external pull requests are paused until the CLA flow lands.
 
+## [0.5.1] - 2026-05-10
+
+**Patch release.** Spec bump 0.5.0 -> 0.5.1. Closes the v0.5.0 agent-session-attestation content-scope MAJOR + 3 MINORs in normative text and ships the reference CLI binaries (14 commands).
+
+### Added
+
+- New §"Agent session attestation content scope (v0.5.1+)" subsection. Closes the v0.5.0 MAJOR with normative `nonce` (replay defense), `expires_at` (default 24h; floor 15 min; ceiling 7 days), and `capability_scope` (explicit memory_roots + allowed_operations from {write, resolve, revoke, registry-edit, key-rotation, fresh-start}). Receiver-side enforcement is an 8-step normative checklist including write-signature verification against the attested `agent_pubkey` (closes the trust-boundary gap surfaced by the v0.5.1 light-mode architect pass).
+- Agent-session-id normative regex `^[a-z0-9]+-\d{4}-\d{2}-\d{2}-[a-z0-9]{8,16}$` in §"Frontmatter additions (v0.5.0+)". Closes the v0.5.0 MINOR on format guidance. Adapters MUST reject non-matching values on read (audit MAJOR) + refuse to mint non-matching on write.
+- New §"Cross-cutting fail-closed posture (v0.5.1+)" section. Closes the v0.5.0 MINOR on documentation. 29-item operator reference organized as hard fail-closed (HALT; 14 items), per-write fail-closed (reject specific write; 9 items), per-config fail-closed (refuse config; 2 items), soft fail-closed (warn + acknowledge; 4 items).
+- New §"Privacy considerations (v0.5.1+)" section. Closes the v0.5.0 MINOR on documentation. 7 boundary statements (operator-UUID linkability, signing-time linkability, agent-session-id leakage, sender-UID linkability, operator-name homograph + privacy, cross-store reference disclosure, receiver-side state-file leakage) + out-of-scope list.
+- New integrity invariants 23-25 covering agent-session attestation verification (including write-signature verification against attested agent_pubkey), capability-scope enforcement, and agent-session-id format.
+- Reference CLI: `memforge` top-level dispatcher with 14 subcommands.
+  - `memforge init-operator` — generate operator-UUID + register a GPG key.
+  - `memforge init-store` — bootstrap `.memforge/` in a memory-root + signed operator-registry.
+  - `memforge operator-registry {add|verify|remove|fresh-start}` — manage operator-registry.
+  - `memforge rotate-key` — cross-signed key rotation with 24h cool-down.
+  - `memforge revoke <key_id> --reason ...` — build a signed revoke commit body.
+  - `memforge revocation-snapshot` — emit a signed snapshot commit body.
+  - `memforge memories-by-key <key_id>` — list memories signed by a key.
+  - `memforge revoke-memories <key_id> --bulk` — mark memories under a revoked key as superseded.
+  - `memforge upgrade-v04-memories --apply` — add v0.5 identity+signature to v0.4 memories in-place.
+  - `memforge revoke-cache-refresh` — refresh the remote-fetch revocation cache (sparse/shallow mode).
+  - `memforge messaging-doctor` — run the v0.5.1 fail-closed checklist + report posture.
+  - `memforge recovery-init` — install ~/.memforge/recovery-secret.bin + anchor SHA256 in registry.
+  - `memforge recovery-backup-confirm` — acknowledge offline backup; unlocks v0.5+ writes.
+  - `memforge attest-agent` — issue a signed agent-session attestation.
+- New Python modules: `memforge.identity` (UUIDv7 + operator-identity file + agent-session-id format), `memforge.crypto` (GPG subprocess wrappers + canonical envelope), `memforge.registry` (operator-registry read/write/sign), `memforge.revocation` (revoke commit builder + revocation-set walker), `memforge.sender_sequence` (sender-uid + sender-sequence + signed checkpoints), `memforge.agent_session` (attestation build/save/load/verify + scope checks + seen-nonce set), `memforge.recovery` (recovery-secret install + SHA256 anchoring + backup acknowledgment).
+- 24 new tests in `tests/test_v05_cli.py` covering: dispatcher --help smoke + subcommand registration, UUIDv7 format, now_iso, agent-session-id format + minting + validation, identity parse, canonical envelope determinism, GPG algo denylist, sender-uid format, revoke body reason-length, and (gated on `MEMFORGE_TEST_GPG=1`) end-to-end happy-path round-trips for init-operator + init-store + revoke and attest-agent + scope checks against a sandboxed GPG keyring.
+
+### Changed
+
+- §"Known limitations" header bumped to v0.5.1; documents the 4 v0.5.0 residuals now closed in normative text. Residual MAJORs reduced from 5 to 4; MINORs reduced from 2 to 1.
+- §"Not in scope" header bumped to v0.5.1. Reference CLI moved from "deferred to v0.5.1" to "shipped in v0.5.1". Added two new deferrals: privacy-preserving cross-store unlinkability (v0.5.x / v0.6+); per-store operator-UUID derivation (v0.5.x).
+- §"Versioning" current spec version updated to 0.5.1. v0.5.1 entry added to §"Versioning history".
+
+### Spec compatibility
+
+- v0.5.0 folders remain well-formed under v0.5.1 readers.
+- v0.5.0 attestation files lacking v0.5.1 required content fields (`nonce`, `expires_at`, `capability_scope`) are accepted with a one-time MAJOR `v05_attestation_incomplete_content` per file until re-issued via the v0.5.1 reference CLI.
+- v0.4 folders continue to load as `(v0.4: unsigned)` read-only-untrusted; upgrade path via `memforge upgrade-v04-memories --apply`.
+
+### Pre-ship review
+
+A pre-ship architect pass caught one BLOCKER: receiver enforcement omitted normative verification that the write's `signature.value` validates against the attestation's `agent_pubkey`. Closed in the same session before tag.
+
 ## [0.5.0] - 2026-05-10
 
 **Minor release.** Spec bump 0.4.0 -> 0.5.0. Extends single-operator multi-agent format to multi-identity team-scale memory with cryptographic attribution and a real-time messaging substrate (WebSocket). Reference CLI binaries ship in v0.5.1.

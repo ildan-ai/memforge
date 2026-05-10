@@ -483,8 +483,10 @@ Adapters MUST refuse to accept a v0.5+ write whose `identity` does not resolve t
 
 ### Frontmatter additions (v0.5.0+)
 
-- **`identity`** (REQUIRED on v0.5+ writes). String. Format `<class>:<operator-uuid>[:<agent-session-id>]`. Examples: `operator:01HXY7Z8...` (operator write); `agent:01HXY7Z8...:cc-2026-05-10-aaaa` (agent write under that operator).
+- **`identity`** (REQUIRED on v0.5+ writes). String. Format `<class>:<operator-uuid>[:<agent-session-id>]`. Examples: `operator:01HXY7Z8...` (operator write); `agent:01HXY7Z8...:cc-2026-05-10-aaaa1234` (agent write under that operator).
 - **`signature`** (REQUIRED on v0.5+ writes). Object with three subfields: `algo` (v0.5.0: `gpg-rsa4096` or `gpg-ed25519`), `signing_time` (ISO-8601 UTC), `value` (base64 of detached signature bytes).
+
+**Agent-session-id format (MUST; v0.5.1+).** The `<agent-session-id>` slot of `identity` MUST match the regex `^[a-z0-9]+-\d{4}-\d{2}-\d{2}-[a-z0-9]{8,16}$`. Adapter prefix (`cc`, `cursor`, `aider`, `continue`, `windsurf`, etc.) is operator-facing and informational; date is the session start date (YYYY-MM-DD UTC); suffix is 8-16 lowercase base32 characters from a CSPRNG. Adapters MUST reject non-matching agent-session-ids on read (audit MAJOR `agent_session_id_format_invalid`) and refuse to mint non-matching values on write.
 
 `owner` is RETAINED in v0.5 frontmatter as advisory. v0.5 readers prefer `identity` for trust decisions; `owner` is informational.
 
@@ -508,6 +510,62 @@ v0.4 memories loaded by v0.5 readers are treated as **read-only-untrusted**. The
 Resolve commits violating both paths are Tier 2 BLOCKER (audit walks the diff, identifies any v0.4-shaped unsigned member in the resolved group, verifies upgrade-or-exclude).
 
 Bulk upgrade tool: `memforge upgrade-v04-memories` (operator-discretion; documented operator-experience break during transition). Audit emits a one-time MAJOR per unsigned v0.4 memory loaded under v0.5 until upgrade or explicit exclusion.
+
+### Agent session attestation content scope (v0.5.1+)
+
+(Closes the v0.5.0 MAJOR on agent session attestation content scope.)
+
+When an operator launches an agent session (CC, Cursor, Aider, etc.), the operator's adapter MUST create a session-attestation record signed by the operator's current long-lived key. The record is persisted to `<memory-root>/.memforge/agent-sessions/<agent-session-id>.yaml` (file mode 0600, parent 0700; adapters MUST verify modes + ownership at startup; reject on mismatch / fail-closed).
+
+**Record format:**
+
+```yaml
+agent_session_id: cc-2026-05-10-aaaa1234
+operator_uuid: <UUIDv7>
+agent_pubkey: <base64-of-agent-ephemeral-pubkey-material>
+agent_pubkey_algo: gpg-rsa4096 | gpg-ed25519
+nonce: <32-byte hex from CSPRNG>
+issued_at: <ISO-8601 UTC>
+expires_at: <ISO-8601 UTC>
+capability_scope:
+  memory_roots:
+    - <absolute path>
+  allowed_operations:
+    - write
+    - resolve
+operator_signature:
+  algo: gpg-rsa4096 | gpg-ed25519
+  signing_time: <ISO-8601 UTC>
+  value: <base64 over canonical {agent_session_id, operator_uuid, agent_pubkey, agent_pubkey_algo, nonce, issued_at, expires_at, capability_scope}>
+```
+
+**Required content (normative).**
+
+- **`nonce`**: 32 bytes from a CSPRNG, hex-encoded. Binds the attestation to this specific issuance. Receivers maintain a seen-nonce set per `operator_uuid` and reject any attestation whose nonce is already present. Closes the replay attack where an attacker captures a stale attestation and binds it to a new agent ephemeral keypair.
+- **`expires_at`**: `issued_at + identity.agent_session_max_lifetime_hours` (default **24 hours**; configurable in `.memforge/config.yaml`; floor 15 minutes; ceiling 7 days). Receivers MUST reject any agent-signed write whose `signature.signing_time > attestation.expires_at`. Audit MAJOR `agent_session_attestation_expired`.
+- **`capability_scope.memory_roots`**: explicit absolute paths the agent is authorized to write under. Receivers MUST reject agent writes touching paths outside this scope. Audit BLOCKER `agent_session_out_of_scope_write`.
+- **`capability_scope.allowed_operations`**: explicit list from `{write, resolve, revoke, registry-edit, key-rotation, fresh-start}`. Default if absent: `[write]`. Operations beyond `write` under an agent identity require explicit operator authorization at attestation issuance. Adapters SHOULD warn loudly when issuing an attestation that grants any operation beyond `write` and SHOULD require operator confirmation for `revoke` / `registry-edit` / `key-rotation` / `fresh-start`.
+
+**Receiver-side enforcement (normative; MUST).**
+
+On first observation of an agent-signed write, the receiver:
+
+1. Reads the attestation file at `<memory-root>/.memforge/agent-sessions/<agent-session-id>.yaml`.
+2. Verifies the file's filesystem mode + ownership.
+3. Verifies `operator_signature` on the attestation record against the operator's current key in the operator-registry (subject to the cross-signed rotation chain + signing-time-aware verification + cool-down rules in §"Cryptographic attribution"). This binds the agent pubkey + capability_scope + nonce + expiry to a specific operator at a specific time.
+4. Verifies `nonce` is not in the seen-nonce set for `operator_uuid`; adds to seen-nonce set on success.
+5. Verifies the write's `signature.signing_time ∈ [issued_at, expires_at]`.
+6. **Verifies the write's `signature.value` against the `agent_pubkey` field from the attestation, using `agent_pubkey_algo`, over the canonical envelope `{memory_body, identity, sender_uid, sequence_number, signing_time}` per §"Signed envelope scope (normative)".** This is the cryptographic anchor that binds the write to the attested agent key; without it, an attacker who forges or replays an `identity` frontmatter value could impersonate the agent. The verification key MUST be drawn from the attestation's `agent_pubkey` (NOT from the operator-registry), because agent keys are ephemeral and never appear in the registry.
+7. Verifies the write's path is within `capability_scope.memory_roots`.
+8. Verifies the operation (write / resolve / etc.) is in `capability_scope.allowed_operations`.
+
+Any failure → reject write + emit fail-closed audit event (MAJOR for expired / out-of-scope; BLOCKER for nonce-replay / bad signature on attestation OR on write / wrong-scope-operation). On step 4 nonce check, the receiver MUST persist the seen-nonce set across restarts; loss of the set on disk corruption falls under the receiver-state HALT rule.
+
+**Seen-nonce set bounding (MAY substrate detail).** Receivers MAY bound the seen-nonce set to `expires_at + clock-skew window` for each (operator-uuid, agent-session-id) pair. Expired nonces fall out of the active set; the receiver re-evaluates against the `expires_at` rule on subsequent observations.
+
+**Capability-scope defaults via reference CLI (operator-facing).** When an operator launches an agent via `memforge attest-agent` (v0.5.1 reference CLI), the default attestation issues with `capability_scope.memory_roots: [<cwd-resolved memory-root>]` + `capability_scope.allowed_operations: [write, resolve]`. Operators who want broader scope pass `--capability revoke`, `--capability registry-edit`, etc. at attestation issuance. Adapters that bypass the CLI (programmatic embedding) MUST set capability_scope explicitly; absent fields are NOT defaulted by receivers (receivers reject attestations missing required scope fields).
+
+**v0.5.0 → v0.5.1 transition posture.** v0.5.0 spec mandated that agent identities have an attestation record but did not specify its content scope. v0.5.0 attestation files that lack v0.5.1 required fields (`nonce`, `expires_at`, `capability_scope`) are accepted by v0.5.1 readers with a one-time MAJOR `v05_attestation_incomplete_content` per file until the attestation is re-issued via the v0.5.1 reference CLI. Subsequent attestations for the same agent-session-id under v0.5.1 MUST conform to the full content scope.
 
 ## Cryptographic attribution (v0.5.0+)
 
@@ -814,26 +872,99 @@ Operator-facing boundary statements collected for v0.5.0 deployment:
 10. **Receiver clock manipulation.** The clock-skew guard depends on the receiver's local wall-clock. Adapters SHOULD warn loudly on startup if they cannot verify a recent successful NTP sync (within the last 24 hours). High-security deployments SHOULD use signed NTP sources (NTS) or equivalent; this is operator-side hardening outside the format.
 11. **Accepted-algo denylist.** The `identity.required_algos` config key is operator-set. Adapters MUST refuse to use any algorithm on a built-in known-bad denylist (currently includes plaintext, MD5, SHA-1, RSA-key-size < 3072) regardless of operator config. Spec maintains the denylist; v0.5.x can extend.
 
-## Known limitations (v0.5.0)
+## Cross-cutting fail-closed posture (v0.5.1+)
 
-**v0.5.0 ships with no BLOCKER-class known limitations.** Two BLOCKER-class issues that were originally documented as v0.5.0.1 patch targets (receiver-state silent-rollback window; remote-fetch unsigned revocation events) have been closed in v0.5.0 normative text:
+(Closes the v0.5.0 MINOR on cross-cutting fail-closed posture documentation.)
 
-- **Receiver-state mandate** at §"Receiver state (MUST)" — closes the silent-rollback-between-checkpoints window.
-- **Revocation commit signature mandate + sparse-checkout TOFU + fast-forward-only** at §"Revocation events as git commits" + §"Sparse-checkout / shallow-clone fallback verification mode" — closes remote-fetch unsigned-revocation acceptance.
+The v0.5.0 / v0.5.1 normative text mandates fail-closed behavior on dozens of distinct failure modes (signature invalid, registry unverifiable, receiver state corrupted, FS mode relaxed, etc.). This section gathers the fail-closed posture as a single operator-facing reference.
+
+**Hard fail-closed (adapter HALTS; refuses to load v0.5+ memories).**
+
+1. Operator-registry signature invalid or registry file corrupted.
+2. Receiver-state file corrupted, missing-with-prior-anchor, or shows impossible regression.
+3. `~/.memforge/operator-identity.yaml` FS mode relaxed (not 0600 / parent not 0700) OR ownership mismatch.
+4. `~/.memforge/recovery-secret.bin` FS mode relaxed OR ownership mismatch OR SHA256 content drift from the registry-anchored hash.
+5. Recovery-secret backup procedure not acknowledged (`recovery.acknowledged_backup_procedure` not set).
+6. Sender-sequence file FS mode relaxed OR ownership mismatch.
+7. Agent-session attestation file FS mode relaxed OR ownership mismatch.
+8. WebSocket adapter configured with non-TLS `ws://` URL (except localhost-only with explicit env var).
+9. WebSocket adapter configured without per-operator strong authentication (mTLS or per-operator bearer tokens).
+10. Sparse-checkout / shallow-clone fallback fetch fails OR non-fast-forward divergence detected.
+11. Local queue exceeds `messaging.max_local_queue_disk_space_mb`.
+12. Sequence number overflow on sender side.
+13. Unsigned revocation commit observed (either local clone OR remote fetch).
+14. Wrong-prefix commit modifying revocation state.
+
+**Per-write fail-closed (adapter rejects the specific write; other writes continue).**
+
+15. Signature invalid OR algo not on accepted-algo list.
+16. `signing_time` outside clock-skew window relative to `first_seen_at`.
+17. Sequence ≤ highest-seen-sequence for the (sender-uid, operator-uuid) pair.
+18. Sender-uid format invalid.
+19. Agent-session attestation expired OR out-of-scope path OR out-of-scope operation.
+20. Agent-session nonce already in seen-nonce set (replay).
+21. Key in 24-hour rotation cool-down window.
+22. Key revoked at `signing_time` per the revocation set.
+23. v0.4 memory pulled into a v0.5 resolve commit without upgrade-or-exclude.
+
+**Per-config fail-closed (adapter refuses to use the configuration; surfaces to operator).**
+
+24. Algorithm on the built-in known-bad denylist (plaintext, MD5, SHA-1, RSA < 3072) regardless of operator config.
+25. `identity.agent_session_max_lifetime_hours` configured below 15 minutes OR above 7 days.
+
+**Soft fail-closed (adapter warns; operator MAY acknowledge to suppress).**
+
+26. NTP sync not verifiable within last 24 hours (advisory; high-security deployments SHOULD reject).
+27. Software-only recovery-secret (suppressible via `recovery.acknowledged_software_only: true`).
+28. Multi-server WebSocket deployment (suppressible via `MEMFORGE_ACKNOWLEDGE_SINGLE_SERVER=1`).
+29. Sparse-checkout / shallow-clone mode (advisory banner; not a security gap given the v0.5.0 TOFU + fast-forward + signature contract).
+
+The discipline: every failure mode either lands an operator action (configure / rotate / investigate) or fails closed. There is no degraded-mode read of v0.5+ memories. The reference adapter SHOULD log every fail-closed event with the numbered category above plus the specific message text for operator triage.
+
+## Privacy considerations (v0.5.1+)
+
+(Closes the v0.5.0 MINOR on privacy considerations subsection.)
+
+The v0.5.0 / v0.5.1 cryptographic-attribution surface introduces operator-bound metadata into every memory file: `identity` (operator-UUID + optional agent-session-id), `signature.signing_time`, and via the messaging adapter, `sender_uid`. This section catalogs the privacy boundary statements operators should understand before deploying in adversarial or regulated environments.
+
+**Operator-UUID linkability.** The operator-UUID is stable across all stores an operator participates in. Any third party with read access to multiple stores can link them by operator-UUID. v0.5.1 does NOT support privacy-preserving cross-store unlinkability (Schnorr / BBS-like signature schemes that produce different signatures per store). High-privacy deployments SHOULD use one operator-UUID per logical identity context (work-identity, side-project-identity, etc.) at install time; v0.5.x considers per-store operator-UUID derivation.
+
+**Signing-time linkability.** Every v0.5+ memory carries an ISO-8601 UTC `signing_time` precise to the second. An attacker with read access can build a timeline of when each operator wrote each memory. v0.5.1 does NOT support time-bucketing or signing-time obfuscation. Operators handling memories that should not reveal write-time (e.g., legal strategy, transaction planning) SHOULD either (a) batch-write memories in a single signing session to obscure individual write times, or (b) store such memories outside MemForge entirely.
+
+**Agent-session-id leakage.** The `agent-session-id` reveals which adapter (CC, Cursor, etc.) the operator was using when the memory was written and the session start date. This is intentional operator-facing observability. Privacy-sensitive operators SHOULD prefer operator-direct writes (no agent prefix in identity) when the adapter choice itself is sensitive.
+
+**Sender-UID linkability.** The `sender_uid` (`<operator-uuid>:<32-byte-hex>`) links every WebSocket-routed write back to the operator-UUID. Same linkability as identity above. Receivers SHOULD treat sender-UIDs as PII-equivalent in any logging or metrics surface.
+
+**Operator-name homograph defense interacts with privacy.** The advisory `operator_name` field is informational + susceptible to homograph attacks (§"Security considerations" item 9). The operator-UUID is authoritative. Privacy: the operator-name appears in operator-registry and is therefore visible to all readers of the registry. Operators who want pseudonymous participation SHOULD set `operator_name` to a pseudonym at `init-operator` time.
+
+**Cross-store reference disclosure.** A memory in store A that uses `MEMFORGE_STORE = <operator-b-uuid>:<store-name>` reveals the existence of operator-B's named store to anyone reading store A. v0.5.1 does NOT support encrypted cross-store references. Operators SHOULD use cross-store references only when the existence of the cross-store relationship is itself non-sensitive.
+
+**Receiver-side state files.** Receiver-state files (`<memory-root>/.memforge/receiver-state/<sender-uid>.yaml`) accumulate per-sender first-seen and last-seen timestamps. An attacker with read access to receiver-state learns when each sender first contacted this receiver and most-recent activity. Receiver-state files SHOULD inherit the same containment posture as the memory-root.
+
+**Out-of-scope for v0.5.1.** Zero-knowledge proofs of authority, blind signature schemes, group signatures, anonymous credentials, mix-network message routing, time-bucketed timestamps. v0.5.x / v0.6+ may add some of these; v0.5.1 ships an honest-operator pseudonymity model where operator-UUIDs are pseudonyms that may be linked across stores by anyone with read access to multiple stores.
+
+## Known limitations (v0.5.1)
+
+**v0.5.1 ships with no BLOCKER-class known limitations.** v0.5.1 closes the following v0.5.0 residuals in normative text:
+
+- **Agent session attestation content scope** (was v0.5.0 MAJOR) — closed at §"Agent session attestation content scope (v0.5.1+)" with mandatory nonce + expires_at + capability_scope content.
+- **Agent-session-id format guidance** (was v0.5.0 MINOR) — closed at §"Frontmatter additions (v0.5.0+)" with normative regex.
+- **Cross-cutting fail-closed posture documentation** (was v0.5.0 MINOR) — closed at §"Cross-cutting fail-closed posture (v0.5.1+)" with 29-item operator reference.
+- **Privacy considerations subsection** (was v0.5.0 MINOR) — closed at §"Privacy considerations (v0.5.1+)" with 7 boundary statements + out-of-scope list.
+
+**Reference CLI + operator-facing documentation gaps closed in v0.5.1:**
+
+- `memforge init-operator`, `init-store`, `operator-registry add|verify|remove|fresh-start`, `rotate-key`, `revoke`, `revocation-snapshot`, `memories-by-key`, `revoke-memories`, `upgrade-v04-memories`, `revoke-cache-refresh`, `messaging-doctor`, `recovery-init`, `recovery-backup-confirm`, `attest-agent` CLI commands ship in v0.5.1.
+- Hardware-key install paths (`recovery-init --hardware`) remain v0.5.x scope.
 
 **Residual issues tracked for v0.5.x patches (non-BLOCKER class):**
 
-- 5 MAJORs (checkpoint signer ambiguity for agent ephemeral keys, revocation snapshot ancestor requirement + canonical hash, sender/receiver posture nuances, cache TTL semantics for high-stakes deployments, cross-cutting fail-closed documentation).
-- 2 MINORs (cross-cutting fail-closed posture documentation, TTL semantics for revocation cache).
+- 4 MAJORs (checkpoint signer ambiguity for agent ephemeral keys, revocation snapshot ancestor requirement + canonical hash, sender/receiver posture nuances, cache TTL semantics for high-stakes deployments).
+- 1 MINOR (TTL semantics for revocation cache).
 
 Full list at `v0.5.0-known-limitations.md` (sibling file to this spec).
 
-**Reference CLI + operator-facing documentation gaps in v0.5.0 (ship as v0.5.1 patches):**
-
-- `memforge init-operator`, `init-store`, `operator-registry add|verify|remove`, `memories-by-key`, `revoke-memories --bulk` CLI commands ship in v0.5.1.
-- Hardware-key install paths (`recovery-init --hardware`) ship in v0.5.x.
-
-The v0.5.0 spec is shippable as production-ready; the residual MAJORs are refinements, not security gaps.
+The v0.5.1 spec is shippable as production-ready with reference CLI; the residual MAJORs are refinements, not security gaps.
 
 ## Integrity invariants
 
@@ -861,8 +992,11 @@ A MemForge folder is well-formed if, and only if:
 20. (v0.5.0+) Sender-sequence files at `<memory-root>/.memforge/sender-sequence/<sender-uid>.yaml` MUST be filesystem-mode 0600 (parent 0700). `current_sequence` MUST be uint64 monotonic per sender. Signed checkpoints MUST publish every 100 sequences OR 24 hours. Receiver MUST reject `sequence < highest-checkpoint-sequence` per sender.
 21. (v0.5.0+) `~/.memforge/operator-identity.yaml` + `~/.memforge/recovery-secret.bin` MUST be filesystem-mode 0600; parent directory 0700; ownership (`stat()` uid) MUST match the effective uid of the adapter process. Adapters MUST verify at startup; fail-closed on mismatch.
 22. (v0.5.0+) Revocation events MUST land as commits with prefix `memforge: revoke <key_id>`. Wrong-prefix commits modifying revocation state are Tier 2 BLOCKER. Snapshot commits use prefix `memforge: revocation-snapshot <hash>`.
+23. (v0.5.1+) Agent-signed writes MUST resolve to a valid session-attestation file at `<memory-root>/.memforge/agent-sessions/<agent-session-id>.yaml` whose `operator_signature` verifies against the operator-registry, whose `nonce` is unique in the per-receiver seen-nonce set, whose `signing_time` is within `[issued_at, expires_at]`, AND whose `signature.value` on the WRITE itself verifies against the attestation's `agent_pubkey` (using `agent_pubkey_algo`) over the canonical envelope `{memory_body, identity, sender_uid, sequence_number, signing_time}` per §"Signed envelope scope (normative)". The verification key for the write MUST come from the attestation, NOT the operator-registry (agent keys are ephemeral and never registry-listed). Failure: BLOCKER (nonce-replay / bad attestation signature / bad write signature) or MAJOR (expired / out-of-window).
+24. (v0.5.1+) Agent-signed writes MUST land at paths within `attestation.capability_scope.memory_roots` and the operation MUST be in `attestation.capability_scope.allowed_operations`. Out-of-scope path → BLOCKER `agent_session_out_of_scope_write`; out-of-scope operation → BLOCKER `agent_session_out_of_scope_operation`.
+25. (v0.5.1+) The `<agent-session-id>` portion of `identity` MUST match the regex `^[a-z0-9]+-\d{4}-\d{2}-\d{2}-[a-z0-9]{8,16}$`. Non-matching agent-session-ids are rejected on read with audit MAJOR `agent_session_id_format_invalid`.
 
-The `tools/memory-audit` script verifies these invariants plus health heuristics. v0.4.0+ adds the Tier 1 / Tier 2 split documented in §"Multi-agent concurrency". v0.5.0+ adds the multi-identity + cryptographic-attribution + key-lifecycle invariants documented in §"Multi-identity primitives" + §"Cryptographic attribution" + §"Operator identity + cross-store references" + §"Messaging adapter contract" + §"Key lifecycle + revocation".
+The `tools/memory-audit` script verifies these invariants plus health heuristics. v0.4.0+ adds the Tier 1 / Tier 2 split documented in §"Multi-agent concurrency". v0.5.0+ adds the multi-identity + cryptographic-attribution + key-lifecycle invariants documented in §"Multi-identity primitives" + §"Cryptographic attribution" + §"Operator identity + cross-store references" + §"Messaging adapter contract" + §"Key lifecycle + revocation". v0.5.1+ adds agent-session attestation content scope + format guidance + cross-cutting fail-closed posture + privacy considerations.
 
 ## Cross-folder references
 
@@ -874,7 +1008,7 @@ The `references_global` and `referenced_by_global` fields support cross-folder r
 
 ## Versioning
 
-**Current spec version**: 0.5.0.
+**Current spec version**: 0.5.1.
 
 The spec version lives in `spec/VERSION`. Breaking changes bump per semantic versioning applied to spec semantics:
 
@@ -882,7 +1016,7 @@ The spec version lives in `spec/VERSION`. Breaking changes bump per semantic ver
 - **Minor**: new optional fields, new types, new conventions that existing folders remain compatible with.
 - **Patch**: documentation or wording changes with no behavioral effect.
 
-v0.3.0 was a minor bump (new optional fields + rollup-subfolder formalization). v0.4.0 was a major bump: required-field set expanded, byte-match CI tightened, multi-agent concurrency surface added. v0.5.0 is a minor bump: v0.4 folders remain well-formed (the v0.5 frontmatter additions `identity` + `signature` are REQUIRED on v0.5+ writes but optional in v0.4 frontmatter). v0.4 memories load under v0.5 readers as `(v0.4: unsigned)` read-only-untrusted; mixed-deployment posture in §"Multi-identity primitives".
+v0.3.0 was a minor bump (new optional fields + rollup-subfolder formalization). v0.4.0 was a major bump: required-field set expanded, byte-match CI tightened, multi-agent concurrency surface added. v0.5.0 was a minor bump: v0.4 folders remain well-formed (the v0.5 frontmatter additions `identity` + `signature` are REQUIRED on v0.5+ writes but optional in v0.4 frontmatter). v0.4 memories load under v0.5 readers as `(v0.4: unsigned)` read-only-untrusted; mixed-deployment posture in §"Multi-identity primitives". v0.5.1 is a patch bump: closes the v0.5.0 agent-session-attestation content-scope MAJOR + 3 MINORs (agent-session-id format guidance, cross-cutting fail-closed posture, privacy considerations) and ships the reference CLI binaries; v0.5.0 folders remain well-formed under v0.5.1 readers.
 
 Adapters and tools SHOULD declare which spec version they target.
 
@@ -894,7 +1028,7 @@ The `sensitivity` and `access` frontmatter fields exist to let adapters make con
 
 Adapters MAY add encryption layers if they target a multi-developer or shared-workspace scenario, but the core format assumes plaintext-at-rest is acceptable for the content the format is designed to hold.
 
-## Not in scope for v0.5.0
+## Not in scope for v0.5.1
 
 - Specific RBAC enforcement (adapter responsibility, not spec).
 - Encryption protocols (adapter responsibility).
@@ -922,7 +1056,9 @@ Adapters MAY add encryption layers if they target a multi-developer or shared-wo
 - **WebSocket multiplexing.** Per OpenAI WebSocket Mode constraints, one connection per sender-uid in v0.5.0.
 - **Cross-store WebSocket federation** (operator A's store visible to operator B's WebSocket subscribers). v0.5.x scope.
 - **Server-signed receipt times.** v0.5.x consideration for the WebSocket path; v0.5.0 ships with receiver-side `first_seen_at` clock-skew guard.
-- **Reference CLI binaries** (`memforge init-operator`, `init-store`, `operator-registry`, `revoke`, `memories-by-key`, etc.). v0.5.1 patch release scope; v0.5.0 spec-only release documents the contract.
+- ~~**Reference CLI binaries.**~~ Shipped in v0.5.1.
+- **Privacy-preserving cross-store unlinkability** (Schnorr / BBS-like signatures). v0.5.x / v0.6+ scope; v0.5.1 ships honest-operator pseudonymity (per §"Privacy considerations").
+- **Per-store operator-UUID derivation** for privacy-sensitive multi-store deployments. v0.5.x scope; v0.5.1 ships one stable operator-UUID per operator.
 
 ## Versioning history
 
@@ -931,3 +1067,4 @@ Adapters MAY add encryption layers if they target a multi-developer or shared-wo
 - v0.3.0 — schema expansion (uid, tier, tags, owner, status, last_reviewed, etc.); rollup-subfolder formalization; access labels; cross-folder references; tag taxonomy.
 - v0.4.0 — major bump: `uid`, `tier`, `tags`, `owner`, `status`, `created` required (was optional in v0.3.x). v0.3.x files load in degraded mode. Reader contract tightened for byte-match CI on generated `MEMORY.md`. New §"Multi-agent concurrency" section adds five frontmatter keys (`decision_topic`, `replaces`, `superseded_by`, `topic_aliases`, `ever_multi_member`), a snooze record (`.memforge/snoozes/<topic>.yaml`), a config file (`.memforge/config.yaml`), the resolve operation contract, the canonical reader-side competing-claim block, and a layered Tier 1 + Tier 2 audit rule set. Status enumeration is now strictly enforced (BLOCKER on any value outside the six listed). Sensitivity enforcement (`§"Sensitivity enforcement"`) adds three default-on, operator-disable-able checks (export-tier gate, DLP label/content cross-check, conformance fixtures) with a hard floor at `privileged`. Closes the v0.3.x §"Not in scope" deferral on multi-user concurrency.
 - v0.5.0 — minor bump: extends single-operator multi-agent format to multi-identity team-scale memory with cryptographic attribution and a real-time messaging substrate. Eight new sections: §"v0.5.0 surface map", §"Multi-identity primitives", §"Cryptographic attribution", §"Operator identity + cross-store references", §"Messaging adapter contract" (with subsections including the normative §"Receiver state", §"Connection security" mandating wss:// + per-operator strong auth, and circuit-breaker), §"Key lifecycle + revocation" (with mandatory cool-down on key rotation closing the rotation-as-privilege-escalation attack), §"Security considerations" (eleven enumerated boundary statements), §"Known limitations". New REQUIRED v0.5+ frontmatter: `identity` + `signature` (v0.4 frontmatter remains valid; v0.5 readers tag unsigned v0.4 memories as read-only-untrusted). WebSocket locked as v0.5.0 messaging substrate (OpenAI Responses API Feb 23 2026 launch alignment); multi-server hard-stop for v0.5.0. Sender-uid format `<operator-uuid>:<32-byte-hex>` mandatory; sender-sequence + signed checkpoints every 100 sequences or 24 hours. Signing-time-aware revocation verification + `first_seen_at` clock-skew guard (default ±10 min) close the coordinated-backdate attack class. `revoked_at` clock-skew guard closes the immortal-revocation attack. Recovery-secret filesystem mode (0600/0700) + uid-ownership check + SHA256 content-integrity check anchored in the signed operator-registry + mandatory backup acknowledgment; persistent startup WARN until hardware-backed install. Sparse-checkout / shallow-clone fallback uses TOFU + fast-forward-only + signature verification on revocation commits. Reference CLI binaries (`memforge init-operator`, `operator-registry`, `revoke-memories`, etc.) ship in v0.5.1. v0.4 folders remain well-formed under v0.5 readers. v0.5.0 ships with no BLOCKER-class known limitations; residual MAJORs + MINORs documented at `v0.5.0-known-limitations.md`.
+- v0.5.1 — patch bump: closes the v0.5.0 agent-session-attestation content-scope MAJOR with normative `nonce` + `expires_at` + `capability_scope` content (§"Agent session attestation content scope (v0.5.1+)") and closes 3 v0.5.0 MINORs: agent-session-id format regex (in §"Frontmatter additions (v0.5.0+)"); cross-cutting fail-closed posture documentation as a single 29-item operator reference (§"Cross-cutting fail-closed posture (v0.5.1+)"); privacy considerations subsection with 7 boundary statements + out-of-scope list (§"Privacy considerations (v0.5.1+)"). Reference CLI ships: `memforge init-operator`, `init-store`, `operator-registry add|verify|remove|fresh-start`, `rotate-key`, `revoke`, `revocation-snapshot`, `memories-by-key`, `revoke-memories`, `upgrade-v04-memories`, `revoke-cache-refresh`, `messaging-doctor`, `recovery-init`, `recovery-backup-confirm`, `attest-agent`. New integrity invariants 23-25 (agent-session attestation verification, capability-scope enforcement, agent-session-id format). v0.5.0 folders remain well-formed under v0.5.1 readers; v0.5.0 attestation files lacking v0.5.1 required content fields are accepted with one-time MAJOR `v05_attestation_incomplete_content` per file until re-issued via the v0.5.1 reference CLI.

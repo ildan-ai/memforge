@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "ildan-memforge"
-version = "0.5.0"
+version = "0.5.1"
 description = "MemForge: portable, agent-neutral persistent memory for coding agents (ILDAN)."
 readme = "README.md"
 license = { text = "Apache-2.0" }
@@ -31,6 +31,7 @@ Homepage = "https://github.com/ildan-ai/memforge"
 Issues = "https://github.com/ildan-ai/memforge/issues"
 
 [project.scripts]
+memforge = "memforge.cli._dispatch:main"
 memory-audit = "memforge.cli.audit:main"
 memory-audit-deep = "memforge.cli.audit_deep:main"
 memory-promote = "memforge.cli.promote:main"
