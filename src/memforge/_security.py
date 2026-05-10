@@ -299,6 +299,7 @@ def _windows_current_user_sid() -> str:
     proc = subprocess.run(
         [
             "powershell", "-NoProfile", "-Command",
+            "Import-Module Microsoft.PowerShell.Security -ErrorAction SilentlyContinue; "
             "[System.Security.Principal.WindowsIdentity]::GetCurrent().User.Value",
         ],
         check=True,
@@ -330,8 +331,13 @@ def _windows_verify(path: Path) -> None:
     2. Reject if any SID is in the forbidden-SIDs denylist.
     3. Reject if the current user's SID is not present (no ACE for owner).
     """
+    # Explicitly import the Security module: PowerShell Core (pwsh) on
+    # GitHub-hosted Windows runners has restricted auto-loading and would
+    # otherwise emit `CouldNotAutoloadMatchingModule` for Get-Acl.
+    # Windows PowerShell (5.x) and Core both honor Import-Module.
     ps_cmd = (
         f"$ErrorActionPreference='Stop'; "
+        f"Import-Module Microsoft.PowerShell.Security -ErrorAction SilentlyContinue; "
         f"(Get-Acl -Path '{path}').Access | ForEach-Object {{ "
         f"$_.IdentityReference.Translate([System.Security.Principal.SecurityIdentifier]).Value "
         f"}}"
