@@ -299,7 +299,7 @@ def _windows_current_user_sid() -> str:
     proc = subprocess.run(
         [
             "powershell", "-NoProfile", "-Command",
-            "Import-Module Microsoft.PowerShell.Security -ErrorAction SilentlyContinue; "
+            "Import-Module Microsoft.PowerShell.Security *> $null; "
             "[System.Security.Principal.WindowsIdentity]::GetCurrent().User.Value",
         ],
         check=True,
@@ -334,10 +334,15 @@ def _windows_verify(path: Path) -> None:
     # Explicitly import the Security module: PowerShell Core (pwsh) on
     # GitHub-hosted Windows runners has restricted auto-loading and would
     # otherwise emit `CouldNotAutoloadMatchingModule` for Get-Acl.
-    # Windows PowerShell (5.x) and Core both honor Import-Module.
+    # Redirect ALL output streams from the import to null so that
+    # non-terminating warnings (e.g. type-data duplicate-member
+    # warnings on PS Core when the type data is already loaded by the
+    # host runtime) do not get promoted to terminating errors by the
+    # subsequent `$ErrorActionPreference='Stop'`. Windows PowerShell 5.x
+    # is a no-op when the module is already loaded.
     ps_cmd = (
+        f"Import-Module Microsoft.PowerShell.Security *> $null; "
         f"$ErrorActionPreference='Stop'; "
-        f"Import-Module Microsoft.PowerShell.Security -ErrorAction SilentlyContinue; "
         f"(Get-Acl -Path '{path}').Access | ForEach-Object {{ "
         f"$_.IdentityReference.Translate([System.Security.Principal.SecurityIdentifier]).Value "
         f"}}"
