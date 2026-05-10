@@ -319,8 +319,9 @@ def test_security_windows_acl_rejects_forbidden_sid(monkeypatch):
     real_open = builtins.open
     def fake_open(path, *args, **kwargs):
         if str(path).endswith(".acl"):
-            from io import StringIO
-            return StringIO(fake_sddl)
+            from io import BytesIO
+            # icacls /save writes UTF-16 LE with BOM; mock matches.
+            return BytesIO(fake_sddl.encode("utf-16"))
         return real_open(path, *args, **kwargs)
     monkeypatch.setattr(builtins, "open", fake_open)
     import pathlib
@@ -357,8 +358,9 @@ def test_security_windows_acl_accepts_owner_only(monkeypatch):
     real_open = builtins.open
     def fake_open(path, *args, **kwargs):
         if str(path).endswith(".acl"):
-            from io import StringIO
-            return StringIO(fake_sddl)
+            from io import BytesIO
+            # icacls /save writes UTF-16 LE with BOM; mock matches.
+            return BytesIO(fake_sddl.encode("utf-16"))
         return real_open(path, *args, **kwargs)
     monkeypatch.setattr(builtins, "open", fake_open)
     import pathlib
@@ -396,8 +398,9 @@ def test_security_windows_acl_rejects_when_owner_sid_missing(monkeypatch):
     real_open = builtins.open
     def fake_open(path, *args, **kwargs):
         if str(path).endswith(".acl"):
-            from io import StringIO
-            return StringIO(fake_sddl)
+            from io import BytesIO
+            # icacls /save writes UTF-16 LE with BOM; mock matches.
+            return BytesIO(fake_sddl.encode("utf-16"))
         return real_open(path, *args, **kwargs)
     monkeypatch.setattr(builtins, "open", fake_open)
     import pathlib

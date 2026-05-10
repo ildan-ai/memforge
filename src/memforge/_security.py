@@ -409,9 +409,23 @@ def _windows_verify(path: Path) -> None:
                 f"icacls /save failed on {path}: "
                 f"{proc.stderr.strip() or proc.stdout.strip()}"
             )
-        # icacls /save writes UTF-16 LE with BOM.
-        with open(tmpfile, "r", encoding="utf-16") as f_in:
-            content = f_in.read()
+        # icacls /save writes UTF-16 LE, sometimes with BOM and sometimes
+        # without depending on Windows + locale. Read raw bytes + try
+        # decode strategies in order.
+        with open(tmpfile, "rb") as f_in:
+            raw = f_in.read()
+        content = None
+        for enc in ("utf-16", "utf-16-le", "utf-8-sig", "utf-8", "mbcs"):
+            try:
+                content = raw.decode(enc)
+                break
+            except (UnicodeError, LookupError):
+                continue
+        if content is None:
+            raise SecurityError(
+                f"could not decode icacls /save output for {path}; "
+                f"raw bytes start with {raw[:32]!r}"
+            )
     finally:
         try:
             os.unlink(tmpfile)
