@@ -36,6 +36,7 @@ This file tracks MemForge's defensive-publication artifacts: the citable archiva
 | 0.4.3   | v0.4.3 | 2026-05-08          | Frontmatter backfill round-trip render fix |
 | 0.5.0   | v0.5.0 | 2026-05-10          | Multi-identity + cryptographic attribution + WebSocket messaging adapter |
 | 0.5.1   | v0.5.1 | 2026-05-10          | Reference CLI + agent session attestation content scope |
+| 0.5.2   | v0.5.2 | 2026-05-10          | Canonical-form NFC normalization + atomic secure-write + bounded seen-nonce set |
 
 The continuous-prior-art commitment: every spec-bumping commit is tagged with semver; every tag has a corresponding GitHub release; release notes name the substantive additions. Each commit is timestamped + indexed by GitHub + walkable by examiner prior-art search tools.
 

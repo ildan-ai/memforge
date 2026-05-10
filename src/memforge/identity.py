@@ -17,7 +17,6 @@ from __future__ import annotations
 import os
 import re
 import secrets
-import stat
 import time
 import uuid
 from datetime import datetime, timezone
@@ -25,6 +24,14 @@ from pathlib import Path
 from typing import Optional
 
 import yaml
+
+from memforge._security import (
+    SecurityError,
+    host_node_name,
+    restrict_dir_to_owner,
+    restrict_file_to_owner,
+    verify_owner_restricted,
+)
 
 
 OPERATOR_IDENTITY_PATH = Path.home() / ".memforge" / "operator-identity.yaml"
@@ -35,8 +42,12 @@ PER_USER_CONFIG_PATH = Path.home() / ".memforge" / "config.yaml"
 AGENT_SESSION_ID_RE = re.compile(r"^[a-z0-9]+-\d{4}-\d{2}-\d{2}-[a-z0-9]{8,16}$")
 
 
-class IdentityError(Exception):
-    """Fail-closed identity-layer error. Spec §"Cross-cutting fail-closed posture"."""
+class IdentityError(SecurityError):
+    """Fail-closed identity-layer error. Spec §"Cross-cutting fail-closed posture".
+
+    Inherits from `SecurityError` so callers can catch either name without
+    branching on which abstraction layer raised.
+    """
 
 
 def generate_uuidv7() -> str:
@@ -58,53 +69,44 @@ def now_iso() -> str:
 
 
 def check_fs_mode(path: Path, *, file_mode: int = 0o600, parent_mode: int = 0o700) -> None:
-    """Verify file at `path` has expected mode + parent dir mode + uid match.
+    """Verify `path` is restricted to the current owner. Cross-platform.
 
-    Raises `IdentityError` (fail-closed) on any violation per integrity
-    invariant 21 + §"Cross-cutting fail-closed posture" items 3, 4, 6, 7.
+    Delegates to `_security.verify_owner_restricted`, which uses POSIX
+    mode bits on Unix and Windows ACLs (via icacls) on Windows. Spec
+    integrity invariant 21 is platform-agnostic; this function is its
+    normative implementation.
+
+    Raises `IdentityError` (fail-closed) on any violation.
     """
-    if not path.exists():
-        raise IdentityError(f"identity file missing: {path}")
-    st = path.stat()
-    actual_mode = stat.S_IMODE(st.st_mode)
-    if actual_mode != file_mode:
-        raise IdentityError(
-            f"identity file {path} mode is {oct(actual_mode)}, expected {oct(file_mode)}. "
-            f"Run `chmod {oct(file_mode)[2:]} {path}`."
-        )
-    if st.st_uid != os.geteuid():
-        raise IdentityError(
-            f"identity file {path} uid={st.st_uid} != effective uid={os.geteuid()}. "
-            "Fail-closed; investigate ownership."
-        )
-    parent = path.parent
-    parent_st = parent.stat()
-    actual_parent_mode = stat.S_IMODE(parent_st.st_mode)
-    if actual_parent_mode != parent_mode:
-        raise IdentityError(
-            f"parent dir {parent} mode is {oct(actual_parent_mode)}, expected {oct(parent_mode)}. "
-            f"Run `chmod {oct(parent_mode)[2:]} {parent}`."
-        )
+    verify_owner_restricted(path, file_mode=file_mode, parent_mode=parent_mode)
 
 
 def write_secure_yaml(path: Path, data: dict, *, file_mode: int = 0o600, parent_mode: int = 0o700) -> None:
-    """Write YAML with 0600 file mode + 0700 parent atomically.
+    """Write YAML restricted to current owner, atomically. Cross-platform.
 
-    Closes the TOCTOU window where the file would exist at default umask
-    between create and chmod: opens with O_CREAT|O_EXCL|file_mode on a
-    sibling tmp path, writes content, fsyncs, then atomically renames over
-    the target. Parent dir mode is enforced before the create so a hostile
-    parent cannot be substituted mid-write.
+    Closes the TOCTOU window where the file would exist at default umask /
+    inherited-ACL between create and permission enforcement: opens with
+    O_CREAT|O_EXCL on a sibling tmp path, writes content, fsyncs, restricts
+    permissions on the tmp file BEFORE atomic rename. Parent dir
+    permissions are restricted before the create so a hostile parent
+    cannot be substituted mid-write.
+
+    POSIX: file_mode + parent_mode enforce as POSIX mode bits.
+    Windows: file + parent ACLs locked down via icacls per _security.py.
     """
-    path.parent.mkdir(parents=True, exist_ok=True)
-    os.chmod(path.parent, parent_mode)
+    restrict_dir_to_owner(path.parent, mode=parent_mode)
     tmp_path = path.with_suffix(path.suffix + f".tmp-{os.getpid()}-{secrets.token_hex(4)}")
+    # POSIX: O_CREAT honors the mode argument (subject to umask). Windows:
+    # the mode argument is ignored; restrict_file_to_owner applies ACL
+    # restriction after open and before rename, so the eventual file is
+    # correctly restricted on both platforms.
     fd = os.open(str(tmp_path), os.O_WRONLY | os.O_CREAT | os.O_EXCL, file_mode)
     try:
         with os.fdopen(fd, "w", encoding="utf-8") as f:
             yaml.safe_dump(data, f, sort_keys=False, default_flow_style=False)
             f.flush()
             os.fsync(f.fileno())
+        restrict_file_to_owner(tmp_path, mode=file_mode)
         os.replace(tmp_path, path)
     except Exception:
         try:
@@ -115,22 +117,19 @@ def write_secure_yaml(path: Path, data: dict, *, file_mode: int = 0o600, parent_
 
 
 def write_secure_bytes(path: Path, data: bytes, *, file_mode: int = 0o600, parent_mode: int = 0o700) -> None:
-    """Write bytes with 0600 file mode + 0700 parent atomically.
+    """Write bytes restricted to current owner, atomically. Cross-platform.
 
     Same TOCTOU-closing pattern as `write_secure_yaml`: O_CREAT|O_EXCL on a
-    sibling tmp file, fsync, atomic rename. The previous implementation
-    used O_CREAT|O_TRUNC at the target directly, which created a brief
-    window where any concurrent reader would see the partial / truncated
-    state.
+    sibling tmp file, fsync, restrict permissions, atomic rename.
     """
-    path.parent.mkdir(parents=True, exist_ok=True)
-    os.chmod(path.parent, parent_mode)
+    restrict_dir_to_owner(path.parent, mode=parent_mode)
     tmp_path = path.with_suffix(path.suffix + f".tmp-{os.getpid()}-{secrets.token_hex(4)}")
     fd = os.open(str(tmp_path), os.O_WRONLY | os.O_CREAT | os.O_EXCL, file_mode)
     try:
         os.write(fd, data)
         os.fsync(fd)
         os.close(fd)
+        restrict_file_to_owner(tmp_path, mode=file_mode)
         os.replace(tmp_path, path)
     except Exception:
         try:
@@ -184,7 +183,7 @@ def save_operator_identity(
         "operator_uuid": operator_uuid,
         "operator_name": operator_name,
         "created": now_iso(),
-        "machine_origin": os.uname().nodename if hasattr(os, "uname") else "unknown",
+        "machine_origin": host_node_name(),
     }
     if key_fingerprint:
         data["key_fingerprint"] = key_fingerprint

@@ -250,6 +250,73 @@ def test_write_secure_bytes_atomic_mode(tmp_path):
     assert not leftovers
 
 
+def test_security_host_node_name_returns_nonempty():
+    from memforge._security import host_node_name
+    assert host_node_name()
+    assert isinstance(host_node_name(), str)
+
+
+def test_security_current_owner_label_returns_nonempty():
+    from memforge._security import current_owner_label
+    label = current_owner_label()
+    assert label  # POSIX: "uid=N"; Windows: "DOMAIN\\USER" or "USER"
+
+
+def test_security_windows_acl_parse_rejects_everyone(monkeypatch):
+    """Mocks an icacls output containing Everyone: ACE to exercise the Windows-path verify."""
+    from memforge import _security as sec
+    import subprocess as sp
+
+    monkeypatch.setattr(sec, "IS_WINDOWS", True)
+    monkeypatch.setattr(sec, "current_owner_label", lambda: "TESTDOMAIN\\testuser")
+
+    class FakeProc:
+        returncode = 0
+        stderr = ""
+        # icacls output with a forbidden Everyone ACE.
+        stdout = (
+            "C:\\Users\\testuser\\.memforge\\identity.yaml TESTDOMAIN\\testuser:(F)\n"
+            "                                              Everyone:(R)\n"
+            "Successfully processed 1 files; Failed processing 0 files\n"
+        )
+
+    def fake_run(*args, **kwargs):
+        return FakeProc()
+
+    monkeypatch.setattr(sp, "run", fake_run)
+    # Need a Path that exists. tmp_path-style would do, but we don't have one here.
+    # Use Path("/dev/null") on POSIX which is_file()==False; verify_owner_restricted
+    # raises early on non-existent. Instead, mock pathlib.Path.exists True for the
+    # whole verify call.
+    import pathlib
+    monkeypatch.setattr(pathlib.Path, "exists", lambda self: True)
+    with pytest.raises(sec.SecurityError, match=r"Everyone:"):
+        sec.verify_owner_restricted(pathlib.Path("C:\\Users\\testuser\\.memforge\\identity.yaml"))
+
+
+def test_security_windows_acl_parse_accepts_owner_only(monkeypatch):
+    """Mocks an icacls output containing only the current-user ACE; passes verify."""
+    from memforge import _security as sec
+    import subprocess as sp
+
+    monkeypatch.setattr(sec, "IS_WINDOWS", True)
+    monkeypatch.setattr(sec, "current_owner_label", lambda: "TESTDOMAIN\\testuser")
+
+    class FakeProc:
+        returncode = 0
+        stderr = ""
+        stdout = (
+            "C:\\Users\\testuser\\.memforge\\identity.yaml TESTDOMAIN\\testuser:(F)\n"
+            "Successfully processed 1 files; Failed processing 0 files\n"
+        )
+
+    monkeypatch.setattr(sp, "run", lambda *a, **kw: FakeProc())
+    import pathlib
+    monkeypatch.setattr(pathlib.Path, "exists", lambda self: True)
+    # Should not raise.
+    sec.verify_owner_restricted(pathlib.Path("C:\\Users\\testuser\\.memforge\\identity.yaml"))
+
+
 def test_record_seen_nonce_gcs_expired(tmp_path, monkeypatch):
     """v0.5.2: record_seen_nonce GCs expired entries on every call."""
     from datetime import datetime, timedelta, timezone

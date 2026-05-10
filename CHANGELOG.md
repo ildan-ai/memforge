@@ -29,13 +29,27 @@ The Contributor License Agreement infrastructure is counsel-blocked; external pu
 
 This release ran the full release-rigor playbook the v0.5.1 retrospective surfaced as missing: architect-voice + critic-voice + threat-modeler-on-new-code-surface. Findings:
 
-- Critic (gemini-pro on spec delta): 1 MAJOR — seen-nonce set unbounded-DoS. Closed by promoting MAY to SHOULD with explicit GC contract in §"Seen-nonce set bounding".
+- Critic (gemini-pro on spec delta): 1 MAJOR (seen-nonce set unbounded-DoS). Closed by promoting MAY to SHOULD with explicit GC contract in §"Seen-nonce set bounding".
 - Threat-modeler (gemini-pro on src/memforge/ code): 2 BLOCKERs (TOCTOU on file create in identity.py write_secure_yaml; Unicode normalization missing in crypto.py canonical_envelope) + 4 MAJORs. Both BLOCKERs closed in this release. 3 MAJORs deferred to v0.5.3 backlog (registry-layer cool-down enforcement, bounded git-log walk in revocation set, TOCTOU between mode-check and read). 1 MAJOR (unbounded seen-nonce set) was the consensus finding from critic + threat-modeler and is closed here.
+
+### Cross-platform support (NEW: native Windows in v0.5.2)
+
+v0.5.0 / v0.5.1 enforced the "file restricted to current owner" spec contract via POSIX mode bits (0600 / 0700) + `stat().st_uid` match. This is correct on macOS / Linux but a no-op on native Windows. v0.5.2 introduces a platform-agnostic abstraction at `src/memforge/_security.py` and restates the spec normative requirement platform-agnostically.
+
+- POSIX (macOS, Linux, *BSD): unchanged. Mode 0600 / 0700 + `stat()` uid match against effective uid.
+- Windows (NTFS): ACL-based restriction via the built-in `icacls` binary. `restrict_file_to_owner` / `restrict_dir_to_owner` call `icacls /inheritance:r` + `icacls /grant:r <current-user>:F` to grant Full Control to the current user only with no inherited ACEs. `verify_owner_restricted` parses `icacls` output and rejects on the presence of any forbidden principal (Everyone, Authenticated Users, BUILTIN\\Users, BUILTIN\\Guests, NT AUTHORITY\\INTERACTIVE / NETWORK / BATCH / SERVICE / ANONYMOUS LOGON, etc.).
+- Both paths satisfy the spec "file restricted to current owner" contract identically.
+- Spec §"Operator-identity file (per-machine)" and integrity invariant 21 restated platform-agnostically; v0.5.0 / v0.5.1 POSIX-mode-specific language preserved as a normative POSIX implementation.
+
+- CI matrix extends from `ubuntu-latest` to `[ubuntu-latest, macos-latest, windows-latest]` x Python 3.10 / 3.11 / 3.12.
+
+- `os.uname()` (POSIX-only) replaced with `platform.node()` for hostname capture in operator-identity files.
 
 ### Spec compatibility
 
 - v0.5.1 folders remain well-formed under v0.5.2 readers IF the envelope inputs were already in NFC form (ASCII + standard composed Unicode covers the common case). Inputs in NFD form produce different envelope bytes under v0.5.2 vs v0.5.1; a v0.5.1 signature over NFD content will NOT verify under v0.5.2. Operators with mixed-normalization-form historic content should re-sign affected memories via `memforge upgrade-v04-memories --apply` (the upgrade signs over the v0.5.2-canonical NFC form).
 - Filesystem atomicity changes are transparent: existing files at the target paths are replaced atomically; no operator action required.
+- Native Windows installs upgrading from v0.5.0 / v0.5.1 will likely have failed the FS-mode check at startup under those versions (POSIX mode bits map to no-op on NTFS); v0.5.2 is the first version where native Windows can satisfy the secure-file contract. WSL installs of v0.5.0 / v0.5.1 already worked (WSL presents a POSIX filesystem) and continue to work in v0.5.2.
 
 ## [0.5.1] - 2026-05-10
 
@@ -49,20 +63,20 @@ This release ran the full release-rigor playbook the v0.5.1 retrospective surfac
 - New §"Privacy considerations (v0.5.1+)" section. Closes the v0.5.0 MINOR on documentation. 7 boundary statements (operator-UUID linkability, signing-time linkability, agent-session-id leakage, sender-UID linkability, operator-name homograph + privacy, cross-store reference disclosure, receiver-side state-file leakage) + out-of-scope list.
 - New integrity invariants 23-25 covering agent-session attestation verification (including write-signature verification against attested agent_pubkey), capability-scope enforcement, and agent-session-id format.
 - Reference CLI: `memforge` top-level dispatcher with 14 subcommands.
-  - `memforge init-operator` — generate operator-UUID + register a GPG key.
-  - `memforge init-store` — bootstrap `.memforge/` in a memory-root + signed operator-registry.
-  - `memforge operator-registry {add|verify|remove|fresh-start}` — manage operator-registry.
-  - `memforge rotate-key` — cross-signed key rotation with 24h cool-down.
-  - `memforge revoke <key_id> --reason ...` — build a signed revoke commit body.
-  - `memforge revocation-snapshot` — emit a signed snapshot commit body.
-  - `memforge memories-by-key <key_id>` — list memories signed by a key.
-  - `memforge revoke-memories <key_id> --bulk` — mark memories under a revoked key as superseded.
-  - `memforge upgrade-v04-memories --apply` — add v0.5 identity+signature to v0.4 memories in-place.
-  - `memforge revoke-cache-refresh` — refresh the remote-fetch revocation cache (sparse/shallow mode).
-  - `memforge messaging-doctor` — run the v0.5.1 fail-closed checklist + report posture.
-  - `memforge recovery-init` — install ~/.memforge/recovery-secret.bin + anchor SHA256 in registry.
-  - `memforge recovery-backup-confirm` — acknowledge offline backup; unlocks v0.5+ writes.
-  - `memforge attest-agent` — issue a signed agent-session attestation.
+  - `memforge init-operator` , generate operator-UUID + register a GPG key.
+  - `memforge init-store` , bootstrap `.memforge/` in a memory-root + signed operator-registry.
+  - `memforge operator-registry {add|verify|remove|fresh-start}` , manage operator-registry.
+  - `memforge rotate-key` , cross-signed key rotation with 24h cool-down.
+  - `memforge revoke <key_id> --reason ...` , build a signed revoke commit body.
+  - `memforge revocation-snapshot` , emit a signed snapshot commit body.
+  - `memforge memories-by-key <key_id>` , list memories signed by a key.
+  - `memforge revoke-memories <key_id> --bulk` , mark memories under a revoked key as superseded.
+  - `memforge upgrade-v04-memories --apply` , add v0.5 identity+signature to v0.4 memories in-place.
+  - `memforge revoke-cache-refresh` , refresh the remote-fetch revocation cache (sparse/shallow mode).
+  - `memforge messaging-doctor` , run the v0.5.1 fail-closed checklist + report posture.
+  - `memforge recovery-init` , install ~/.memforge/recovery-secret.bin + anchor SHA256 in registry.
+  - `memforge recovery-backup-confirm` , acknowledge offline backup; unlocks v0.5+ writes.
+  - `memforge attest-agent` , issue a signed agent-session attestation.
 - New Python modules: `memforge.identity` (UUIDv7 + operator-identity file + agent-session-id format), `memforge.crypto` (GPG subprocess wrappers + canonical envelope), `memforge.registry` (operator-registry read/write/sign), `memforge.revocation` (revoke commit builder + revocation-set walker), `memforge.sender_sequence` (sender-uid + sender-sequence + signed checkpoints), `memforge.agent_session` (attestation build/save/load/verify + scope checks + seen-nonce set), `memforge.recovery` (recovery-secret install + SHA256 anchoring + backup acknowledgment).
 - 24 new tests in `tests/test_v05_cli.py` covering: dispatcher --help smoke + subcommand registration, UUIDv7 format, now_iso, agent-session-id format + minting + validation, identity parse, canonical envelope determinism, GPG algo denylist, sender-uid format, revoke body reason-length, and (gated on `MEMFORGE_TEST_GPG=1`) end-to-end happy-path round-trips for init-operator + init-store + revoke and attest-agent + scope checks against a sandboxed GPG keyring.
 
@@ -138,7 +152,7 @@ Patch release: completes the `memory-audit` recursive-validation gap surfaced af
 
 ### Fixed
 
-- `memory-audit` per-file frontmatter validation now recurses into rollup subfolders (excluding `archive/`), as required by spec §"Rollup subfolders" ("Audit tools MUST recurse into rollup subfolders to validate frontmatter, but MUST NOT generate parent-MEMORY.md pointers for detail files"). Previously the per-file audit reused the pointer-comparable file set, so detail-tier files inside rollups were silently skipped — YAML parse failures, missing frontmatter, invalid types, sensitivity issues, and staleness in those files all went unreported. v0.4.1 closed the orphan-pointer half of this gap; v0.4.2 closes the per-file half.
+- `memory-audit` per-file frontmatter validation now recurses into rollup subfolders (excluding `archive/`), as required by spec §"Rollup subfolders" ("Audit tools MUST recurse into rollup subfolders to validate frontmatter, but MUST NOT generate parent-MEMORY.md pointers for detail files"). Previously the per-file audit reused the pointer-comparable file set, so detail-tier files inside rollups were silently skipped: YAML parse failures, missing frontmatter, invalid types, sensitivity issues, and staleness in those files all went unreported. v0.4.1 closed the orphan-pointer half of this gap; v0.4.2 closes the per-file half.
 
 ### Changed
 

@@ -1,16 +1,31 @@
 # MemForge
 
-**Typed, git-native, dynamic memory for coding agents.** A markdown folder + a small spec + reference tooling. Works across Claude Code, Cursor, Aider, Codex, and GitHub Copilot Chat through thin adapters.
+**Typed, git-native, dynamic memory for coding agents.** A markdown folder + a small spec + reference tooling. Works across Claude Code, Cursor, Aider, Codex, and GitHub Copilot Chat through thin adapters. As of v0.5, supports multi-operator teams with cryptographic attribution; as of v0.5.2, the reference CLI ships under a single `memforge` dispatcher with cross-platform support (macOS, Linux, native Windows).
 
-[![DOI](https://zenodo.org/badge/DOI/10.5281/zenodo.20113964.svg)](https://doi.org/10.5281/zenodo.20113964)
+[![DOI](https://zenodo.org/badge/DOI/10.5281/zenodo.20113964.svg)](https://doi.org/10.5281/zenodo.20113964) **Current release: v0.5.2** ([PyPI](https://pypi.org/project/ildan-memforge/) | [CHANGELOG](./CHANGELOG.md) | [spec](./spec/SPEC.md))
 
-> **Status: pre-1.0; external PRs paused.** Issues and Discussions are open. External pull requests are paused until the Contributor License Agreement infrastructure lands; the CLA flow will land in a v0.3.x patch release. See [CONTRIBUTING.md](./CONTRIBUTING.md). Security reports go through the private channel in [SECURITY.md](./SECURITY.md).
+> **Status: pre-1.0; external PRs paused.** Issues and Discussions are open. External pull requests are paused until the Contributor License Agreement infrastructure lands. See [CONTRIBUTING.md](./CONTRIBUTING.md). Security reports go through the private channel in [SECURITY.md](./SECURITY.md).
+
+## Quickstart (v0.5+, ~3 minutes)
+
+```bash
+pip install ildan-memforge
+memforge --version                  # memforge 0.5.2
+memforge init-operator --name "Your Name" --gen-key
+memforge recovery-init
+memforge recovery-backup-confirm --i-have-backed-up-the-secret
+cd /path/to/memory-root
+memforge init-store
+memforge messaging-doctor           # verify v0.5 posture: ALL CHECKS PASSED
+```
+
+Full quickstart at [`docs/quickstart.md`](./docs/quickstart.md). Multi-operator team bootstrap at [`docs/team-bootstrap.md`](./docs/team-bootstrap.md).
 
 ## Cite this work
 
 If you use MemForge in research or publications, please cite:
 
-> Hiltz, Mike. *MemForge: Portable, agent-neutral persistent memory format for AI coding agents (v0.5.0)*. Zenodo, 2026. DOI: [10.5281/zenodo.20113964](https://doi.org/10.5281/zenodo.20113964)
+> Hiltz, Mike. *MemForge: Portable, agent-neutral persistent memory format for AI coding agents (v0.5.2)*. Zenodo, 2026. DOI: [10.5281/zenodo.20113964](https://doi.org/10.5281/zenodo.20113964)
 
 ## The gap MemForge fills
 
@@ -153,6 +168,27 @@ Adapters are thin: they translate "load this folder at session start" into the a
 
 Run `--help` on any of them.
 
+### v0.5+ operator + identity surface (under the `memforge` dispatcher)
+
+| Subcommand | What it does |
+| --- | --- |
+| `memforge init-operator` | Generate operator-UUID + register a GPG signing key as the operator identity. |
+| `memforge init-store` | Bootstrap `.memforge/` in a memory-root + create a signed operator-registry. |
+| `memforge operator-registry {add\|verify\|remove\|fresh-start}` | Manage the operator-registry (add a peer operator; verify the signature; etc.). |
+| `memforge rotate-key` | Generate a new long-lived key, cross-sign with the old one, lands the registry update with a 24-hour cool-down. |
+| `memforge revoke <key_id> --reason ...` | Build a signed `memforge: revoke <key_id>` commit body. |
+| `memforge revocation-snapshot` | Emit a signed snapshot of the current revocation set. |
+| `memforge memories-by-key <key_id>` | List memories signed under a given key (forensic + bulk-revoke prep). |
+| `memforge revoke-memories <key_id> --bulk` | Mark memories signed by a revoked key as `status: superseded`. |
+| `memforge upgrade-v04-memories --apply` | Add v0.5 `identity` + `signature` frontmatter to v0.4 memories in-place. |
+| `memforge revoke-cache-refresh` | Refresh the remote-fetch revocation cache (sparse-checkout / shallow-clone mode). |
+| `memforge messaging-doctor` | Run the v0.5.1 fail-closed checklist + report posture (OK / WARN / FAIL). |
+| `memforge recovery-init` | Generate `~/.memforge/recovery-secret.bin` + anchor SHA256 in the signed operator-registry. |
+| `memforge recovery-backup-confirm` | Acknowledge offline backup of the recovery-secret; unlocks v0.5+ writes. |
+| `memforge attest-agent` | Issue a signed agent-session attestation (nonce + expires_at + capability_scope). |
+
+### v0.3 / v0.4 memory-format surface (per-tool console scripts)
+
 | Tool | What it does |
 | --- | --- |
 | `memory-audit` | Schema + integrity check. Pass `--strict` in CI. |
@@ -168,7 +204,7 @@ Run `--help` on any of them.
 | `memory-watch` | Filesystem watcher (Linux + macOS via watchdog). |
 | `memory-promote` | Move a memory between folders with index fixup. |
 
-The `tools/README.md` has the long-form reference.
+`memforge <subcommand> --help` and `tools/README.md` have the long-form references.
 
 ## Spec
 
@@ -182,6 +218,9 @@ Format invariants are in [`spec/SPEC.md`](./spec/SPEC.md). Topic taxonomy is in 
 | v0.2.0 | (unreleased) | Sensitivity classification (4 levels) + consumer obligations. |
 | v0.3.0 | 2026-05-07 | Schema expansion (uid, tier, tags, owner, last_reviewed, status), rollup-with-subfolder formalization, access labels, controlled topic taxonomy, full Phase 1 tooling, audit log, DLP scan. |
 | v0.4.0 | 2026-05-08 | Required-field expansion: `uid`, `tier`, `tags`, `owner`, `status`, `created` required (was optional in v0.3.x). v0.3.x files load in degraded mode. Multi-agent concurrency: five new frontmatter keys, snooze record, config file, resolve operation, canonical competing-claim block, layered Tier 1 + Tier 2 audit rule set, status enumeration BLOCKER, secure-mode adapter conformance. Sensitivity enforcement: default-on export-tier gate (`memory-audit --export-tier`), DLP label/content cross-check, conformance fixture set; hard floor protects `privileged` tier from config-disable. Closes the v0.3.x multi-user concurrency deferral. |
+| v0.5.0 | 2026-05-10 | Multi-identity + cryptographic attribution + WebSocket messaging adapter. Operator + agent identity as first-class peers with GPG signing. Sender-uid + sender-sequence + signed checkpoints. Signing-time-aware revocation verification + clock-skew guard. 24-hour cool-down on key rotation. Recovery-secret filesystem mode + SHA256-anchored content integrity. |
+| v0.5.1 | 2026-05-10 | Reference CLI ships (14 subcommands under `memforge` dispatcher). Closes v0.5.0 agent-session-attestation content-scope MAJOR with normative `nonce` + `expires_at` + `capability_scope`. Cross-cutting fail-closed posture (29-item operator reference). Privacy considerations (7 boundary statements). |
+| v0.5.2 | 2026-05-10 | Closes 2 BLOCKERs + 1 MAJOR from retrospective code panel. Canonical-form Unicode NFC normalization MUST on signed envelopes (closes repudiation via normalization drift). Atomic O_CREAT\|O_EXCL + fsync + os.replace on `write_secure_yaml` + `write_secure_bytes` (closes TOCTOU on file create). Seen-nonce set bounding MAY -> SHOULD with explicit GC contract (closes unbounded-set DoS). Cross-platform secure-file abstraction (`src/memforge/_security.py`): POSIX mode bits on macOS/Linux + NTFS ACLs (via `icacls`) on native Windows. CI matrix extends to Ubuntu + macOS + Windows. |
 
 The reference implementation is running in production. External adoption is welcome once the CLA flow is live.
 
