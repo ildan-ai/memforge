@@ -878,6 +878,8 @@ Operator-facing boundary statements collected for v0.5.0 deployment:
 
 The v0.5.0 / v0.5.1 normative text mandates fail-closed behavior on dozens of distinct failure modes (signature invalid, registry unverifiable, receiver state corrupted, FS mode relaxed, etc.). This section gathers the fail-closed posture as a single operator-facing reference.
 
+<!-- markdownlint-disable MD029 -->
+
 **Hard fail-closed (adapter HALTS; refuses to load v0.5+ memories).**
 
 1. Operator-registry signature invalid or registry file corrupted.
@@ -920,6 +922,8 @@ The v0.5.0 / v0.5.1 normative text mandates fail-closed behavior on dozens of di
 29. Sparse-checkout / shallow-clone mode (advisory banner; not a security gap given the v0.5.0 TOFU + fast-forward + signature contract).
 
 The discipline: every failure mode either lands an operator action (configure / rotate / investigate) or fails closed. There is no degraded-mode read of v0.5+ memories. The reference adapter SHOULD log every fail-closed event with the numbered category above plus the specific message text for operator triage.
+
+<!-- markdownlint-enable MD029 -->
 
 ## Privacy considerations (v0.5.1+)
 

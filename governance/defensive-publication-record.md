@@ -26,15 +26,16 @@ This file tracks MemForge's defensive-publication artifacts: the citable archiva
 
 ## Channel 3 — GitHub releases as continuous prior art
 
-| Version | Tag | Date | Release notes |
-|---|---|---|---|
-| 0.3.0 | v0.3.0 | 2026-05-07 (approx) | Initial public release |
-| 0.3.1 | v0.3.1 | 2026-05-08 | PyPI distribution rename + 15 console scripts |
-| 0.4.0 | v0.4.0 | 2026-05-08 | Multi-agent concurrency + sensitivity enforcement |
-| 0.4.1 | v0.4.1 | 2026-05-08 | Audit fix + adapter improvement |
-| 0.4.2 | v0.4.2 | 2026-05-08 | Recursive frontmatter audit + action bumps |
-| 0.4.3 | v0.4.3 | 2026-05-08 | Frontmatter backfill round-trip render fix |
-| 0.5.0 | v0.5.0 | 2026-05-10 | Multi-identity + cryptographic attribution + WebSocket messaging adapter |
+| Version | Tag    | Date                | Release notes |
+| ------- | ------ | ------------------- | ------------- |
+| 0.3.0   | v0.3.0 | 2026-05-07 (approx) | Initial public release |
+| 0.3.1   | v0.3.1 | 2026-05-08          | PyPI distribution rename + 15 console scripts |
+| 0.4.0   | v0.4.0 | 2026-05-08          | Multi-agent concurrency + sensitivity enforcement |
+| 0.4.1   | v0.4.1 | 2026-05-08          | Audit fix + adapter improvement |
+| 0.4.2   | v0.4.2 | 2026-05-08          | Recursive frontmatter audit + action bumps |
+| 0.4.3   | v0.4.3 | 2026-05-08          | Frontmatter backfill round-trip render fix |
+| 0.5.0   | v0.5.0 | 2026-05-10          | Multi-identity + cryptographic attribution + WebSocket messaging adapter |
+| 0.5.1   | v0.5.1 | 2026-05-10          | Reference CLI + agent session attestation content scope |
 
 The continuous-prior-art commitment: every spec-bumping commit is tagged with semver; every tag has a corresponding GitHub release; release notes name the substantive additions. Each commit is timestamped + indexed by GitHub + walkable by examiner prior-art search tools.
 
