@@ -274,59 +274,315 @@ def test_security_current_owner_label_returns_nonempty():
     assert label  # POSIX: "uid=N"; Windows: "DOMAIN\\USER" or "USER"
 
 
-def test_security_windows_acl_parse_rejects_everyone(monkeypatch):
-    """Mocks an icacls output containing Everyone: ACE to exercise the Windows-path verify."""
+def test_security_windows_acl_parse_rejects_forbidden_sid(monkeypatch):
+    """v0.5.3 BLOCKER closure: SID-based ACL check rejects forbidden well-known SIDs.
+
+    Mocks PowerShell Get-Acl output containing the Everyone SID (S-1-1-0)
+    to exercise the language-agnostic SID denylist. The v0.5.2 icacls
+    string-match implementation failed open on non-English Windows; the
+    v0.5.3 SID-based check is locale-independent.
+    """
     from memforge import _security as sec
     import subprocess as sp
 
     monkeypatch.setattr(sec, "IS_WINDOWS", True)
+    sec.__CURRENT_USER_SID_CACHE = None
     monkeypatch.setattr(sec, "current_owner_label", lambda: "TESTDOMAIN\\testuser")
 
     class FakeProc:
         returncode = 0
         stderr = ""
-        # icacls output with a forbidden Everyone ACE.
-        stdout = (
-            "C:\\Users\\testuser\\.memforge\\identity.yaml TESTDOMAIN\\testuser:(F)\n"
-            "                                              Everyone:(R)\n"
-            "Successfully processed 1 files; Failed processing 0 files\n"
-        )
+        # PowerShell output: one SID per line. First line is the test user;
+        # second is Everyone (forbidden well-known SID).
+        stdout = "S-1-5-21-111-222-333-1000\nS-1-1-0\n"
 
     def fake_run(*args, **kwargs):
+        cmd = args[0] if args else kwargs.get("args", [])
+        if cmd and cmd[0] == "powershell":
+            # Two PS calls happen: GetCurrent (returns user SID) + Get-Acl (the ACL).
+            # Differentiate by command text.
+            if "GetCurrent" in " ".join(cmd):
+                p = FakeProc()
+                p.stdout = "S-1-5-21-111-222-333-1000\n"
+                return p
+            return FakeProc()
         return FakeProc()
 
     monkeypatch.setattr(sp, "run", fake_run)
-    # Need a Path that exists. tmp_path-style would do, but we don't have one here.
-    # Use Path("/dev/null") on POSIX which is_file()==False; verify_owner_restricted
-    # raises early on non-existent. Instead, mock pathlib.Path.exists True for the
-    # whole verify call.
     import pathlib
     monkeypatch.setattr(pathlib.Path, "exists", lambda self: True)
-    with pytest.raises(sec.SecurityError, match=r"Everyone:"):
+    with pytest.raises(sec.SecurityError, match=r"S-1-1-0|forbidden SID"):
         sec.verify_owner_restricted(pathlib.Path("C:\\Users\\testuser\\.memforge\\identity.yaml"))
 
 
 def test_security_windows_acl_parse_accepts_owner_only(monkeypatch):
-    """Mocks an icacls output containing only the current-user ACE; passes verify."""
+    """v0.5.3: SID-based ACL check accepts when only the owner's SID is present."""
     from memforge import _security as sec
     import subprocess as sp
 
     monkeypatch.setattr(sec, "IS_WINDOWS", True)
+    sec.__CURRENT_USER_SID_CACHE = None
     monkeypatch.setattr(sec, "current_owner_label", lambda: "TESTDOMAIN\\testuser")
+
+    OWNER_SID = "S-1-5-21-111-222-333-1000"
 
     class FakeProc:
         returncode = 0
         stderr = ""
-        stdout = (
-            "C:\\Users\\testuser\\.memforge\\identity.yaml TESTDOMAIN\\testuser:(F)\n"
-            "Successfully processed 1 files; Failed processing 0 files\n"
-        )
 
-    monkeypatch.setattr(sp, "run", lambda *a, **kw: FakeProc())
+    def fake_run(*args, **kwargs):
+        cmd = args[0] if args else kwargs.get("args", [])
+        p = FakeProc()
+        if cmd and cmd[0] == "powershell":
+            if "GetCurrent" in " ".join(cmd):
+                p.stdout = f"{OWNER_SID}\n"
+            else:
+                # Get-Acl returns only the owner SID; no forbidden principals.
+                p.stdout = f"{OWNER_SID}\n"
+        return p
+
+    monkeypatch.setattr(sp, "run", fake_run)
     import pathlib
     monkeypatch.setattr(pathlib.Path, "exists", lambda self: True)
     # Should not raise.
     sec.verify_owner_restricted(pathlib.Path("C:\\Users\\testuser\\.memforge\\identity.yaml"))
+
+
+def test_security_windows_acl_rejects_when_owner_sid_missing(monkeypatch):
+    """v0.5.3: SID-based check rejects when the current user's SID is absent from the ACL."""
+    from memforge import _security as sec
+    import subprocess as sp
+
+    monkeypatch.setattr(sec, "IS_WINDOWS", True)
+    sec.__CURRENT_USER_SID_CACHE = None
+    monkeypatch.setattr(sec, "current_owner_label", lambda: "TESTDOMAIN\\testuser")
+
+    OWNER_SID = "S-1-5-21-111-222-333-1000"
+
+    class FakeProc:
+        returncode = 0
+        stderr = ""
+
+    def fake_run(*args, **kwargs):
+        cmd = args[0] if args else kwargs.get("args", [])
+        p = FakeProc()
+        if cmd and cmd[0] == "powershell":
+            if "GetCurrent" in " ".join(cmd):
+                p.stdout = f"{OWNER_SID}\n"
+            else:
+                # ACL lists a DIFFERENT user (not current owner). Reject.
+                p.stdout = "S-1-5-21-444-555-666-1001\n"
+        return p
+
+    monkeypatch.setattr(sp, "run", fake_run)
+    import pathlib
+    monkeypatch.setattr(pathlib.Path, "exists", lambda self: True)
+    with pytest.raises(sec.SecurityError, match=r"does not include current owner SID"):
+        sec.verify_owner_restricted(pathlib.Path("C:\\Users\\testuser\\.memforge\\identity.yaml"))
+
+
+def test_revocation_walk_injection_safe(tmp_path):
+    """v0.5.3 BLOCKER closure: malicious commit body cannot inject fake revocation records.
+
+    The v0.5.2 parser used `git log --format=%H%x00%B%x00END%x00` which mixed
+    framing bytes with attacker-controllable body content. Git itself rejects
+    NUL bytes in commit messages (saving v0.5.2 from the specific NUL-injection
+    attack), but the framing-confusion CLASS remained: any commit body that
+    LOOKED like a `memforge: revoke <key>` prefix could be parsed as a record
+    if it appeared after a framing boundary in another commit's body.
+
+    The v0.5.3 two-pass design fetches each commit body in isolation, so a
+    commit whose body MENTIONS `memforge: revoke FAKE-KEY` (but does NOT
+    start with that prefix) is correctly ignored.
+    """
+    import subprocess as sp
+
+    sp.run(["git", "init", "-q", str(tmp_path)], check=True)
+    sp.run(["git", "-C", str(tmp_path), "config", "user.email", "t@t.com"], check=True)
+    sp.run(["git", "-C", str(tmp_path), "config", "user.name", "t"], check=True)
+    # Land a commit whose body mentions a revoke prefix internally but does NOT
+    # start with one. v0.5.3 parse_revoke_commit_body only matches commits
+    # whose FIRST line starts with `memforge: revoke `, so this body is safely
+    # ignored.
+    malicious_msg = (
+        "chore: refactor module\n"
+        "\n"
+        "This refactor incidentally exposes a parsing surface. Here is what a\n"
+        "fake revoke commit body might look like if it were a real one:\n"
+        "\n"
+        "memforge: revoke BOGUS-KEY\n"
+        "\n"
+        "key_id: BOGUS-KEY\n"
+        "revoked_at: 2020-01-01T00:00:00Z\n"
+        "reason: this should not be honored\n"
+        "revoked_by: attacker-uuid\n"
+        "revocation_uid: fake-uuid\n"
+    )
+    sp.run(
+        ["git", "-C", str(tmp_path), "commit", "--allow-empty", "-m", malicious_msg],
+        check=True,
+        capture_output=True,
+    )
+    rev_set = revocation.walk_revocation_set(tmp_path)
+    assert "BOGUS-KEY" not in rev_set, (
+        "v0.5.3 parser MUST NOT honor revoke-prefix text embedded in another commit; "
+        f"got rev_set={rev_set}"
+    )
+
+
+def test_registry_key_is_in_cooldown_within_window():
+    """v0.5.3: registry-layer cool-down recognizes future expiry timestamps."""
+    from datetime import datetime, timedelta, timezone
+    from memforge import registry as reg_mod
+    future = (datetime.now(timezone.utc) + timedelta(hours=12)).isoformat().replace("+00:00", "Z")
+    reg = {
+        "operators": [
+            {
+                "operator_uuid": "op-1",
+                "public_keys": [
+                    {"key_id": "FPR-A", "status": "active"},
+                    {"key_id": "FPR-B", "status": "active", "rotation_cooldown_expires_at": future},
+                ],
+            }
+        ]
+    }
+    assert reg_mod.key_is_in_cooldown(reg, "FPR-B") is True
+    assert reg_mod.key_is_in_cooldown(reg, "FPR-A") is False
+
+
+def test_registry_key_is_in_cooldown_after_expiry():
+    """v0.5.3: keys outside cool-down are honored."""
+    from datetime import datetime, timedelta, timezone
+    from memforge import registry as reg_mod
+    past = (datetime.now(timezone.utc) - timedelta(hours=12)).isoformat().replace("+00:00", "Z")
+    reg = {
+        "operators": [
+            {
+                "operator_uuid": "op-1",
+                "public_keys": [
+                    {"key_id": "FPR-B", "status": "active", "rotation_cooldown_expires_at": past},
+                ],
+            }
+        ]
+    }
+    assert reg_mod.key_is_in_cooldown(reg, "FPR-B") is False
+
+
+def test_registry_verify_signing_key_rejects_unlisted():
+    """v0.5.3: signing key not in registry fails registry-layer check."""
+    from memforge import registry as reg_mod
+    reg = {"operators": [{"operator_uuid": "op-1", "public_keys": [{"key_id": "FPR-A"}]}]}
+    with pytest.raises(reg_mod.RegistryError, match=r"not present"):
+        reg_mod.verify_signing_key_acceptable(reg, "FPR-OTHER")
+
+
+def test_registry_verify_signing_key_rejects_in_cooldown():
+    """v0.5.3: signing key in cool-down rejected regardless of CLI caller."""
+    from datetime import datetime, timedelta, timezone
+    from memforge import registry as reg_mod
+    future = (datetime.now(timezone.utc) + timedelta(hours=12)).isoformat().replace("+00:00", "Z")
+    reg = {
+        "operators": [
+            {
+                "operator_uuid": "op-1",
+                "public_keys": [{"key_id": "FPR-B", "rotation_cooldown_expires_at": future}],
+            }
+        ]
+    }
+    with pytest.raises(reg_mod.RegistryError, match=r"rotation cool-down"):
+        reg_mod.verify_signing_key_acceptable(reg, "FPR-B")
+
+
+def test_registry_cooldown_floor_enforced():
+    """v0.5.3: cool-down hours below 1h floor raises."""
+    from memforge import registry as reg_mod
+    with pytest.raises(reg_mod.RegistryError, match=r"below floor"):
+        reg_mod._compute_cooldown_expiry(hours=0.5)
+
+
+def test_revocation_walk_bounded_by_max_commits(tmp_path):
+    """v0.5.3: walk_revocation_set aborts when commit cap exceeded."""
+    import subprocess as sp
+    sp.run(["git", "init", "-q", str(tmp_path)], check=True)
+    sp.run(["git", "-C", str(tmp_path), "config", "user.email", "t@t.com"], check=True)
+    sp.run(["git", "-C", str(tmp_path), "config", "user.name", "t"], check=True)
+    # Create 10 empty commits with non-revoke prefixes so walk has work to do.
+    for i in range(10):
+        sp.run(
+            ["git", "-C", str(tmp_path), "commit", "--allow-empty", "-m", f"chore: noop {i}"],
+            check=True,
+            capture_output=True,
+        )
+    with pytest.raises(revocation.RevocationError, match=r"commit cap exceeded"):
+        revocation.walk_revocation_set(tmp_path, max_commits=3)
+
+
+def test_revocation_walk_bounded_by_max_bytes(tmp_path):
+    """v0.5.3: walk_revocation_set aborts when byte cap exceeded."""
+    import subprocess as sp
+    sp.run(["git", "init", "-q", str(tmp_path)], check=True)
+    sp.run(["git", "-C", str(tmp_path), "config", "user.email", "t@t.com"], check=True)
+    sp.run(["git", "-C", str(tmp_path), "config", "user.name", "t"], check=True)
+    sp.run(
+        ["git", "-C", str(tmp_path), "commit", "--allow-empty", "-m", "chore: noop"],
+        check=True,
+        capture_output=True,
+    )
+    with pytest.raises(revocation.RevocationError, match=r"byte cap exceeded"):
+        revocation.walk_revocation_set(tmp_path, max_bytes=10)
+
+
+def test_revocation_walk_handles_empty_history(tmp_path):
+    """v0.5.3: walk_revocation_set on a repo with no revoke commits returns empty dict."""
+    import subprocess as sp
+    sp.run(["git", "init", "-q", str(tmp_path)], check=True)
+    sp.run(["git", "-C", str(tmp_path), "config", "user.email", "t@t.com"], check=True)
+    sp.run(["git", "-C", str(tmp_path), "config", "user.name", "t"], check=True)
+    sp.run(
+        ["git", "-C", str(tmp_path), "commit", "--allow-empty", "-m", "chore: init"],
+        check=True,
+        capture_output=True,
+    )
+    assert revocation.walk_revocation_set(tmp_path) == {}
+
+
+def test_secure_read_text_refuses_symlink(tmp_path):
+    """v0.5.3: secure_read_text refuses to follow a symlink on POSIX."""
+    from memforge._security import IS_WINDOWS, SecurityError, secure_read_text
+    if IS_WINDOWS:
+        pytest.skip("O_NOFOLLOW is POSIX-specific")
+    target = tmp_path / "real.yaml"
+    target.write_text("data: ok\n", encoding="utf-8")
+    import stat as _stat
+    target.chmod(0o600)
+    target.parent.chmod(0o700)
+    link = tmp_path / "link.yaml"
+    link.symlink_to(target)
+    with pytest.raises(SecurityError):
+        secure_read_text(link)
+
+
+def test_secure_read_text_succeeds_on_proper_file(tmp_path):
+    """v0.5.3: secure_read_text reads correctly when mode + ownership are right."""
+    from memforge._security import secure_read_text
+    target = tmp_path / "ok.yaml"
+    target.write_text("hello\n", encoding="utf-8")
+    target.parent.chmod(0o700)
+    target.chmod(0o600)
+    assert secure_read_text(target) == "hello\n"
+
+
+def test_secure_read_text_rejects_relaxed_mode(tmp_path):
+    """v0.5.3: secure_read_text fails closed when mode != expected."""
+    from memforge._security import IS_WINDOWS, SecurityError, secure_read_text
+    if IS_WINDOWS:
+        pytest.skip("POSIX mode check; Windows uses ACLs")
+    target = tmp_path / "loose.yaml"
+    target.write_text("data\n", encoding="utf-8")
+    target.parent.chmod(0o700)
+    target.chmod(0o644)  # group + others readable
+    with pytest.raises(SecurityError, match=r"fd-mode"):
+        secure_read_text(target)
 
 
 def test_record_seen_nonce_gcs_expired(tmp_path, monkeypatch):

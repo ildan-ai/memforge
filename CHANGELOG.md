@@ -10,6 +10,39 @@ The version number tracked here is the **package / tooling** version. The on-dis
 
 The Contributor License Agreement infrastructure is counsel-blocked; external pull requests are paused until the CLA flow lands.
 
+## [0.5.3] - 2026-05-10
+
+**Patch release.** Spec bump 0.5.2 -> 0.5.3. Closes the 3 remaining v0.5.x MAJORs surfaced by the v0.5.2 retrospective threat-modeler pass. v0.5.3 is the first MemForge release that ships with zero open MAJORs in the known-limitations document.
+
+### Spec changes
+
+- §"Mandatory cool-down period" extended with a normative **registry-layer enforcement** mandate. Cool-down checks MUST occur at the registry layer (e.g., `memforge.registry.verify_signing_key_acceptable`), not solely at the CLI layer. Closes the v0.5.2 threat-model MAJOR where a buggy or hostile alternate consumer of the registry could bypass the cool-down by signing with the new key directly.
+- §"Reader-side revocation walk" extended with a normative **bounded-walk** mandate. The revocation walk MUST be bounded by both a maximum-commits cap (default 100,000) AND a maximum-bytes cap (default 100 MB). When either cap is exceeded, adapters MUST halt the walk and emit a fail-closed message pointing the operator at `memforge revocation-snapshot`. Operator-configurable via `.memforge/config.yaml` keys `revocation.walk_max_commits` and `revocation.walk_max_bytes`. Closes the v0.5.2 threat-model MAJOR where an unbounded walk on a malicious or pathological repo would OOM any adapter walking revocation state at startup.
+- Integrity invariant 21 extended with a normative **TOCTOU-safe-read** addendum. Adapters MUST verify mode + ownership on the file descriptor (`fstat` after open) rather than on the path (`stat` before open). POSIX implementations MUST open with `O_NOFOLLOW`; Windows implementations MUST perform path-level verification before open (since `O_NOFOLLOW` is not a Windows concept). Closes the v0.5.2 threat-model MAJOR where a same-uid attacker could swap the file between path-level mode-check and open.
+
+### Reference implementation changes
+
+- `memforge.registry`: new `key_is_in_cooldown(registry, key_id, at_time=None)` + `verify_signing_key_acceptable(registry, key_id, signing_time=None)`. The first reports cool-down status; the second combines registry-membership + cool-down into a single fail-closed verify gate. Cool-down hours floor (1h) now enforced inside `_compute_cooldown_expiry`.
+- `memforge.revocation.walk_revocation_set`: rewritten to stream git-log output via `subprocess.Popen` + line-by-line parse, with `max_commits` + `max_bytes` kwargs (defaults match the new spec mandate). Aborts with explicit error pointing the operator at `memforge revocation-snapshot` on cap-exceeded.
+- `memforge._security`: new `secure_read_text(path)` + `secure_read_bytes(path)` primitives. POSIX backend uses `O_NOFOLLOW` + post-open fd `fstat` for mode + owner verification; Windows backend uses path-level `verify_owner_restricted`. Refactored consumers: `identity.load_operator_identity`, `agent_session.load_attestation` + `is_nonce_seen` + `record_seen_nonce`, `sender_sequence.load_sender_sequence` now all read through the TOCTOU-safe path.
+
+### Documentation
+
+- `spec/known-limitations.md` (renamed from `spec/v0.5.0-known-limitations.md`; living document): updated to reflect v0.5.3 closures. All BLOCKER and security-relevant MAJOR residuals are now closed; only 4 MINOR refinements remain. SPEC.md cross-reference updated to point at the living-doc filename.
+
+### Tests
+
+- 10 new v0.5.3 tests covering registry cool-down (in-window / after-expiry / unlisted-key rejection / cool-down rejection / floor enforcement), bounded revocation walk (commit cap / byte cap / empty-history happy path), and TOCTOU-safe read (symlink refusal / happy path / relaxed-mode rejection). Full suite: 226 pass, 2 GPG-gated skipped.
+
+### Pre-ship review
+
+Ran the full release-rigor playbook (architect + critic + threat-modeler on both spec delta + new code surface). Findings + resolution are operator-side.
+
+### Spec compatibility
+
+- v0.5.2 folders remain well-formed under v0.5.3 readers. No frontmatter or normative-contract regressions.
+- Adapters built against v0.5.2 read paths will work unchanged on v0.5.3; the TOCTOU-safe-read addendum is implementation-level + transparent to callers using the higher-level load functions.
+
 ## [0.5.2] - 2026-05-10
 
 **Patch release.** Spec bump 0.5.1 -> 0.5.2. Closes 2 BLOCKERs + 1 MAJOR surfaced by the post-v0.5.1 retrospective code + spec panel pass (critic voice + threat-modeler voice on the new code surface; the panel scope skipped during the v0.5.1 first ship and run separately afterward).
@@ -108,7 +141,7 @@ A pre-ship architect pass caught one BLOCKER: receiver enforcement omitted norma
 - New §"Messaging adapter contract (WebSocket reference)": substrate locked WebSocket (40% latency benchmarks; OpenAI Responses API Feb 23 2026 launch alignment; Cursor/Cline/Vercel adoption). Sender-uid format `<operator-uuid>:<32-byte-hex>` mandatory. Sender-sequence + signed checkpoints every 100 sequences or 24 hours. Multi-server hard-stop for v0.5.0. Substrate-independent envelope contract: git-only writers must use same sender_uid + sequence + checkpoint machinery.
 - New §"Key lifecycle + revocation": revocation events as git commits with `memforge: revoke <key_id>` prefix. Reader walks git history. Sparse-checkout / shallow-clone fallback via remote-fetch with loud startup banner + audit MAJOR (revocation events NOT signature-verified in fallback mode; v0.5.0.1 patch target). Recovery-secret filesystem mode 0600/0700 + uid-ownership check; persistent startup WARN until hardware-backed install. Revocation snapshot mechanism bounds O(N) cold-start cost.
 - New §"Security considerations": operator-facing boundary statements (honest-operator assumption, software-only recovery-secret boundary, same-user shell malware, sparse-checkout caveats, cross-instance propagation lag, hardware-key recommendation, recovery-secret backup mechanism).
-- New §"Known limitations": 2 documented BLOCKERs (receiver-state silent-rollback window; remote-fetch unsigned revocation events) as v0.5.0.1 patch targets. Full list at `v0.5.0-known-limitations.md`.
+- New §"Known limitations": 2 documented BLOCKERs (receiver-state silent-rollback window; remote-fetch unsigned revocation events) as v0.5.0.1 patch targets. Full list at `known-limitations.md` (renamed from per-version `v0.5.0-known-limitations.md` to a living document in v0.5.3; each Zenodo deposit ships a versioned snapshot).
 - New §"v0.5.0 surface map": ASCII diagram showing the Element 1 -> 2 -> 4 -> 5 dependency flow.
 - New invariants 16-22 in §"Integrity invariants" covering v0.5.0 frontmatter shape, clock-skew, mixed-deployment resolve, operator-registry, sender-sequence, identity-file FS modes, revocation commit prefix discipline.
 
@@ -128,7 +161,7 @@ Two BLOCKER-class issues identified during v0.5 development have been closed in 
 
 ### Known limitations
 
-v0.5.0 ships with **no BLOCKER-class known limitations**. Residual MAJORs + MINORs (refinements; not security gaps) tracked at `v0.5.0-known-limitations.md` for v0.5.1 / v0.5.x patches:
+v0.5.0 ships with **no BLOCKER-class known limitations**. Residual MAJORs + MINORs (refinements; not security gaps) tracked at `known-limitations.md` (living document; renamed from per-version filename in v0.5.3) for v0.5.1 / v0.5.x patches:
 
 - 6 MAJORs (checkpoint signer ambiguity, revocation snapshot ancestor + canonical hash, sender/receiver posture nuance, cache TTL high-stakes, cross-cutting fail-closed documentation, agent session attestation content scope).
 - 7 MINORs (cross-cutting fail-closed posture, TTL semantics, trust graph disclosure, agent session ID format, key rotation chain DoS, operator name homograph audit, v0.4 memory flooding rate-limit).

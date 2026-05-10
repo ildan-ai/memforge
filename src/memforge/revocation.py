@@ -24,6 +24,20 @@ KEY_COMPROMISE_PREFIX = "memforge: key-compromise "
 REGISTRY_PREFIX = "memforge: operator-registry"
 
 
+# Walk-cap defaults. Operators with large histories can raise via
+# `.memforge/config.yaml`: revocation.walk_max_commits / walk_max_bytes.
+# When either cap is exceeded, walk_revocation_set fails closed with an
+# explicit message pointing the operator at `memforge revocation-snapshot`
+# to compress history.
+DEFAULT_WALK_MAX_COMMITS = 100_000
+DEFAULT_WALK_MAX_BYTES = 100 * 1024 * 1024  # 100 MB
+
+# Commit hash format check used by walk_revocation_set. SHA-1 is 40 hex
+# chars; git log --format=%H emits exactly this. Anything else means a
+# git format / version surprise; fail closed.
+_HEX40_RE = re.compile(r"^[0-9a-f]{40}$")
+
+
 class RevocationError(Exception):
     """Fail-closed revocation-layer error."""
 
@@ -96,42 +110,90 @@ def parse_revoke_commit_body(commit_msg: str) -> Optional[dict]:
     return body
 
 
-def walk_revocation_set(repo_path: Path, *, since_commit: Optional[str] = None) -> dict[str, dict]:
-    """Walk git history collecting `memforge: revoke ...` commit bodies.
+def walk_revocation_set(
+    repo_path: Path,
+    *,
+    since_commit: Optional[str] = None,
+    max_commits: int = DEFAULT_WALK_MAX_COMMITS,
+    max_bytes: int = DEFAULT_WALK_MAX_BYTES,
+) -> dict[str, dict]:
+    """Stream git history collecting `memforge: revoke ...` commit bodies.
 
     Returns a dict keyed by `key_id` whose values are the parsed bodies.
     When the same key_id appears multiple times, the earliest revocation
     (by `revoked_at`) wins (most permissive for the receiver: once revoked,
     always revoked).
 
+    Walk is bounded: streams git-log output line-by-line and aborts with
+    `RevocationError` when EITHER the commit count exceeds `max_commits`
+    OR total bytes read exceeds `max_bytes`. Closes the v0.5.2 threat-model
+    MAJOR where a malicious repo with a very long history or very large
+    commit messages could OOM any adapter walking revocation state at
+    startup.
+
+    Operators with legitimate large histories can raise the caps via
+    `.memforge/config.yaml` under `revocation.walk_max_commits` /
+    `revocation.walk_max_bytes`, OR publish a `memforge:
+    revocation-snapshot` commit so the walk starts from the snapshot
+    instead of repo root.
+
     Verification of `revocation_signature` is the caller's responsibility
     (signature verification needs the operator-registry to resolve signer
     pubkeys, which is a registry-layer call).
     """
+    # Two-pass design (v0.5.3 BLOCKER closure): first pass fetches ONLY
+    # commit hashes (40-hex-char strings; not attacker-controllable). Second
+    # pass fetches each commit body in isolation via `git log -1
+    # --format=%B <hash>`. This eliminates the framing-injection vector
+    # where an attacker who can land a commit could craft a body containing
+    # a record separator to spoof or hide revocations.
     rev_set: dict[str, dict] = {}
-    args = [
-        "git",
-        "-C",
-        str(repo_path),
-        "log",
-        "--format=%H%x00%B%x00END%x00",
-    ]
+
+    log_args = ["git", "-C", str(repo_path), "log", "--format=%H"]
     if since_commit:
-        args.append(f"{since_commit}..HEAD")
+        log_args.append(f"{since_commit}..HEAD")
+
     try:
-        out = subprocess.check_output(args, text=True)
-    except subprocess.CalledProcessError as exc:
-        raise RevocationError(f"git log failed: {exc.output}") from exc
-    # Parse the null-delimited commit-message blocks.
-    for chunk in out.split("\x00END\x00\n"):
-        chunk = chunk.strip()
-        if not chunk:
-            continue
-        parts = chunk.split("\x00", 1)
-        if len(parts) < 2:
-            continue
-        commit_hash = parts[0].strip()
-        message = parts[1]
+        hash_proc = subprocess.run(log_args, check=False, capture_output=True, text=True)
+    except OSError as exc:
+        raise RevocationError(f"git log spawn failed: {exc}") from exc
+    if hash_proc.returncode != 0:
+        raise RevocationError(f"git log exited {hash_proc.returncode}: {hash_proc.stderr}")
+
+    hashes = [h.strip() for h in hash_proc.stdout.splitlines() if h.strip()]
+    if len(hashes) > max_commits:
+        raise RevocationError(
+            f"revocation-walk commit cap exceeded ({len(hashes)} > {max_commits}). "
+            "Either raise `revocation.walk_max_commits` in .memforge/config.yaml OR "
+            "publish a `memforge revocation-snapshot` commit to compress history."
+        )
+
+    bytes_read = 0
+    for commit_hash in hashes:
+        if not _HEX40_RE.match(commit_hash):
+            # git log --format=%H emits 40-char hex; anything else means
+            # an unexpected upstream change. Fail closed.
+            raise RevocationError(
+                f"unexpected non-hex commit hash from git log: {commit_hash!r}"
+            )
+        body_proc = subprocess.run(
+            ["git", "-C", str(repo_path), "log", "-1", "--format=%B", commit_hash],
+            check=False,
+            capture_output=True,
+            text=True,
+        )
+        if body_proc.returncode != 0:
+            raise RevocationError(
+                f"git log -1 {commit_hash} exited {body_proc.returncode}: {body_proc.stderr}"
+            )
+        message = body_proc.stdout.rstrip("\n")
+        bytes_read += len(message)
+        if bytes_read > max_bytes:
+            raise RevocationError(
+                f"revocation-walk byte cap exceeded ({bytes_read} > {max_bytes}). "
+                "Either raise `revocation.walk_max_bytes` in .memforge/config.yaml OR "
+                "publish a `memforge revocation-snapshot` commit to compress history."
+            )
         body = parse_revoke_commit_body(message)
         if body is None:
             continue

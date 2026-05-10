@@ -17,6 +17,7 @@ from typing import Optional
 import yaml
 
 from memforge import crypto
+from memforge._security import secure_read_text
 from memforge.identity import IdentityError, check_fs_mode, now_iso, write_secure_yaml
 from memforge.registry import SENDER_SEQUENCE_SUBDIR, REGISTRY_DIRNAME
 
@@ -63,15 +64,15 @@ def init_sender_sequence(memory_root: Path, *, sender_uid: str, operator_uuid: s
 
 
 def load_sender_sequence(memory_root: Path, sender_uid: str) -> dict:
-    """Load a sender-sequence file after FS-mode + ownership verification.
+    """Load a sender-sequence file with TOCTOU-safe read + ownership verification.
 
     Raises `IdentityError` (fail-closed) per integrity invariant 20 if
-    modes don't match or ownership doesn't match the effective uid.
+    the file does not exist, modes don't match, ownership doesn't match
+    the effective uid, or the path is a symlink (POSIX O_NOFOLLOW refusal).
     """
     path = sender_sequence_path(memory_root, sender_uid)
-    check_fs_mode(path)
-    with open(path, "r", encoding="utf-8") as f:
-        data = yaml.safe_load(f)
+    text = secure_read_text(path)
+    data = yaml.safe_load(text)
     if not isinstance(data, dict):
         raise IdentityError(f"sender-sequence {path} must be a YAML mapping")
     return data

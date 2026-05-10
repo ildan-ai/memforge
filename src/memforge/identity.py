@@ -30,6 +30,7 @@ from memforge._security import (
     host_node_name,
     restrict_dir_to_owner,
     restrict_file_to_owner,
+    secure_read_text,
     verify_owner_restricted,
 )
 
@@ -152,10 +153,9 @@ def load_operator_identity(path: Optional[Path] = None) -> dict:
     extension; advisory pointer to the current GPG key).
     """
     target = path or OPERATOR_IDENTITY_PATH
-    check_fs_mode(target)
     try:
-        with open(target, "r", encoding="utf-8") as f:
-            data = yaml.safe_load(f)
+        text = secure_read_text(target)
+        data = yaml.safe_load(text)
     except yaml.YAMLError as exc:
         raise IdentityError(f"identity file {target} YAML parse failed: {exc}") from exc
     if not isinstance(data, dict):

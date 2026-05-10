@@ -14,6 +14,7 @@ from typing import Iterable, Optional
 import yaml
 
 from memforge import crypto
+from memforge._security import secure_read_text
 from memforge.identity import (
     IdentityError,
     check_fs_mode,
@@ -111,11 +112,14 @@ def save_attestation(memory_root: Path, record: dict) -> Path:
 
 
 def load_attestation(memory_root: Path, agent_session_id: str) -> dict:
-    """Load + FS-mode-verify an attestation. Raises on tamper / mode / ownership issues."""
+    """Load + FS-mode-verify an attestation. Raises on tamper / mode / ownership issues.
+
+    Uses secure_read_text for TOCTOU-safe read on POSIX (O_NOFOLLOW +
+    fd-fstat verification); equivalent path-level check on Windows.
+    """
     path = attestation_path(memory_root, agent_session_id)
-    check_fs_mode(path)
-    with open(path, "r", encoding="utf-8") as f:
-        data = yaml.safe_load(f)
+    text = secure_read_text(path)
+    data = yaml.safe_load(text)
     if not isinstance(data, dict):
         raise AttestationError(f"attestation {path} must be a YAML mapping")
     for required in (
@@ -197,8 +201,7 @@ def is_nonce_seen(memory_root: Path, operator_uuid: str, nonce: str) -> bool:
     path = seen_nonce_path(memory_root, operator_uuid)
     if not path.is_file():
         return False
-    with open(path, "r", encoding="utf-8") as f:
-        data = yaml.safe_load(f) or {}
+    data = yaml.safe_load(secure_read_text(path)) or {}
     return nonce in (data.get("nonces") or {})
 
 
@@ -215,9 +218,7 @@ def record_seen_nonce(memory_root: Path, operator_uuid: str, nonce: str, *, expi
     path = seen_nonce_path(memory_root, operator_uuid)
     data = {}
     if path.is_file():
-        check_fs_mode(path)
-        with open(path, "r", encoding="utf-8") as f:
-            data = yaml.safe_load(f) or {}
+        data = yaml.safe_load(secure_read_text(path)) or {}
     nonces = data.setdefault("nonces", {})
     nonces[nonce] = {"expires_at": expires_at, "first_seen_at": now_iso()}
     # GC: drop entries whose expires_at + 10 min skew has already passed.

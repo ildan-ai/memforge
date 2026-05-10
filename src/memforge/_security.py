@@ -35,6 +35,7 @@ import stat
 import subprocess
 import sys
 from pathlib import Path
+from typing import Optional
 
 IS_WINDOWS = sys.platform == "win32"
 
@@ -73,6 +74,104 @@ def restrict_dir_to_owner(path: Path, *, mode: int = 0o700) -> None:
         _windows_restrict(path)
     else:
         os.chmod(path, mode)
+
+
+def secure_read_text(path: Path, *, file_mode: int = 0o600, encoding: str = "utf-8") -> str:
+    """Open `path`, verify owner restriction ON THE FILE DESCRIPTOR, read text.
+
+    Closes the TOCTOU window between `verify_owner_restricted(path)` and a
+    subsequent `open(path, "r")`: a same-uid attacker could swap the file
+    (or substitute a symlink) between the verify call and the read. This
+    function does both in one shot:
+
+    1. POSIX: opens with `O_RDONLY | O_NOFOLLOW` (refuses if path is a
+       symlink) + `os.fstat(fd)` checks mode + owner. The fd is bound to
+       the file inode at open-time; subsequent path-level swaps do not
+       affect the read.
+    2. Windows: opens normally + calls `verify_owner_restricted(path)` on
+       the path (Windows ACLs are not bound to a single inode the same
+       way; the path-level check is the closest equivalent + native
+       Windows lacks `O_NOFOLLOW`).
+
+    Raises `SecurityError` on any deviation.
+    """
+    if not path.exists():
+        raise SecurityError(f"secure file missing: {path}")
+    if IS_WINDOWS:
+        # Windows: path-level verification is what we have; the symlink-
+        # swap surface is much smaller on NTFS because symlinks require
+        # admin or developer-mode privileges by default.
+        verify_owner_restricted(path)
+        with open(path, "r", encoding=encoding) as f:
+            return f.read()
+
+    # POSIX path: open with O_NOFOLLOW, verify fd, read.
+    flags = os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0)
+    try:
+        fd = os.open(str(path), flags)
+    except OSError as exc:
+        # ELOOP (POSIX) when O_NOFOLLOW refuses a symlink.
+        raise SecurityError(
+            f"secure_read_text refused to open {path}: {exc}. "
+            "Path may be a symlink (rejected) or permissions block read."
+        ) from exc
+    try:
+        st = os.fstat(fd)
+        actual_mode = stat.S_IMODE(st.st_mode)
+        if actual_mode != file_mode:
+            raise SecurityError(
+                f"{path} fd-mode is {oct(actual_mode)}, expected {oct(file_mode)}. "
+                "Fail-closed; TOCTOU-swap detected OR mode relaxed."
+            )
+        if hasattr(os, "geteuid") and st.st_uid != os.geteuid():
+            raise SecurityError(
+                f"{path} fd-uid={st.st_uid} != effective uid={os.geteuid()}. "
+                "Fail-closed; ownership mismatch."
+            )
+        with os.fdopen(fd, "r", encoding=encoding) as f:
+            return f.read()
+    except Exception:
+        try:
+            os.close(fd)
+        except OSError:
+            pass
+        raise
+
+
+def secure_read_bytes(path: Path, *, file_mode: int = 0o600) -> bytes:
+    """Same contract as `secure_read_text` but returns bytes (for binary content)."""
+    if not path.exists():
+        raise SecurityError(f"secure file missing: {path}")
+    if IS_WINDOWS:
+        verify_owner_restricted(path)
+        with open(path, "rb") as f:
+            return f.read()
+    flags = os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0)
+    try:
+        fd = os.open(str(path), flags)
+    except OSError as exc:
+        raise SecurityError(
+            f"secure_read_bytes refused to open {path}: {exc}."
+        ) from exc
+    try:
+        st = os.fstat(fd)
+        actual_mode = stat.S_IMODE(st.st_mode)
+        if actual_mode != file_mode:
+            raise SecurityError(
+                f"{path} fd-mode is {oct(actual_mode)}, expected {oct(file_mode)}."
+            )
+        if hasattr(os, "geteuid") and st.st_uid != os.geteuid():
+            raise SecurityError(
+                f"{path} fd-uid={st.st_uid} != effective uid={os.geteuid()}."
+            )
+        with os.fdopen(fd, "rb") as f:
+            return f.read()
+    except Exception:
+        try:
+            os.close(fd)
+        except OSError:
+            pass
+        raise
 
 
 def verify_owner_restricted(path: Path, *, file_mode: int = 0o600, parent_mode: int = 0o700) -> None:
@@ -133,31 +232,34 @@ def _posix_verify(path: Path, *, file_mode: int) -> None:
         )
 
 
-# ---------- Windows implementation (icacls-based) ----------
+# ---------- Windows implementation (PowerShell Get-Acl + SID-based check) ----------
 
 
-# ACEs that imply "not owner-restricted" if present on the path's ACL.
-# All matches are case-insensitive substring matches against icacls output.
-_FORBIDDEN_PRINCIPALS = (
-    "Everyone:",
-    "Authenticated Users:",
-    "BUILTIN\\Users:",
-    "BUILTIN\\Guests:",
-    "NT AUTHORITY\\INTERACTIVE:",
-    "NT AUTHORITY\\Authenticated Users:",
-    "NT AUTHORITY\\NETWORK:",
-    "NT AUTHORITY\\BATCH:",
-    "NT AUTHORITY\\SERVICE:",
-    "NT AUTHORITY\\ANONYMOUS LOGON:",
-    "Guest:",
-    "Users:",
-)
+# Well-known forbidden SIDs. SIDs are language-agnostic identifiers;
+# parsing localized icacls output (the v0.5.2 implementation) failed
+# closed on English Windows only and failed OPEN on every other locale
+# (German "Jeder" for Everyone, French "Tout le monde", etc.). Spec
+# §"Operator-identity file" v0.5.3 mandates SID-based enforcement.
+_FORBIDDEN_SIDS = frozenset({
+    "S-1-1-0",        # Everyone
+    "S-1-5-7",        # ANONYMOUS LOGON
+    "S-1-5-11",       # Authenticated Users
+    "S-1-5-32-545",   # BUILTIN\Users
+    "S-1-5-32-546",   # BUILTIN\Guests
+    "S-1-5-4",        # INTERACTIVE
+    "S-1-5-2",        # NETWORK
+    "S-1-5-3",        # BATCH
+    "S-1-5-6",        # SERVICE
+    "S-1-5-1",        # DIALUP
+    "S-1-5-13",       # TERMINAL SERVER USER
+    "S-1-5-14",       # REMOTE INTERACTIVE LOGON
+})
 
 
 def _icacls_path() -> str:
-    # icacls.exe is in %SystemRoot%\System32 on every supported Windows; rely on
-    # PATH having it. If somehow missing, the subprocess call raises FileNotFoundError
-    # and the caller fails closed.
+    # icacls.exe is in %SystemRoot%\System32 on every supported Windows;
+    # used only for the restrict-path (write-side; SID translation not
+    # needed since we GRANT to a known user, never enumerate).
     return "icacls"
 
 
@@ -166,23 +268,21 @@ def _windows_restrict(path: Path) -> None:
 
     Two icacls calls:
       icacls <path> /inheritance:r
-        Removes inherited permissions; converts inherited to explicit.
-      icacls <path> /remove:g "<other-principal>" ... ; /grant:r <user>:F
-        Replaces any existing ACE for the current user with Full Control.
+        Removes inherited permissions; does NOT convert inherited to explicit.
+      icacls <path> /grant:r <user>:F
+        Grants Full Control to current user (replacing any prior ACE).
 
-    We use /inheritance:r (remove all inherited; do NOT convert) so the
-    file's only ACEs become the explicit /grant we add. The /grant:r form
-    REPLACES rather than adds.
+    Both calls write SIDs through the user-name resolution layer Windows
+    handles internally; the user name on this side is interpreted by
+    Windows itself, not by us.
     """
     user = current_owner_label()
-    # Step 1: strip inherited ACEs.
     subprocess.run(
         [_icacls_path(), str(path), "/inheritance:r"],
         check=True,
         capture_output=True,
         text=True,
     )
-    # Step 2: explicitly grant Full Control to the current user (replacing any prior ACE).
     subprocess.run(
         [_icacls_path(), str(path), "/grant:r", f"{user}:F"],
         check=True,
@@ -191,41 +291,73 @@ def _windows_restrict(path: Path) -> None:
     )
 
 
-def _windows_verify(path: Path) -> None:
-    """Parse `icacls <path>` output; reject any ACE not owned by current user.
-
-    icacls output shape:
-        <path-line> <ace-1>
-                    <ace-2>
-                    <ace-3>
-        Successfully processed 1 files; Failed processing 0 files
-
-    We collect all ACE lines (everything after the path token in line 1
-    plus continuation lines), then check (a) the current user has an ACE
-    and (b) no forbidden principal is present.
-    """
-    user = current_owner_label().lower()
+def _windows_current_user_sid() -> str:
+    """Get current user's SID via PowerShell. Cached per-process."""
+    global __CURRENT_USER_SID_CACHE
+    if __CURRENT_USER_SID_CACHE is not None:
+        return __CURRENT_USER_SID_CACHE
     proc = subprocess.run(
-        [_icacls_path(), str(path)],
+        [
+            "powershell", "-NoProfile", "-Command",
+            "[System.Security.Principal.WindowsIdentity]::GetCurrent().User.Value",
+        ],
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    sid = proc.stdout.strip()
+    if not sid.startswith("S-1-"):
+        raise SecurityError(
+            f"could not resolve current user SID via PowerShell. Got: {sid!r}"
+        )
+    __CURRENT_USER_SID_CACHE = sid
+    return sid
+
+
+__CURRENT_USER_SID_CACHE: Optional[str] = None
+
+
+def _windows_verify(path: Path) -> None:
+    """Verify `path` is restricted to current owner via SID-based ACL check.
+
+    Closes v0.5.3 BLOCKER D: the v0.5.2 implementation parsed localized
+    icacls output ("Everyone:") which failed open on non-English Windows.
+    v0.5.3 uses PowerShell Get-Acl + IdentityReference.Translate to get
+    SIDs directly. SIDs are language-agnostic.
+
+    Process:
+    1. Run `powershell -Command "..."` that emits one SID per ACE line.
+    2. Reject if any SID is in the forbidden-SIDs denylist.
+    3. Reject if the current user's SID is not present (no ACE for owner).
+    """
+    ps_cmd = (
+        f"$ErrorActionPreference='Stop'; "
+        f"(Get-Acl -Path '{path}').Access | ForEach-Object {{ "
+        f"$_.IdentityReference.Translate([System.Security.Principal.SecurityIdentifier]).Value "
+        f"}}"
+    )
+    proc = subprocess.run(
+        ["powershell", "-NoProfile", "-Command", ps_cmd],
         check=False,
         capture_output=True,
         text=True,
     )
     if proc.returncode != 0:
         raise SecurityError(
-            f"icacls failed on {path}: {proc.stderr.strip() or proc.stdout.strip()}"
+            f"PowerShell Get-Acl failed on {path}: "
+            f"{proc.stderr.strip() or proc.stdout.strip()}"
         )
-    out = proc.stdout
-    out_lower = out.lower()
-    for principal in _FORBIDDEN_PRINCIPALS:
-        if principal.lower() in out_lower:
-            raise SecurityError(
-                f"{path} ACL contains forbidden principal {principal!r}. "
-                f"Run `icacls \"{path}\" /inheritance:r /grant:r \"{current_owner_label()}:F\"` "
-                f"to restrict to the current owner only."
-            )
-    if user not in out_lower:
+    sids = [line.strip() for line in proc.stdout.splitlines() if line.strip()]
+    forbidden_present = [s for s in sids if s in _FORBIDDEN_SIDS]
+    if forbidden_present:
         raise SecurityError(
-            f"{path} ACL does not list current owner {current_owner_label()!r}. "
+            f"{path} ACL contains forbidden SID(s) {forbidden_present!r}. "
+            f"Re-run `icacls \"{path}\" /inheritance:r /grant:r \"{current_owner_label()}:F\"` "
+            "to restrict to the current owner only."
+        )
+    user_sid = _windows_current_user_sid()
+    if user_sid not in sids:
+        raise SecurityError(
+            f"{path} ACL does not include current owner SID {user_sid!r}. "
             f"Run `icacls \"{path}\" /grant:r \"{current_owner_label()}:F\"`."
         )

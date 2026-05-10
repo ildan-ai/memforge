@@ -7,7 +7,7 @@ Spec ref: §"Operator identity + cross-store references (v0.5.0+)" subsection
 from __future__ import annotations
 
 import os
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Optional
 
@@ -15,6 +15,10 @@ import yaml
 
 from memforge import crypto
 from memforge.identity import now_iso
+
+
+DEFAULT_ROTATION_COOLDOWN_HOURS = 24
+MIN_ROTATION_COOLDOWN_HOURS = 1
 
 
 REGISTRY_DIRNAME = ".memforge"
@@ -283,10 +287,77 @@ def sign_and_save(registry: dict, memory_root: Path, *, signer_uuid: str, signer
     return path
 
 
-def _compute_cooldown_expiry() -> str:
-    """Default 24-hour cool-down expiry. Operator config MAY narrow but not below 1h."""
-    from datetime import timedelta
-    return (datetime.now(timezone.utc) + timedelta(hours=24)).replace(microsecond=0).isoformat().replace("+00:00", "Z")
+def _compute_cooldown_expiry(*, hours: float = DEFAULT_ROTATION_COOLDOWN_HOURS) -> str:
+    """Default 24-hour cool-down expiry. Floor 1h enforced at the registry layer."""
+    if hours < MIN_ROTATION_COOLDOWN_HOURS:
+        raise RegistryError(
+            f"rotation cool-down ({hours}h) below floor {MIN_ROTATION_COOLDOWN_HOURS}h. "
+            "Cool-down is a security-critical window for detecting unauthorized rotations."
+        )
+    return (
+        (datetime.now(timezone.utc) + timedelta(hours=hours))
+        .replace(microsecond=0)
+        .isoformat()
+        .replace("+00:00", "Z")
+    )
+
+
+def key_is_in_cooldown(registry: dict, key_id: str, *, at_time: Optional[str] = None) -> bool:
+    """Return True if `key_id` is currently in its rotation cool-down window.
+
+    Spec ref: §"Mandatory cool-down period". A key that was rotated in via
+    `rotate-key` carries `rotation_cooldown_expires_at` in its registry
+    entry. Until that timestamp passes, the key MUST NOT be honored for
+    write signatures (registry-layer enforcement; closes the v0.5.2
+    threat-model MAJOR that previously left enforcement at the CLI layer).
+
+    `at_time` defaults to current UTC; callers verifying historical
+    signatures should pass `signature.signing_time` to honor signing-time-
+    aware verification.
+    """
+    when = at_time or now_iso()
+    for op in registry.get("operators", []):
+        for k in op.get("public_keys", []):
+            if k.get("key_id") != key_id:
+                continue
+            cooldown_until = k.get("rotation_cooldown_expires_at")
+            if not cooldown_until:
+                return False
+            return when < cooldown_until
+    return False
+
+
+def verify_signing_key_acceptable(
+    registry: dict,
+    key_id: str,
+    *,
+    signing_time: Optional[str] = None,
+) -> None:
+    """Verify that `key_id` is acceptable as a signing key at `signing_time`.
+
+    Combines registry-membership + cool-down checks. Revocation check is
+    delegated to the caller (since the revocation set lives in git history,
+    not the registry).
+
+    Raises `RegistryError` (fail-closed) on:
+      - `key_id` not in the registry under any operator.
+      - `key_id` is in cool-down at `signing_time`.
+
+    Callers (typically adapters verifying a write's signature) MUST also
+    consult the revocation set per §"Signing-time-aware verification".
+    """
+    signer_operator = find_operator_by_key_id(registry, key_id)
+    if signer_operator is None:
+        raise RegistryError(
+            f"signing key {key_id!r} not present in operator-registry. Reject the signature."
+        )
+    if key_is_in_cooldown(registry, key_id, at_time=signing_time):
+        raise RegistryError(
+            f"signing key {key_id!r} is in rotation cool-down at {signing_time or 'now'}. "
+            "Receivers MUST reject writes signed by this key until the cool-down expires "
+            "(spec §\"Mandatory cool-down period\"). If you control this key and the rotation "
+            "was unauthorized, run `memforge: key-compromise` rather than waiting out the window."
+        )
 
 
 def get_active_key(registry: dict, operator_uuid: str) -> Optional[dict]:
