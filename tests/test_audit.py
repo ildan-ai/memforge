@@ -107,15 +107,19 @@ def test_files_to_audit_recurses_into_rollups(tmp_path: Path) -> None:
         encoding="utf-8",
     )
 
-    # Normalize path separators so the assertion is platform-agnostic
-    # (POSIX uses "/"; Windows os.walk + os.path.join produces "\\").
-    actual = [p.replace("\\", "/") for p in _files_to_audit(tmp_path)]
-    assert actual == [
+    # Normalize path separators + sort: POSIX `os.walk` returns ASCII order
+    # (uppercase 'R' < lowercase 'f', so README first); Windows NTFS returns
+    # case-insensitive order (README after feedback). The audit logic
+    # surfaces the right SET of files; ordering between consumers is the
+    # consumer's responsibility.
+    actual = sorted(p.replace("\\", "/") for p in _files_to_audit(tmp_path))
+    expected = sorted([
         "feedback_a.md",
         "forge/README.md",
         "forge/feedback_detail_one.md",
         "forge/project_detail_two.md",
-    ]
+    ])
+    assert actual == expected
 
 
 def test_files_to_audit_excludes_archive_recursively(tmp_path: Path) -> None:
