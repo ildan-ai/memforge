@@ -107,7 +107,10 @@ def test_files_to_audit_recurses_into_rollups(tmp_path: Path) -> None:
         encoding="utf-8",
     )
 
-    assert _files_to_audit(tmp_path) == [
+    # Normalize path separators so the assertion is platform-agnostic
+    # (POSIX uses "/"; Windows os.walk + os.path.join produces "\\").
+    actual = [p.replace("\\", "/") for p in _files_to_audit(tmp_path)]
+    assert actual == [
         "feedback_a.md",
         "forge/README.md",
         "forge/feedback_detail_one.md",

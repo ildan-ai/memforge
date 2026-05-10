@@ -212,40 +212,52 @@ def test_parse_revoke_commit_body_rejects_wrong_prefix():
 
 
 def test_write_secure_yaml_atomic_mode(tmp_path):
-    """v0.5.2: write_secure_yaml must create file at 0600 atomically, never at default umask."""
+    """v0.5.2: write_secure_yaml must create file restricted to current owner atomically."""
+    from memforge._security import IS_WINDOWS, verify_owner_restricted
     import stat as _stat
 
     target = tmp_path / "subdir" / "secret.yaml"
     identity.write_secure_yaml(target, {"k": "v"})
     assert target.is_file()
-    assert _stat.S_IMODE(target.stat().st_mode) == 0o600
-    # Parent dir mode.
-    assert _stat.S_IMODE(target.parent.stat().st_mode) == 0o700
+    # Platform-aware verification (POSIX mode bits on Unix; NTFS ACLs on Windows).
+    verify_owner_restricted(target)
+    if not IS_WINDOWS:
+        # POSIX-specific assertion that the v0.5.2 implementation also
+        # exposed the right mode bits (caught the regression that the
+        # generic verify masked).
+        assert _stat.S_IMODE(target.stat().st_mode) == 0o600
+        assert _stat.S_IMODE(target.parent.stat().st_mode) == 0o700
     # No leftover tmp files.
     leftovers = [p for p in target.parent.iterdir() if ".tmp-" in p.name]
     assert not leftovers, f"leftover tmp files: {leftovers}"
 
 
 def test_write_secure_yaml_overwrite_preserves_mode(tmp_path):
-    """v0.5.2: re-writing an existing secure file must keep 0600 + leave no tmp."""
+    """v0.5.2: re-writing an existing secure file must keep restriction + leave no tmp."""
+    from memforge._security import IS_WINDOWS, verify_owner_restricted
     import stat as _stat
 
     target = tmp_path / "secret.yaml"
     identity.write_secure_yaml(target, {"v": 1})
     identity.write_secure_yaml(target, {"v": 2})
-    assert _stat.S_IMODE(target.stat().st_mode) == 0o600
+    verify_owner_restricted(target)
+    if not IS_WINDOWS:
+        assert _stat.S_IMODE(target.stat().st_mode) == 0o600
     leftovers = [p for p in target.parent.iterdir() if ".tmp-" in p.name]
     assert not leftovers
 
 
 def test_write_secure_bytes_atomic_mode(tmp_path):
-    """v0.5.2: write_secure_bytes follows the same atomic 0600 contract."""
+    """v0.5.2: write_secure_bytes follows the same atomic restricted-file contract."""
+    from memforge._security import IS_WINDOWS, verify_owner_restricted
     import stat as _stat
 
     target = tmp_path / "secret.bin"
     identity.write_secure_bytes(target, b"\x00\x01\x02")
     assert target.read_bytes() == b"\x00\x01\x02"
-    assert _stat.S_IMODE(target.stat().st_mode) == 0o600
+    verify_owner_restricted(target)
+    if not IS_WINDOWS:
+        assert _stat.S_IMODE(target.stat().st_mode) == 0o600
     leftovers = [p for p in target.parent.iterdir() if ".tmp-" in p.name]
     assert not leftovers
 
