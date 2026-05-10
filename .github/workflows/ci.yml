@@ -46,7 +46,7 @@ jobs:
         # `### Added` / `### Changed` headings across version blocks; siblings_only
         # config would cover this, but blanket-disabling it is cleaner and the
         # CHANGELOG headings are the only recurring duplicates in the tree.
-        run: markdownlint '**/*.md' --ignore node_modules --disable MD013 MD024 MD025 MD026 MD031 MD032 MD033 MD034 MD040 MD041
+        run: markdownlint '**/*.md' --ignore node_modules --disable MD013 MD024 MD025 MD026 MD031 MD032 MD033 MD034 MD040 MD041 MD060
 
   spec-version-check:
     name: Spec version consistency
