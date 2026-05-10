@@ -2,7 +2,15 @@
 
 **Typed, git-native, dynamic memory for coding agents.** A markdown folder + a small spec + reference tooling. Works across Claude Code, Cursor, Aider, Codex, and GitHub Copilot Chat through thin adapters.
 
+[![DOI](https://zenodo.org/badge/DOI/10.5281/zenodo.20113964.svg)](https://doi.org/10.5281/zenodo.20113964)
+
 > **Status: pre-1.0; external PRs paused.** Issues and Discussions are open. External pull requests are paused until the Contributor License Agreement infrastructure lands; the CLA flow will land in a v0.3.x patch release. See [CONTRIBUTING.md](./CONTRIBUTING.md). Security reports go through the private channel in [SECURITY.md](./SECURITY.md).
+
+## Cite this work
+
+If you use MemForge in research or publications, please cite:
+
+> Hiltz, Mike. *MemForge: Portable, agent-neutral persistent memory format for AI coding agents (v0.5.0)*. Zenodo, 2026. DOI: [10.5281/zenodo.20113964](https://doi.org/10.5281/zenodo.20113964)
 
 ## The gap MemForge fills
 
