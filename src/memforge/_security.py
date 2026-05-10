@@ -31,6 +31,7 @@ from __future__ import annotations
 
 import os
 import platform
+import re
 import stat
 import subprocess
 import sys
@@ -292,24 +293,27 @@ def _windows_restrict(path: Path) -> None:
 
 
 def _windows_current_user_sid() -> str:
-    """Get current user's SID via PowerShell. Cached per-process."""
+    """Get current user's SID via `whoami /user /fo csv /nh`. Cached per-process.
+
+    `whoami` is a builtin Windows binary in `%SystemRoot%\\System32`. The
+    `/fo csv /nh` flags produce machine-parseable CSV with no header.
+    Output shape: `"DOMAIN\\user","S-1-5-21-..."`.
+    """
     global __CURRENT_USER_SID_CACHE
     if __CURRENT_USER_SID_CACHE is not None:
         return __CURRENT_USER_SID_CACHE
     proc = subprocess.run(
-        [
-            "powershell", "-NoProfile", "-Command",
-            "Import-Module Microsoft.PowerShell.Security *> $null; "
-            "[System.Security.Principal.WindowsIdentity]::GetCurrent().User.Value",
-        ],
+        ["whoami", "/user", "/fo", "csv", "/nh"],
         check=True,
         capture_output=True,
         text=True,
     )
-    sid = proc.stdout.strip()
-    if not sid.startswith("S-1-"):
+    # Output: "DOMAIN\user","S-1-5-21-..."
+    parts = [p.strip().strip('"') for p in proc.stdout.strip().split(",")]
+    sid = next((p for p in parts if p.startswith("S-1-")), None)
+    if sid is None:
         raise SecurityError(
-            f"could not resolve current user SID via PowerShell. Got: {sid!r}"
+            f"could not resolve current user SID via whoami. Got: {proc.stdout!r}"
         )
     __CURRENT_USER_SID_CACHE = sid
     return sid
@@ -318,53 +322,115 @@ def _windows_current_user_sid() -> str:
 __CURRENT_USER_SID_CACHE: Optional[str] = None
 
 
+# SDDL ACE parser. Each ACE has shape (type;flags;rights;objectGUID;
+# inheritObjectGUID;trustee). For our purposes we only need the trustee
+# field (last position), which is either a SID like S-1-1-0 or a two-letter
+# SDDL alias like WD (= Everyone = S-1-1-0).
+#
+# SDDL aliases for forbidden well-known principals
+# (https://learn.microsoft.com/en-us/windows/win32/secauthz/sid-strings).
+_SDDL_ALIAS_TO_SID = {
+    "WD": "S-1-1-0",        # Everyone
+    "AN": "S-1-5-7",        # ANONYMOUS LOGON
+    "AU": "S-1-5-11",       # Authenticated Users
+    "BU": "S-1-5-32-545",   # BUILTIN\Users
+    "BG": "S-1-5-32-546",   # BUILTIN\Guests
+    "IU": "S-1-5-4",        # INTERACTIVE
+    "NU": "S-1-5-2",        # NETWORK
+    "BA": "S-1-5-32-544",   # BUILTIN\Administrators (not in forbidden list, but parseable)
+    "SY": "S-1-5-18",       # LOCAL SYSTEM (not in forbidden list)
+    "LA": "S-1-5-21-...-500",  # local Administrator (template; not used)
+}
+
+_ACE_RE = re.compile(
+    r"\(([^;]*);([^;]*);([^;]*);([^;]*);([^;]*);([^)]+)\)"
+)
+
+
+def _sddl_to_sids(sddl: str) -> list[str]:
+    """Extract all trustee SIDs from an SDDL ACL string.
+
+    SDDL format: `D:PAI(A;;FA;;;S-1-5-21-...)(A;;FA;;;BA)`. The trustee field
+    is either a full SID or a 2-letter SDDL alias. We resolve aliases to
+    SIDs via `_SDDL_ALIAS_TO_SID`.
+    """
+    sids: list[str] = []
+    for match in _ACE_RE.finditer(sddl):
+        trustee = match.group(6).strip()
+        if trustee.startswith("S-1-"):
+            sids.append(trustee)
+        elif trustee in _SDDL_ALIAS_TO_SID:
+            sids.append(_SDDL_ALIAS_TO_SID[trustee])
+        else:
+            # Unknown 2-letter alias OR alias longer than 2 chars (e.g.
+            # NS = LOCAL_SERVICE). Be conservative: if it's not a SID and
+            # not in our known-safe alias table, treat as unknown and
+            # surface it.
+            sids.append(f"UNKNOWN-SDDL-TRUSTEE:{trustee}")
+    return sids
+
+
 def _windows_verify(path: Path) -> None:
     """Verify `path` is restricted to current owner via SID-based ACL check.
 
     Closes v0.5.3 BLOCKER D: the v0.5.2 implementation parsed localized
-    icacls output ("Everyone:") which failed open on non-English Windows.
-    v0.5.3 uses PowerShell Get-Acl + IdentityReference.Translate to get
-    SIDs directly. SIDs are language-agnostic.
+    icacls output which failed open on non-English Windows. v0.5.3 uses
+    `icacls /save` to dump the ACL in SDDL (Security Descriptor Definition
+    Language) format. SDDL is the canonical Windows ACL serialization;
+    trustees are expressed as SIDs (language-agnostic) or as 2-letter
+    SDDL aliases (e.g. WD = Everyone). We parse SDDL ACEs + check against
+    a forbidden-SIDs denylist.
+
+    Earlier v0.5.3 attempts used PowerShell `Get-Acl` but GitHub-Actions-
+    hosted Windows runners have a broken Microsoft.PowerShell.Security
+    type-data import that prevents Get-Acl from loading. icacls is a
+    builtin binary in %SystemRoot%\\System32 with no module dependencies.
 
     Process:
-    1. Run `powershell -Command "..."` that emits one SID per ACE line.
-    2. Reject if any SID is in the forbidden-SIDs denylist.
-    3. Reject if the current user's SID is not present (no ACE for owner).
+    1. Call `icacls <path> /save <tmpfile> /c`. icacls writes the path
+       and its SDDL ACL to tmpfile in UTF-16 LE encoding.
+    2. Parse the SDDL string. Extract trustee SIDs.
+    3. Reject if any SID is in the forbidden-SIDs denylist.
+    4. Reject if the current user's SID is not present.
     """
-    # Explicitly import the Security module: PowerShell Core (pwsh) on
-    # GitHub-hosted Windows runners has restricted auto-loading and would
-    # otherwise emit `CouldNotAutoloadMatchingModule` for Get-Acl.
-    # Redirect ALL output streams from the import to null so that
-    # non-terminating warnings (e.g. type-data duplicate-member
-    # warnings on PS Core when the type data is already loaded by the
-    # host runtime) do not get promoted to terminating errors by the
-    # subsequent `$ErrorActionPreference='Stop'`. Windows PowerShell 5.x
-    # is a no-op when the module is already loaded.
-    ps_cmd = (
-        f"Import-Module Microsoft.PowerShell.Security *> $null; "
-        f"$ErrorActionPreference='Stop'; "
-        f"(Get-Acl -Path '{path}').Access | ForEach-Object {{ "
-        f"$_.IdentityReference.Translate([System.Security.Principal.SecurityIdentifier]).Value "
-        f"}}"
-    )
-    proc = subprocess.run(
-        ["powershell", "-NoProfile", "-Command", ps_cmd],
-        check=False,
-        capture_output=True,
-        text=True,
-    )
-    if proc.returncode != 0:
-        raise SecurityError(
-            f"PowerShell Get-Acl failed on {path}: "
-            f"{proc.stderr.strip() or proc.stdout.strip()}"
+    import tempfile
+
+    with tempfile.NamedTemporaryFile(mode="w", suffix=".acl", delete=False) as f:
+        tmpfile = f.name
+    try:
+        proc = subprocess.run(
+            [_icacls_path(), str(path), "/save", tmpfile, "/c"],
+            check=False,
+            capture_output=True,
+            text=True,
         )
-    sids = [line.strip() for line in proc.stdout.splitlines() if line.strip()]
+        if proc.returncode != 0:
+            raise SecurityError(
+                f"icacls /save failed on {path}: "
+                f"{proc.stderr.strip() or proc.stdout.strip()}"
+            )
+        # icacls /save writes UTF-16 LE with BOM.
+        with open(tmpfile, "r", encoding="utf-16") as f_in:
+            content = f_in.read()
+    finally:
+        try:
+            os.unlink(tmpfile)
+        except OSError:
+            pass
+
+    sids = _sddl_to_sids(content)
     forbidden_present = [s for s in sids if s in _FORBIDDEN_SIDS]
     if forbidden_present:
         raise SecurityError(
             f"{path} ACL contains forbidden SID(s) {forbidden_present!r}. "
             f"Re-run `icacls \"{path}\" /inheritance:r /grant:r \"{current_owner_label()}:F\"` "
             "to restrict to the current owner only."
+        )
+    unknown = [s for s in sids if s.startswith("UNKNOWN-SDDL-TRUSTEE:")]
+    if unknown:
+        raise SecurityError(
+            f"{path} ACL contains unrecognized SDDL trustee(s) {unknown!r}. "
+            "Conservative fail-closed; investigate the ACL via `icacls \"<path>\"`."
         )
     user_sid = _windows_current_user_sid()
     if user_sid not in sids:

@@ -274,14 +274,20 @@ def test_security_current_owner_label_returns_nonempty():
     assert label  # POSIX: "uid=N"; Windows: "DOMAIN\\USER" or "USER"
 
 
-def test_security_windows_acl_parse_rejects_forbidden_sid(monkeypatch):
-    """v0.5.3 BLOCKER closure: SID-based ACL check rejects forbidden well-known SIDs.
+def test_security_sddl_parser_extracts_sids():
+    """v0.5.3: _sddl_to_sids handles raw SIDs + SDDL aliases."""
+    from memforge._security import _sddl_to_sids
 
-    Mocks PowerShell Get-Acl output containing the Everyone SID (S-1-1-0)
-    to exercise the language-agnostic SID denylist. The v0.5.2 icacls
-    string-match implementation failed open on non-English Windows; the
-    v0.5.3 SID-based check is locale-independent.
-    """
+    # Mixed: raw SID + WD alias (Everyone) + AU alias (Authenticated Users).
+    sddl = 'somepath "D:PAI(A;;FA;;;S-1-5-21-111-1000)(A;;FA;;;WD)(A;;FA;;;AU)"'
+    sids = _sddl_to_sids(sddl)
+    assert "S-1-5-21-111-1000" in sids
+    assert "S-1-1-0" in sids  # WD resolved
+    assert "S-1-5-11" in sids  # AU resolved
+
+
+def test_security_windows_acl_rejects_forbidden_sid(monkeypatch):
+    """v0.5.3: SID-based ACL check rejects forbidden well-known SIDs."""
     from memforge import _security as sec
     import subprocess as sp
 
@@ -289,33 +295,41 @@ def test_security_windows_acl_parse_rejects_forbidden_sid(monkeypatch):
     sec.__CURRENT_USER_SID_CACHE = None
     monkeypatch.setattr(sec, "current_owner_label", lambda: "TESTDOMAIN\\testuser")
 
-    class FakeProc:
-        returncode = 0
-        stderr = ""
-        # PowerShell output: one SID per line. First line is the test user;
-        # second is Everyone (forbidden well-known SID).
-        stdout = "S-1-5-21-111-222-333-1000\nS-1-1-0\n"
+    OWNER_SID = "S-1-5-21-111-222-333-1000"
+
+    # Simulate icacls /save writing an SDDL with Everyone (WD) ACE alongside the owner.
+    fake_sddl = f'somepath "D:PAI(A;;FA;;;{OWNER_SID})(A;;FA;;;WD)"'
 
     def fake_run(*args, **kwargs):
         cmd = args[0] if args else kwargs.get("args", [])
-        if cmd and cmd[0] == "powershell":
-            # Two PS calls happen: GetCurrent (returns user SID) + Get-Acl (the ACL).
-            # Differentiate by command text.
-            if "GetCurrent" in " ".join(cmd):
-                p = FakeProc()
-                p.stdout = "S-1-5-21-111-222-333-1000\n"
-                return p
-            return FakeProc()
-        return FakeProc()
+        class P:
+            returncode = 0
+            stdout = ""
+            stderr = ""
+        p = P()
+        if cmd and cmd[0] == "whoami":
+            p.stdout = f'"TESTDOMAIN\\\\testuser","{OWNER_SID}"\n'
+        return p
 
     monkeypatch.setattr(sp, "run", fake_run)
+    # Mock the tempfile-based icacls /save flow by short-circuiting the
+    # file read: monkeypatch builtins.open inside _security to return the
+    # fake SDDL when icacls would have written it.
+    import builtins
+    real_open = builtins.open
+    def fake_open(path, *args, **kwargs):
+        if str(path).endswith(".acl"):
+            from io import StringIO
+            return StringIO(fake_sddl)
+        return real_open(path, *args, **kwargs)
+    monkeypatch.setattr(builtins, "open", fake_open)
     import pathlib
     monkeypatch.setattr(pathlib.Path, "exists", lambda self: True)
     with pytest.raises(sec.SecurityError, match=r"S-1-1-0|forbidden SID"):
         sec.verify_owner_restricted(pathlib.Path("C:\\Users\\testuser\\.memforge\\identity.yaml"))
 
 
-def test_security_windows_acl_parse_accepts_owner_only(monkeypatch):
+def test_security_windows_acl_accepts_owner_only(monkeypatch):
     """v0.5.3: SID-based ACL check accepts when only the owner's SID is present."""
     from memforge import _security as sec
     import subprocess as sp
@@ -325,23 +339,28 @@ def test_security_windows_acl_parse_accepts_owner_only(monkeypatch):
     monkeypatch.setattr(sec, "current_owner_label", lambda: "TESTDOMAIN\\testuser")
 
     OWNER_SID = "S-1-5-21-111-222-333-1000"
-
-    class FakeProc:
-        returncode = 0
-        stderr = ""
+    fake_sddl = f'somepath "D:PAI(A;;FA;;;{OWNER_SID})"'
 
     def fake_run(*args, **kwargs):
         cmd = args[0] if args else kwargs.get("args", [])
-        p = FakeProc()
-        if cmd and cmd[0] == "powershell":
-            if "GetCurrent" in " ".join(cmd):
-                p.stdout = f"{OWNER_SID}\n"
-            else:
-                # Get-Acl returns only the owner SID; no forbidden principals.
-                p.stdout = f"{OWNER_SID}\n"
+        class P:
+            returncode = 0
+            stdout = ""
+            stderr = ""
+        p = P()
+        if cmd and cmd[0] == "whoami":
+            p.stdout = f'"TESTDOMAIN\\\\testuser","{OWNER_SID}"\n'
         return p
 
     monkeypatch.setattr(sp, "run", fake_run)
+    import builtins
+    real_open = builtins.open
+    def fake_open(path, *args, **kwargs):
+        if str(path).endswith(".acl"):
+            from io import StringIO
+            return StringIO(fake_sddl)
+        return real_open(path, *args, **kwargs)
+    monkeypatch.setattr(builtins, "open", fake_open)
     import pathlib
     monkeypatch.setattr(pathlib.Path, "exists", lambda self: True)
     # Should not raise.
@@ -349,7 +368,7 @@ def test_security_windows_acl_parse_accepts_owner_only(monkeypatch):
 
 
 def test_security_windows_acl_rejects_when_owner_sid_missing(monkeypatch):
-    """v0.5.3: SID-based check rejects when the current user's SID is absent from the ACL."""
+    """v0.5.3: SID-based check rejects when the current user's SID is absent."""
     from memforge import _security as sec
     import subprocess as sp
 
@@ -358,23 +377,29 @@ def test_security_windows_acl_rejects_when_owner_sid_missing(monkeypatch):
     monkeypatch.setattr(sec, "current_owner_label", lambda: "TESTDOMAIN\\testuser")
 
     OWNER_SID = "S-1-5-21-111-222-333-1000"
-
-    class FakeProc:
-        returncode = 0
-        stderr = ""
+    OTHER_SID = "S-1-5-21-444-555-666-2222"
+    fake_sddl = f'somepath "D:PAI(A;;FA;;;{OTHER_SID})"'
 
     def fake_run(*args, **kwargs):
         cmd = args[0] if args else kwargs.get("args", [])
-        p = FakeProc()
-        if cmd and cmd[0] == "powershell":
-            if "GetCurrent" in " ".join(cmd):
-                p.stdout = f"{OWNER_SID}\n"
-            else:
-                # ACL lists a DIFFERENT user (not current owner). Reject.
-                p.stdout = "S-1-5-21-444-555-666-1001\n"
+        class P:
+            returncode = 0
+            stdout = ""
+            stderr = ""
+        p = P()
+        if cmd and cmd[0] == "whoami":
+            p.stdout = f'"TESTDOMAIN\\\\testuser","{OWNER_SID}"\n'
         return p
 
     monkeypatch.setattr(sp, "run", fake_run)
+    import builtins
+    real_open = builtins.open
+    def fake_open(path, *args, **kwargs):
+        if str(path).endswith(".acl"):
+            from io import StringIO
+            return StringIO(fake_sddl)
+        return real_open(path, *args, **kwargs)
+    monkeypatch.setattr(builtins, "open", fake_open)
     import pathlib
     monkeypatch.setattr(pathlib.Path, "exists", lambda self: True)
     with pytest.raises(sec.SecurityError, match=r"does not include current owner SID"):
