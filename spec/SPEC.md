@@ -1,6 +1,6 @@
 # MemForge spec
 
-Version 0.4.0.
+Version 0.5.0.
 
 ## Goal
 
@@ -52,6 +52,11 @@ replaces: [<uid>, ...]                          # v0.4.0+: advisory, proposes th
 superseded_by: [<uid>]                          # v0.4.0+: set ONLY by the resolve operation; length exactly 1
 topic_aliases: [<slug>, ...]                    # v0.4.0+: mutual aliases on the canonical anchor memory
 ever_multi_member: <true | false>               # v0.4.0+: monotonic anchor flag, set by resolve, never cleared
+identity: <class:operator-uuid[:agent-session]> # v0.5.0+: REQUIRED on v0.5+ writes (see §"Multi-identity primitives")
+signature:                                      # v0.5.0+: REQUIRED on v0.5+ writes (see §"Cryptographic attribution")
+  algo: <gpg-rsa4096 | gpg-ed25519>
+  signing_time: <ISO-8601 UTC>
+  value: <base64 detached signature>
 ---
 
 <body in markdown>
@@ -440,6 +445,396 @@ This is a **git-layer threat**, not a MemForge-layer threat. The mitigation is a
 
 Adapters that do NOT claim secure-mode MUST emit an informative startup notice that the deployment is operating without git-layer protection and that Tier 2 audit guarantees are reduced. Solo-operator deployments running without branch protection are explicitly NOT in secure-mode; the operator accepts the residual force-push threat as part of running solo.
 
+## v0.5.0 surface map
+
+v0.5.0 extends the format with five coupled elements. The dependencies between the sections that follow:
+
+```
++----------------------+      +-------------------------+      +----------------------+
+| Multi-identity (E1)  |----->| Cryptographic           |<-----| Operator identity +  |
+| identity + signature |      | attribution (E2)        |      | cross-store refs (E3)|
+|  in frontmatter      |      | GPG, signing-time-aware |      | UUIDv7 + registry    |
++----------------------+      | verification, rotation  |      +----------------------+
+                              +-------------------------+               |
+                                       |                                |
+                                       v                                v
+                              +-------------------------+      +----------------------+
+                              | Key lifecycle +         |      | Messaging adapter    |
+                              | revocation (E5)         |<-----| (E4)                 |
+                              | revoke commits, fallback|      | WebSocket, sender_uid|
+                              | recovery-secret         |      | sequence, checkpoints|
+                              +-------------------------+      +----------------------+
+```
+
+Shared envelope (signed across all paths): `{memory_body, identity, sender_uid, sequence_number, signing_time}`. The same envelope applies whether the memory arrives via git pull (E3 + E5) or via WebSocket (E4). Revocation events (E5) propagate via either path. The sections below specify each element in normative terms.
+
+## Multi-identity primitives (v0.5.0+)
+
+(Closes the v0.4.x §"Out of scope" deferral on multi-operator team-scale memory.)
+
+The v0.4.0 format treats `owner` as a free-form string. v0.5.0 introduces two cryptographically-anchored identity classes and makes signed attribution REQUIRED on v0.5+ writes.
+
+### Identity classes (normative)
+
+- **Operator identity.** One per human. Long-lived GPG keypair (RSA-4096 or Ed25519). Stable operator-UUID (UUIDv7) generated at first MemForge install; survives key rotation, machine replacement, OS reinstall. Public key + identity record live in the operator-registry (§"Operator identity + cross-store references").
+- **Agent identity.** One per CC / Cursor / Aider / Continue.dev / etc. session. Ephemeral GPG keypair generated at session start, deleted at session end. Cryptographically bound to the operator-UUID via a session-attestation record signed by the operator's long-lived key.
+
+Adapters MUST refuse to accept a v0.5+ write whose `identity` does not resolve to either a current operator in the operator-registry OR an agent whose session-attestation is signed by a current operator.
+
+### Frontmatter additions (v0.5.0+)
+
+- **`identity`** (REQUIRED on v0.5+ writes). String. Format `<class>:<operator-uuid>[:<agent-session-id>]`. Examples: `operator:01HXY7Z8...` (operator write); `agent:01HXY7Z8...:cc-2026-05-10-aaaa` (agent write under that operator).
+- **`signature`** (REQUIRED on v0.5+ writes). Object with three subfields: `algo` (v0.5.0: `gpg-rsa4096` or `gpg-ed25519`), `signing_time` (ISO-8601 UTC), `value` (base64 of detached signature bytes).
+
+`owner` is RETAINED in v0.5 frontmatter as advisory. v0.5 readers prefer `identity` for trust decisions; `owner` is informational.
+
+### Signed envelope scope (normative)
+
+The signature MUST cover the canonical serialization of:
+
+```
+{memory_body, identity, sender_uid, sequence_number, signing_time}
+```
+
+Substitution at any layer breaks the signature.
+
+### Mixed v0.4 / v0.5 deployment posture
+
+v0.4 memories loaded by v0.5 readers are treated as **read-only-untrusted**. They appear in MEMORY.md but the reader explicitly tags them `(v0.4: unsigned)` in the prompt-injection layer. A v0.5 resolve commit MAY include v0.4 members; if so, the resolve commit MUST satisfy one of:
+
+- **Upgrade path:** the v0.4 memory is rewritten in the same commit to include valid v0.5 `identity` + `signature`, with the signature verified against the current operator-registry.
+- **Exclusion path:** the resolve commit body includes a YAML block `resolve.exclusion_reason:` listing the v0.4 UID + a non-empty reason string (≥ 8 characters).
+
+Resolve commits violating both paths are Tier 2 BLOCKER (audit walks the diff, identifies any v0.4-shaped unsigned member in the resolved group, verifies upgrade-or-exclude).
+
+Bulk upgrade tool: `memforge upgrade-v04-memories` (operator-discretion; documented operator-experience break during transition). Audit emits a one-time MAJOR per unsigned v0.4 memory loaded under v0.5 until upgrade or explicit exclusion.
+
+## Cryptographic attribution (v0.5.0+)
+
+### GPG default backend
+
+v0.5.0 ships with GPG (RSA-4096 or Ed25519). Storage: gpg-agent (default) or operator-specified backend via `gpg --homedir`. Spec **recommends** hardware-key backing for operator long-lived keys in production (YubiKey, Nitrokey, Apple Secure Enclave via gpg-agent shim, OS-specific TPM). v0.5.0 ships software-only reference; hardware-backed is v0.5.x scope. Future v0.5.x+ backend extension: pluggable signature backend for Ed25519-pure, age, Sequoia, post-quantum schemes (Dilithium3, Falcon).
+
+### Signing-time-aware verification
+
+A signature is **valid** if:
+
+1. `signature.algo` is on the adapter's accepted-algo list.
+2. The signing key's public material resolves from the operator-registry as of the commit that introduced the memory.
+3. The signing key was **not revoked** at `signature.signing_time` per the revocation set (§"Key lifecycle + revocation").
+4. The detached signature verifies against the canonical envelope using the signing key's public material.
+5. `signature.signing_time` falls within the receiver's `first_seen_at` clock-skew window (next subsection).
+
+### Clock-skew guard against signing-time backdating
+
+Both `signature.signing_time` and revocation events' `revoked_at` are writer-controlled timestamps. An attacker in possession of a signing key can choose an arbitrarily old `signing_time` value to construct a signature that appears to predate honest revocation events. v0.5.0 bounds this coordinated-backdate attack with the following normative receiver-side rule.
+
+**`first_seen_at` clock-skew guard (normative).** On first receipt of a memory under a given (`identity`, `uid`) pair, the receiver MUST record `first_seen_at` (ISO-8601 UTC wall-clock at receipt) into the per-receiver state. On subsequent verification of any signature claiming that same memory body, the receiver MUST require:
+
+```
+signing_time ∈ [first_seen_at − backdating_max_skew, first_seen_at + future_max_skew]
+```
+
+Defaults: `backdating_max_skew = 10 minutes`; `future_max_skew = 1 minute`. Configurable via `.memforge/config.yaml` keys `identity.backdating_max_skew_seconds` and `identity.future_max_skew_seconds`. A signature whose `signing_time` falls outside this window is rejected + audit MAJOR `signing_time_skew_out_of_window`.
+
+**Honest-operator assumption.** Without trusted timestamping infrastructure (e.g., RFC 3161 Time-Stamping Authorities, server-signed receipt times), coordinated backdating cannot be fully prevented. v0.5.0 assumes operators publish revocation events promptly after compromise detection. The clock-skew window narrows the residual attack surface. Operators SHOULD run NTP-synced clocks; high-stakes deployments SHOULD additionally publish server-signed receipt times (v0.5.x extension).
+
+### Cross-signed rotation chain
+
+When an operator rotates their long-lived key:
+
+1. New keypair generated.
+2. New operator-identity record built, listing the new public key + rotation metadata (`rotated_at`, `rotated_from`, `chain_index: N+1`).
+3. The new record is signed by **both** the old key (cross-signature) and the new key.
+4. The operator-registry update commit (`memforge: operator-registry`) lands the new record. Adapter verifies the cross-signature before accepting the rotation.
+
+**Mandatory cool-down period (MUST; closes the key-rotation privilege-escalation attack).** After a valid rotation commit lands, adapters MUST NOT honor signatures from the **new** key for `identity.rotation_cooldown_hours` after the rotation commit's git author-date (default **24 hours**; configurable in `.memforge/config.yaml`; minimum floor 1 hour). During the cool-down window, signatures continue to verify against the old key (which remains valid until cool-down expiry); the new key is recognized in the registry but its signatures are rejected with audit MAJOR `key_in_rotation_cooldown`. The cool-down gives the legitimate operator a window to detect a malicious rotation (attacker who compromised the old key cannot immediately use the new key) and initiate the `memforge: key-compromise` procedure (which bypasses the cool-down because it follows a different commit prefix and recovery-secret-derived countersignature path).
+
+Verification cost bounded by chain length. To bound across long operator histories, operators MAY publish a fresh-start operator-registry every 10 rotations (or on discretion); fresh-start is signed by the current key only (breaks chain forward). Verification cost is `min(N, 10)` cross-signatures. Commit prefix for fresh-start: `memforge: fresh-start <operator-uuid>`. Fresh-start commits ARE subject to the cool-down period (same rationale: compromised-key-controlled fresh-start is a privilege-escalation vector).
+
+### Per-memory vs per-commit signing
+
+Per-memory signing is the v0.5.0 normative scope. Per-commit signatures remain operationally useful for git-layer integrity (recommended in §"Secure-mode adapter conformance"); v0.5 inherits the recommendation but does not require it. The format is substrate-independent: the same memory verifies whether it arrived via git pull or WebSocket.
+
+## Operator identity + cross-store references (v0.5.0+)
+
+### Operator-identity file (per-machine)
+
+`~/.memforge/operator-identity.yaml`:
+
+```yaml
+operator_uuid: <UUIDv7 string>          # generated at first MemForge install
+operator_name: <human-readable name>     # advisory; for adapter UX
+created: <ISO-8601 UTC>
+machine_origin: <hostname>               # advisory; for backup/recovery audit
+```
+
+Filesystem mode: file 0600, parent 0700. Adapters MUST verify modes at startup; reject on relaxed. **Ownership check (normative):** `stat()` uid MUST match the effective uid of the adapter process; mismatch → fail-closed.
+
+### Operator-registry file (per-memory-root)
+
+`<memory-root>/.memforge/operator-registry.yaml`:
+
+```yaml
+spec_version: 0.5.0
+operators:
+  - operator_uuid: <UUIDv7>
+    public_keys:
+      - key_id: <gpg-fingerprint or hash-of-pubkey>
+        algo: gpg-rsa4096 | gpg-ed25519
+        public_material: <base64>
+        chain_index: 0
+        introduced_at: <ISO-8601 UTC>
+        introduced_by_commit: <git-commit-hash>
+      - key_id: <new-key-id>
+        algo: gpg-ed25519
+        public_material: <base64>
+        chain_index: 1
+        introduced_at: <ISO-8601 UTC>
+        introduced_by_commit: <git-commit-hash>
+        cross_signature_by_chain_index_0: <base64>
+    status: active | superseded
+    operator_name: <human-readable>
+registry_signature:
+  algo: gpg-ed25519
+  signing_uuid: <operator-uuid of registry signer>
+  signing_time: <ISO-8601 UTC>
+  value: <base64>
+```
+
+**Registry signature requirement (normative).** The registry MUST be signed by at least one operator listed in the file. Adapters MUST verify the signature: (1) at adapter startup; (2) on every `references_store` resolution; (3) after every registry-modifying commit. Verification failure (signature invalid, file corrupted, file missing) → adapter HALTS with fail-closed message `"Operator registry unverifiable; refusing to load v0.5+ memories until resolved."`
+
+**Verification cache (normative).** Hot-path verification on every cross-store reference is performance-critical. Adapters MUST implement a content-hash-anchored cache: key = `(registry-file-path, file-size, file-mtime, sha256-of-content)`. On read: re-compute `(size, mtime, sha256)`; if any differs, cache INVALID and signature re-verifies. On any commit observed in git log with prefix `memforge: operator-registry` or `memforge: fresh-start` since the cache anchor, cache INVALID regardless of file-stat match.
+
+**Edit gate (Tier 2).** All edits to `.memforge/operator-registry.yaml` MUST occur in commits whose message starts with `memforge: operator-registry` AND that touch ONLY the registry file. Multi-file commits OR wrong-prefix commits modifying the registry are Tier 2 BLOCKER.
+
+### Cross-store references
+
+`MEMFORGE_STORE = <operator-uuid>:<store-name>` for memory references across operators / machines / forks. Example: `mem:store:<operator-b-uuid>:my-decisions`.
+
+Resolution:
+1. Look up `<operator-b-uuid>` in operator-registry. Absent → HALT.
+2. Verify registry signature (cached per above).
+3. Locate the named store via adapter-configured store-discovery (default: filesystem path `<memory-root>/<operator-uuid>/<store-name>/`). Future v0.5.x: WebSocket fetch from registered remote.
+4. Load memory, verify per-memory signature per §"Cryptographic attribution".
+
+### Trust-bootstrap procedure for multi-operator deployments (operator-facing)
+
+The format is filesystem + git; trust establishment is operator-mediated out-of-band. Standard PGP-trust-bootstrap procedure:
+
+1. Operator A initializes (`memforge init-operator` + `memforge init-store` for the first repo).
+2. Operator B initializes on their own machine.
+3. Operator A and Operator B exchange public-key fingerprints out-of-band (Signal / phone / in-person / verified email). This is standard PGP-trust-bootstrap; the spec does not invent a new primitive.
+4. Operator A: `memforge operator-registry add <operator-b-uuid> --pubkey-fingerprint <fpr>`. CLI verifies the fingerprint matches the pubkey material before adding.
+5. Operator A commits with prefix `memforge: operator-registry`; registry is signed by A; B's entry has `chain_index: 0`.
+6. Operator B clones the repo; B's adapter loads operator-registry signed by A; B sees A as trusted (B already trusts A's key) and themselves listed; B may write under their identity.
+
+Operators SHOULD verify fingerprints via at least two independent channels for adversarial-environment deployments. v0.5.0 spec does not mandate but recommends.
+
+## Messaging adapter contract (WebSocket reference; v0.5.0+)
+
+v0.5.0 specifies a WebSocket reference adapter contract. Substrate locked: WebSocket. Adapter contract: hybrid MUST behavior + MAY substrate-detail.
+
+### Sender-uid format (MUST)
+
+`sender_uid = "<operator-uuid>:<32-byte-hex>"`. Cryptographic binding to operator-uuid + 256-bit-entropy random suffix. Generated at sender start. Persisted alongside sender-sequence file. Adapters MUST reject sender-uids that do NOT match this format.
+
+### Sender-sequence + signed checkpoints (MUST)
+
+Sender-sequence file at `<memory-root>/.memforge/sender-sequence/<sender-uid>.yaml`. Globally monotonic per sender; persisted (FS mode 0600; parent 0700); survives restart.
+
+```yaml
+sender_uid: <operator-uuid>:<random-hex>
+operator_uuid: <operator-uuid>
+created: <ISO-8601 UTC>
+current_sequence: <uint64>
+checkpoints:
+  - sequence: <int>
+    timestamp: <ISO-8601 UTC>
+    signature: <base64 over canonical {sender_uid, sequence, timestamp, operator_uuid}>
+```
+
+Every **100 sequences OR 24 hours** (whichever first), the sender publishes a signed checkpoint over the canonical envelope, computed using the sender's writing key with operator-uuid cryptographically bound. Receiver maintains highest-seen-checkpoint per sender. Receiver REJECTS any write with `sequence < highest-checkpoint-sequence`.
+
+**Sender-sequence file deletion / corruption recovery.** If the file is missing or unreadable at sender startup, adapter MUST generate a NEW sender-uid (do NOT resume with sequence 1 against the old uid). Old sender-uid stays revoked-by-implication. This is an **intentional sender rotation**, not a security gap; receivers maintain `highest_seen_sequence` per old sender-uid and continue rejecting any message arriving under the old uid below its floor.
+
+**Sequence number overflow.** `current_sequence` is uint64. Adapters MUST detect overflow + halt + surface to operator. Practical mitigation: FS mode 0600 closes the int.max DoS vector at the OS layer.
+
+### Receiver state (MUST)
+
+Receiver-side state tracks `highest_seen_sequence` AND `highest_seen_checkpoint` per sender-uid. Persisted at `<memory-root>/.memforge/receiver-state/<sender-uid>.yaml`:
+
+```yaml
+sender_uid: <operator-uuid>:<random-hex>
+operator_uuid: <operator-uuid>
+highest_seen_sequence: <uint64>
+highest_seen_checkpoint:
+  sequence: <uint64>
+  timestamp: <ISO-8601 UTC>
+  signature: <base64>
+first_seen_at: <ISO-8601 UTC>          # for clock-skew guard per Element 2
+updated: <ISO-8601 UTC>
+```
+
+Filesystem mode: file 0600, parent directory 0700. Adapters MUST verify modes + ownership (`stat()` uid == effective uid) at startup; reject on mismatch (fail-closed).
+
+**Reject rule (normative; closes the silent-rollback-between-checkpoints window):** Receiver MUST reject ANY message with `sequence <= highest_seen_sequence` for the (sender-uid, operator-uuid) pair, regardless of where it falls relative to the latest checkpoint. The earlier-spec language "REJECTS any write with `sequence < highest-checkpoint-sequence`" is the WEAKER form; the receiver-state mandate is the stronger form that closes the gap between two checkpoints.
+
+**Checkpoint signature verification (normative):** Receiver MUST verify the checkpoint signature on every checkpoint observation (not only at receipt). Bad signature → reject the checkpoint + audit MAJOR `bad_checkpoint_signature`. Receiver MUST NOT silently accept an unverifiable checkpoint as the new floor.
+
+**HALT on corruption.** If the receiver-state file is corrupted, missing-with-prior-anchor, or shows impossible regression (e.g., `highest_seen_sequence` lower than the cached value), adapter HALTS with fail-closed message: `"Receiver state corrupted for <sender-uid>; refusing to process v0.5+ messages until resolved."` Manual recovery procedure: operator inspects state + either restores from backup OR generates a new clean state (which forces sender to issue a new sender-uid; old uid is revoked-by-implication).
+
+### Substrate-independent envelope contract (normative)
+
+The sender_uid + sequence_number + signed-checkpoint machinery applies to ALL v0.5+ writes regardless of substrate. Git-only writers (no WebSocket adapter active) MUST still mint a sender_uid + monotonically increment sequence + publish signed checkpoints per the contract. Receivers MUST enforce envelope fields (signature, sender_uid, sequence_number, signing_time, clock-skew window) irrespective of how the message arrived.
+
+### Connection security (MUST)
+
+**Transport: TLS-only (`wss://`).** Adapters MUST reject any `messaging.url` whose scheme is `ws://` (plain WebSocket) at startup with a fail-closed message: `"MemForge v0.5.0 requires TLS for the WebSocket connection. Configure messaging.url to use wss://; ws:// is rejected."` This closes the network-MITM information-disclosure threat surface. Test/development environments that need plain WebSocket MUST run on localhost-only and pass an explicit `MEMFORGE_ALLOW_WS_LOCALHOST_ONLY=1` env var; even then the WS endpoint MUST resolve to a loopback address and adapters MUST refuse non-loopback `ws://` URLs.
+
+**Operator authentication: strong, per-operator (MUST).** Adapters MUST authenticate every incoming WebSocket connection using one of:
+
+- **(a) Mutual TLS (mTLS)** with operator-bound client certificates. Server validates the client certificate's subject against the operator-registry's accepted operator-UUIDs; reject on mismatch.
+- **(b) Per-operator bearer tokens** (e.g., JWTs signed by the operator's long-lived key, with a short expiry of ≤ 1 hour and binding to the connection's TLS session via channel binding tokens or equivalent). Server validates the token's signature against the operator-registry's accepted operator-UUIDs; reject on signature failure, expired, or wrong audience.
+
+Static / shared / no-auth schemes are rejected. Choice between (a) and (b) is implementation MAY; the requirement for per-operator strong authentication is normative MUST. Adapters MUST emit fail-closed startup error if the configured authentication mechanism does not satisfy this contract.
+
+**Circuit-breaker on local queue exhaustion (MUST).** When local-first messaging falls back to queueing (per §"Sender / receiver MUST behavior" inherited above), adapter MUST stop accepting new local writes (fail-closed) when the local queue exceeds `messaging.max_local_queue_disk_space_mb` (default 1024 MB; configurable). Closes the WebSocket-server-DoS-causes-client-disk-exhaustion threat. The audit MAJOR thresholds (queue length > 100; oldest-message-age > 1 hour) remain advisory; the disk-space threshold is hard.
+
+### Multi-server hard-stop (v0.5.0)
+
+v0.5.0 single-server only. Adapter MUST emit startup warning: `"MemForge v0.5.0 messaging adapter supports single-server deployments only. Multi-server deployments have known consistency gaps. Set MEMFORGE_ACKNOWLEDGE_SINGLE_SERVER=1 to suppress this warning."` Multi-server with WebSocket needs Redis Pub/Sub or equivalent fan-out layer; deferred to v0.5.x / v0.6+.
+
+### WebSocket server-side onboarding (operator-facing)
+
+v0.5.0 ships client-side adapter only. The WebSocket server is operator's responsibility. Options:
+- **Single-operator-mode-no-server.** Most multi-developer teams don't need WebSocket sync if they coordinate through git. Skip messaging adapter; rely on git-pull-based propagation.
+- **Self-hosted server.** A v0.5.x reference server is planned but not in v0.5.0 scope. Operators who need WebSocket sync today can write their own following the MUST contract (sender-auth, sender-uid + sequence routing, multi-client fan-out).
+- **Hosted service** (future v0.5.x+). Not in v0.5.0.
+
+### MAY (substrate / implementation choices; non-normative)
+
+- WebSocket library, serialization, retry/backoff, keepalive, operator-auth mechanism, reconnection strategy.
+- **Server-signed receipt times** (v0.5.x consideration): WebSocket server countersigns the message on receipt with its own key + UTC clock; binds `signing_time` to a third-party clock. Stronger anchor than receiver-side `first_seen_at`. v0.5.0 ships without; v0.5.x considers.
+
+## Key lifecycle + revocation (v0.5.0+)
+
+### Revocation events as git commits
+
+Each revocation = git commit with message prefix `memforge: revoke <key_id>` and body:
+
+```yaml
+key_id: <gpg-fingerprint or hash-of-pubkey>
+revoked_at: <ISO-8601 UTC>
+reason: <free-form, >= 8 characters>
+revoked_by: <operator-uuid>
+revocation_uid: <UUIDv7>
+```
+
+**Revocation commit signature (MUST; v0.5.0 normative).** The commit body MUST be GPG-signed by the revoking operator's current long-lived key. The signature MUST appear in the commit message body as `revocation_signature: <base64>`. Adapters MUST extract + verify this signature before honoring the revocation, in BOTH full-history walk mode AND remote-fetch fallback mode. Unsigned revocation commits are rejected + audit BLOCKER `unsigned_revocation_commit`. This contract applies regardless of how the commit reaches the adapter (local clone, remote fetch, sparse-checkout fallback).
+
+**Signing-key-matches-revoked_by check (MUST).** Adapters MUST verify that the GPG key used to sign the revocation body is the currently active key (i.e., chain-index marked `status: active`) for the operator-UUID specified in the `revoked_by` field per the operator-registry. Mismatch → reject revocation + audit BLOCKER `revocation_signer_mismatch`. Closes the spoofing attack where an attacker with one operator's compromised key signs a revocation event nominally attributed to a different operator.
+
+**`revoked_at` clock-skew guard (MUST; closes the immortal-revocation attack).** On receipt of a `memforge: revoke` commit, the adapter MUST verify that `revoked_at` falls within an acceptable clock-skew window relative to the commit's git author-date: `revoked_at ∈ [author_date − backdating_max_skew, author_date + future_max_skew]` (using the same defaults as §"Clock-skew guard against signing-time backdating": ±10 min backdating, +1 min future skew). Revocation events with `revoked_at` outside the window are rejected + audit BLOCKER `revoked_at_skew_out_of_window`. Closes the future-revocation attack where a compromised-key-holding attacker sets `revoked_at: 2099-01-01` to make the compromised key effectively un-revocable by signing-time-aware verification.
+
+Tier 2 BLOCKER for any commit modifying revocation state whose message does NOT start with `memforge: revoke`.
+
+### Reader-side revocation walk
+
+At adapter startup:
+1. Walk git history from the latest revocation-snapshot commit forward (or repo root if none).
+2. Collect every `memforge: revoke` commit; build revocation set keyed by `key_id` → `revoked_at`.
+3. Cache at `<memory-root>/.memforge/revocation-cache.yaml` with anchor (HEAD commit hash for full-history; remote-head for remote-fetch fallback).
+4. On every subsequent startup, re-walk new commits since anchor + re-verify cache. Cache valid only if operator-registry signature verifies AND anchor matches.
+
+### Sparse-checkout / shallow-clone fallback verification mode
+
+Detected at adapter startup via `git config --get core.sparseCheckout` and `git rev-parse --is-shallow-repository`. When detected:
+
+1. **Pin remote URL + transport (MUST).** Operator configures the trusted remote URL via `revocation.fallback_remote_url` in `.memforge/config.yaml` AND a transport pin (`revocation.fallback_transport`: `ssh` OR `https-with-pin`). Adapter rejects fetches whose effective remote does not match the pinned URL + transport.
+2. **TOFU on first fetch (MUST).** First fetch caches the remote's HEAD commit hash + SHA256 of the remote-fetch ref content as the trust anchor at `<memory-root>/.memforge/revocation-cache.yaml`.
+3. **Fast-forward-only after first fetch (MUST).** Subsequent fetches MUST be fast-forward-only relative to the pinned anchor. Non-fast-forward fetches OR history divergence → adapter HALTS with fail-closed message: `"Revocation history divergence detected on remote fetch; refusing to load v0.5+ memories until resolved. Investigate the remote OR rotate to full-clone mode."`
+4. **Signature verification on every fetched commit (MUST).** For each `memforge: revoke` commit on the fetched ref, the adapter MUST verify the `revocation_signature` per §"Revocation commit signature." Unsigned OR wrongly-signed commits are rejected from the revocation set + audit BLOCKER `unsigned_revocation_commit_remote_fetch`.
+5. **Cache TTL (default 1 hour; configurable).** Re-fetches at TTL expiry OR on operator-explicit `memforge revoke-cache-refresh`.
+6. **Fail-closed on fetch failure.** If remote fetch fails (network unavailable; remote unreachable; auth fails; pinned URL mismatch): adapter HALTS with fail-closed message.
+
+Adapters claiming v0.5.0 conformance MUST support BOTH full-history walk (default) AND remote-fetch fallback (when sparse/shallow detected). Both paths apply the same signature-verification + commit-prefix discipline; the difference is only the location of the commit history (local clone vs remote fetch).
+
+**Operator signaling for remote-fetch fallback mode (advisory).** When the adapter is in remote-fetch fallback mode, the adapter MUST emit a startup banner: `"MemForge v0.5.0: this deployment is using sparse-checkout / shallow-clone fallback verification with TOFU + fast-forward-only + signature verification on revocation commits. Switch to full-clone mode if you prefer signed-commit verification on the local clone."` This is informational; it does NOT indicate a security gap (v0.5.0 closes the prior unsigned-revocation gap).
+
+### Recovery-secret filesystem mode (normative)
+
+`~/.memforge/recovery-secret.bin` MUST be filesystem-mode **0600**. Parent directory **0700**. Adapters MUST verify modes at startup + verify ownership (`stat()` uid == effective uid). Mismatch → fail-closed.
+
+Recovery-secret format: 32 random bytes (cryptographically secure RNG). Used as input to a KDF to derive the countersignature key for key-compromise events.
+
+**Recovery-secret content integrity (MUST; closes the content-tampering attack).** At install time (`memforge recovery-init`), the adapter MUST compute SHA256 of the recovery-secret bytes and store the hash in the signed operator-registry as `operators[<operator-uuid>].recovery_secret_sha256`. At every adapter startup, the adapter MUST re-compute SHA256 of `~/.memforge/recovery-secret.bin` and compare against the registry value. Mismatch → fail-closed: `"Recovery-secret content has changed since install; refusing to load. The file may have been tampered with or replaced. Reinstall via memforge recovery-init OR investigate."` This binds the secret's content integrity to the signed registry; defeats the same-user-shell-malware attack where an attacker replaces the secret content while preserving the FS mode + ownership.
+
+**Recovery-secret backup acknowledgment (MUST).** The `memforge recovery-init` CLI MUST require explicit operator acknowledgment that an offline backup of the recovery-secret has been created before completing setup. The acknowledgment is recorded as `recovery.acknowledged_backup_procedure: true` in `.memforge/config.yaml` (operator's per-machine config, NOT the per-memory-root config). Adapters MUST refuse to load v0.5+ memories until this flag is set, with fail-closed message: `"Recovery-secret backup procedure not acknowledged. Run memforge recovery-backup-confirm after backing up ~/.memforge/recovery-secret.bin to offline media."` Closes the recovery-secret-deletion DoS attack: even if the secret file is deleted, the operator has an offline backup.
+
+**Spec recommends hardware-key backing** (YubiKey FIDO2 attestation, Apple Secure Enclave, OS-specific TPM, hardware HSM). v0.5.0 ships software-only reference; hardware-backed is v0.5.x scope. Software-only deployment MUST emit persistent startup WARN naming the threat boundary + the operator action (install hardware-backed via `memforge recovery-init --hardware <backend>`). WARN suppressible only via explicit `recovery.acknowledged_software_only: true` config flag.
+
+### Operator key compromise recovery
+
+When operator detects compromise:
+1. Generate new long-lived keypair under the recovery-secret-derived fallback flow.
+2. Compose a key-compromise event commit: prefix `memforge: key-compromise <old-key-id>`; body signed by the new key + countersigned via the recovery-secret-derived attestation.
+3. Republish operator-registry with the new key. Cross-signature chain breaks at this point.
+4. Bulk-revoke memories signed under the compromised key (operator-discretion).
+
+### Revocation snapshot mechanism
+
+To bound O(N) cold-start cost, operator MAY publish a snapshot of the current revocation set every 100 revocations (or on discretion):
+
+```
+git commit --message "memforge: revocation-snapshot <hash>" --allow-empty
+```
+
+Commit body contains the full current revocation set, signed by operator's long-lived key. Adapter walks git history from the latest snapshot forward (NOT from the beginning). *Snapshot canonical hash + ancestor-of-verified-head verification: v0.5.0.1 patch target.*
+
+### Cross-instance revocation propagation (documented limitation)
+
+When operator A revokes a key, operator B's instance does NOT immediately see the revocation; propagates via the messaging adapter as a `revocation_event` payload at the next write OR at next remote-fetch refresh (default TTL 1 hour). During the window, operator B's instance continues trusting the compromised key.
+
+For multi-developer-teams (the target audience), this window is acceptable for v0.5.0. For high-stakes deployments (financial / regulatory / healthcare), v0.5.0 SHOULD NOT be deployed in multi-instance configurations until v0.6+ adds gossip / consensus protocol for sub-second propagation.
+
+## Security considerations (v0.5.0+)
+
+Operator-facing boundary statements collected for v0.5.0 deployment:
+
+1. **Honest-operator assumption.** v0.5.0 trust model assumes operators publish revocation events promptly after compromise detection. Without trusted timestamping, coordinated backdating attacks are bounded but not fully prevented by the clock-skew guard. Recommended mitigation: NTP-synced clocks + server-signed receipt times (v0.5.x).
+2. **Software-only recovery-secret boundary.** Default v0.5.0 install is software-only filesystem-mode-protected. Does NOT protect against full-system compromise. Recommended mitigation: hardware-backed recovery-secret + offline backup on separate physical media.
+3. **Same-user shell malware.** FS-mode + uid-ownership checks bound this; an attacker who escalates to operator's uid has full-system compromise (out of v0.5.0 scope).
+4. **Sparse-checkout / shallow-clone revocation verification.** v0.5.0 ships with unsigned-revocation-commit acceptance in remote-fetch fallback mode. Documented as Known Limitation 2. Mitigation: use full-history mode until v0.5.0.1.
+5. **Cross-instance revocation propagation lag.** Up to 1 hour TTL between instances in default config. Mitigation: high-stakes deployments single-instance until v0.6+ gossip.
+6. **Hardware-key recommendation for operator long-lived keys.** Spec recommends YubiKey / Secure Enclave / TPM-attested storage for production. v0.5.0 software-only reference is for low-stakes / dogfooding.
+7. **Recovery-secret backup mechanism.** Options for offline storage: USB key in a safe; printed QR code in fireproof storage; encrypted text on dedicated removable media. The recovery-secret must be available + uncompromised + physically separated from the signing-key machine for the key-compromise recovery procedure to function.
+8. **Multi-operator registry-edit policy (operator-facing).** Technical guards (registry signature, commit-prefix BLOCKER) protect against unauthorized registry edits but cannot prevent social engineering of a legitimate operator. For production-environment registry changes (adding a new operator, rotating a key, fresh-start), operators SHOULD adopt a 2-of-N sign-off policy: require two independent operators to verify + countersign the registry change before commit, and require multi-operator review of registry-modifying PRs at the git-provider level. v0.5.0 does NOT enforce 2-of-N at the format level (see v0.6+ scope: 2-of-N revocation signing for team-shared deployments); operators in adversarial-environment deployments implement the policy at the git-provider review layer. Spec recommends; does not mandate.
+9. **Operator name homograph defense.** The advisory `operator_name` field is human-readable + susceptible to homograph attacks (visually similar Unicode characters substituted for ASCII). v0.5.0 makes the operator-UUID authoritative for trust decisions; the human-readable name is informational. UIs SHOULD always display the UUID alongside the name + flag visually-similar names against the existing operator set. `memory-audit` SHOULD warn on new operator additions whose `operator_name` has Levenshtein distance ≤ 2 from any existing operator's name.
+10. **Receiver clock manipulation.** The clock-skew guard depends on the receiver's local wall-clock. Adapters SHOULD warn loudly on startup if they cannot verify a recent successful NTP sync (within the last 24 hours). High-security deployments SHOULD use signed NTP sources (NTS) or equivalent; this is operator-side hardening outside the format.
+11. **Accepted-algo denylist.** The `identity.required_algos` config key is operator-set. Adapters MUST refuse to use any algorithm on a built-in known-bad denylist (currently includes plaintext, MD5, SHA-1, RSA-key-size < 3072) regardless of operator config. Spec maintains the denylist; v0.5.x can extend.
+
+## Known limitations (v0.5.0)
+
+**v0.5.0 ships with no BLOCKER-class known limitations.** Two BLOCKER-class issues that were originally documented as v0.5.0.1 patch targets (receiver-state silent-rollback window; remote-fetch unsigned revocation events) have been closed in v0.5.0 normative text:
+
+- **Receiver-state mandate** at §"Receiver state (MUST)" — closes the silent-rollback-between-checkpoints window.
+- **Revocation commit signature mandate + sparse-checkout TOFU + fast-forward-only** at §"Revocation events as git commits" + §"Sparse-checkout / shallow-clone fallback verification mode" — closes remote-fetch unsigned-revocation acceptance.
+
+**Residual issues tracked for v0.5.x patches (non-BLOCKER class):**
+
+- 5 MAJORs (checkpoint signer ambiguity for agent ephemeral keys, revocation snapshot ancestor requirement + canonical hash, sender/receiver posture nuances, cache TTL semantics for high-stakes deployments, cross-cutting fail-closed documentation).
+- 2 MINORs (cross-cutting fail-closed posture documentation, TTL semantics for revocation cache).
+
+Full list at `v0.5.0-known-limitations.md` (sibling file to this spec).
+
+**Reference CLI + operator-facing documentation gaps in v0.5.0 (ship as v0.5.1 patches):**
+
+- `memforge init-operator`, `init-store`, `operator-registry add|verify|remove`, `memories-by-key`, `revoke-memories --bulk` CLI commands ship in v0.5.1.
+- Hardware-key install paths (`recovery-init --hardware`) ship in v0.5.x.
+
+The v0.5.0 spec is shippable as production-ready; the residual MAJORs are refinements, not security gaps.
+
 ## Integrity invariants
 
 A MemForge folder is well-formed if, and only if:
@@ -459,8 +854,15 @@ A MemForge folder is well-formed if, and only if:
 13. (v0.4.0+) The `ever_multi_member` flag, once `true`, is monotonic: any commit that flips it to `false` is BLOCKER.
 14. (v0.4.0+) The `status` field is one of the enumerated six values; any other value is BLOCKER.
 15. (v0.4.0+) The full layered audit rule set in §"Multi-agent concurrency" applies (Tier 1 HEAD-pure + Tier 2 commit-log).
+16. (v0.5.0+) Every v0.5+ write MUST carry valid `identity` + `signature` frontmatter; the signature MUST verify against the canonical envelope per §"Cryptographic attribution". Unsigned v0.5+ writes are BLOCKER. v0.4 memories loaded under v0.5 readers are tagged read-only-untrusted (one-time MAJOR per unsigned v0.4 memory until upgrade or explicit exclusion).
+17. (v0.5.0+) `signature.signing_time` MUST fall within the receiver's `first_seen_at` clock-skew window (default ±10 min backdating + 1 min future skew). Out-of-window signatures are rejected + audit MAJOR.
+18. (v0.5.0+) Resolve commits touching v0.4 (unsigned) memories MUST either upgrade them (in-commit signature) OR explicitly exclude via `resolve.exclusion_reason:`. Tier 2 BLOCKER otherwise.
+19. (v0.5.0+) Operator-registry (`<memory-root>/.memforge/operator-registry.yaml`) MUST have a valid signature by at least one listed operator. Verification failure → adapter HALTS (fail-closed). Edits MUST occur in commits with prefix `memforge: operator-registry` AND single-file scope (Tier 2 BLOCKER otherwise).
+20. (v0.5.0+) Sender-sequence files at `<memory-root>/.memforge/sender-sequence/<sender-uid>.yaml` MUST be filesystem-mode 0600 (parent 0700). `current_sequence` MUST be uint64 monotonic per sender. Signed checkpoints MUST publish every 100 sequences OR 24 hours. Receiver MUST reject `sequence < highest-checkpoint-sequence` per sender.
+21. (v0.5.0+) `~/.memforge/operator-identity.yaml` + `~/.memforge/recovery-secret.bin` MUST be filesystem-mode 0600; parent directory 0700; ownership (`stat()` uid) MUST match the effective uid of the adapter process. Adapters MUST verify at startup; fail-closed on mismatch.
+22. (v0.5.0+) Revocation events MUST land as commits with prefix `memforge: revoke <key_id>`. Wrong-prefix commits modifying revocation state are Tier 2 BLOCKER. Snapshot commits use prefix `memforge: revocation-snapshot <hash>`.
 
-The `tools/memory-audit` script verifies these invariants plus health heuristics. v0.4.0+ adds the Tier 1 / Tier 2 split documented in §"Multi-agent concurrency".
+The `tools/memory-audit` script verifies these invariants plus health heuristics. v0.4.0+ adds the Tier 1 / Tier 2 split documented in §"Multi-agent concurrency". v0.5.0+ adds the multi-identity + cryptographic-attribution + key-lifecycle invariants documented in §"Multi-identity primitives" + §"Cryptographic attribution" + §"Operator identity + cross-store references" + §"Messaging adapter contract" + §"Key lifecycle + revocation".
 
 ## Cross-folder references
 
@@ -472,7 +874,7 @@ The `references_global` and `referenced_by_global` fields support cross-folder r
 
 ## Versioning
 
-**Current spec version**: 0.4.0.
+**Current spec version**: 0.5.0.
 
 The spec version lives in `spec/VERSION`. Breaking changes bump per semantic versioning applied to spec semantics:
 
@@ -480,7 +882,7 @@ The spec version lives in `spec/VERSION`. Breaking changes bump per semantic ver
 - **Minor**: new optional fields, new types, new conventions that existing folders remain compatible with.
 - **Patch**: documentation or wording changes with no behavioral effect.
 
-v0.3.0 was a minor bump (new optional fields + rollup-subfolder formalization). v0.4.0 is a major bump: it makes `uid`, `tier`, `tags`, `owner`, `status`, `created` required (formerly optional), and tightens the reader contract for byte-match CI on generated `MEMORY.md`. v0.3.x files load in degraded mode (see §"File format").
+v0.3.0 was a minor bump (new optional fields + rollup-subfolder formalization). v0.4.0 was a major bump: required-field set expanded, byte-match CI tightened, multi-agent concurrency surface added. v0.5.0 is a minor bump: v0.4 folders remain well-formed (the v0.5 frontmatter additions `identity` + `signature` are REQUIRED on v0.5+ writes but optional in v0.4 frontmatter). v0.4 memories load under v0.5 readers as `(v0.4: unsigned)` read-only-untrusted; mixed-deployment posture in §"Multi-identity primitives".
 
 Adapters and tools SHOULD declare which spec version they target.
 
@@ -492,21 +894,35 @@ The `sensitivity` and `access` frontmatter fields exist to let adapters make con
 
 Adapters MAY add encryption layers if they target a multi-developer or shared-workspace scenario, but the core format assumes plaintext-at-rest is acceptable for the content the format is designed to hold.
 
-## Not in scope for v0.4.0
+## Not in scope for v0.5.0
 
 - Specific RBAC enforcement (adapter responsibility, not spec).
 - Encryption protocols (adapter responsibility).
 - Specific embedding model selection for `dynamic_supplement` queries (Phase 1+ tool concern).
 - Generator implementation (Phase 1+ tool, see `tools/memory-index-gen`).
-- Centralized `decision_topic` taxonomy file (v0.5.0; v0.4.0 uses inline `topic_aliases:`).
-- Per-decision ledger (one file per topic with monotonic `resolution_version` + winner UID + losers). Deferred to v0.5.0; the layered Tier 1 + Tier 2 model plus config protection plus secure-mode deployment guidance covers the realistic threat model. Promote if dogfooding surfaces history-rewrite attacks.
-- DAG cycle rejection on `replaces:` chain (v0.5.0; audit warning first).
-- UUIDv7 normative UID format. Current `mem-YYYY-MM-DD-slug` continues.
-- Vector-clock or sequence-number tie-breaker (v0.5.0; `updated` timestamp is the v0.4.0 tie-breaker).
+- Centralized `decision_topic` taxonomy file. v0.5.0 uses inline `topic_aliases:` from v0.4.
+- Per-decision ledger (one file per topic with monotonic `resolution_version` + winner UID + losers). Deferred; the v0.4 layered Tier 1 + Tier 2 model plus config protection plus secure-mode deployment guidance covers the realistic threat model. Promote if dogfooding surfaces history-rewrite attacks.
+- DAG cycle rejection on `replaces:` chain (audit warning first; future scope).
+- UUIDv7 normative UID format for memory UIDs. Current `mem-YYYY-MM-DD-slug` continues (UUIDv7 is used for operator-UUIDs and `revocation_uid` in v0.5.0).
+- Vector-clock or sequence-number tie-breaker for memory updates (sender-sequence in v0.5.0 covers cross-instance writes; per-memory `updated` timestamp remains the local tie-breaker).
 - Auto-derive of `decision_topic` for legacy v0.3.x memories.
 - Cryptographic immutability for snooze `created_by` or memory `owner` (best-effort provenance only).
-- Cross-machine merge resolution beyond exactly-one-active. Same as v0.3.x: git merge with operator hand-resolution.
+- Cross-machine merge resolution beyond exactly-one-active. Same as v0.3.x / v0.4: git merge with operator hand-resolution.
 - CRDT semantics. Future ADR if surface-not-resolve fails under load.
+- **Hardware-key reference implementation for operator long-lived keys + recovery-secret** (v0.5.x scope; v0.5.0 ships software-only with persistent startup WARN).
+- **2-of-N multi-key signing for revocations** (v0.6+ scope; v0.5.0 single-operator signing only).
+- **Post-quantum signature algorithms** (Dilithium3, Falcon). Frontmatter `signature.algo` reserves the slot.
+- **Centralized identity authority** (CA / OIDC). Format is filesystem + git; trust anchor is operator-registry signed by operator's own key.
+- **Sub-second cross-instance revocation propagation** (v0.6+ gossip / consensus protocol).
+- **Bulk re-key tool for emergency mass-rotation** across an operator's full memory tree. v0.5.x scope.
+- **Agent-key persistence across sessions.** Agent keys are ephemeral by design; new session = new key.
+- **Auditable trust scoring** for cross-operator messages (reader contract is binary: verified or not).
+- **Multi-server WebSocket deployment.** v0.5.0 single-server only with hard-stop. v0.5.x / v0.6+ adds Redis Pub/Sub or equivalent fan-out.
+- **gRPC streaming / NATS JetStream / Kafka / Redis Streams / Cloudflare Realtime adapters.** v0.5.x scope; v0.5.0 stays on plain WebSocket.
+- **WebSocket multiplexing.** Per OpenAI WebSocket Mode constraints, one connection per sender-uid in v0.5.0.
+- **Cross-store WebSocket federation** (operator A's store visible to operator B's WebSocket subscribers). v0.5.x scope.
+- **Server-signed receipt times.** v0.5.x consideration for the WebSocket path; v0.5.0 ships with receiver-side `first_seen_at` clock-skew guard.
+- **Reference CLI binaries** (`memforge init-operator`, `init-store`, `operator-registry`, `revoke`, `memories-by-key`, etc.). v0.5.1 patch release scope; v0.5.0 spec-only release documents the contract.
 
 ## Versioning history
 
@@ -514,3 +930,4 @@ Adapters MAY add encryption layers if they target a multi-developer or shared-wo
 - v0.2.0 — sensitivity classification (4 levels) + consumer obligations.
 - v0.3.0 — schema expansion (uid, tier, tags, owner, status, last_reviewed, etc.); rollup-subfolder formalization; access labels; cross-folder references; tag taxonomy.
 - v0.4.0 — major bump: `uid`, `tier`, `tags`, `owner`, `status`, `created` required (was optional in v0.3.x). v0.3.x files load in degraded mode. Reader contract tightened for byte-match CI on generated `MEMORY.md`. New §"Multi-agent concurrency" section adds five frontmatter keys (`decision_topic`, `replaces`, `superseded_by`, `topic_aliases`, `ever_multi_member`), a snooze record (`.memforge/snoozes/<topic>.yaml`), a config file (`.memforge/config.yaml`), the resolve operation contract, the canonical reader-side competing-claim block, and a layered Tier 1 + Tier 2 audit rule set. Status enumeration is now strictly enforced (BLOCKER on any value outside the six listed). Sensitivity enforcement (`§"Sensitivity enforcement"`) adds three default-on, operator-disable-able checks (export-tier gate, DLP label/content cross-check, conformance fixtures) with a hard floor at `privileged`. Closes the v0.3.x §"Not in scope" deferral on multi-user concurrency.
+- v0.5.0 — minor bump: extends single-operator multi-agent format to multi-identity team-scale memory with cryptographic attribution and a real-time messaging substrate. Eight new sections: §"v0.5.0 surface map", §"Multi-identity primitives", §"Cryptographic attribution", §"Operator identity + cross-store references", §"Messaging adapter contract" (with subsections including the normative §"Receiver state", §"Connection security" mandating wss:// + per-operator strong auth, and circuit-breaker), §"Key lifecycle + revocation" (with mandatory cool-down on key rotation closing the rotation-as-privilege-escalation attack), §"Security considerations" (eleven enumerated boundary statements), §"Known limitations". New REQUIRED v0.5+ frontmatter: `identity` + `signature` (v0.4 frontmatter remains valid; v0.5 readers tag unsigned v0.4 memories as read-only-untrusted). WebSocket locked as v0.5.0 messaging substrate (OpenAI Responses API Feb 23 2026 launch alignment); multi-server hard-stop for v0.5.0. Sender-uid format `<operator-uuid>:<32-byte-hex>` mandatory; sender-sequence + signed checkpoints every 100 sequences or 24 hours. Signing-time-aware revocation verification + `first_seen_at` clock-skew guard (default ±10 min) close the coordinated-backdate attack class. `revoked_at` clock-skew guard closes the immortal-revocation attack. Recovery-secret filesystem mode (0600/0700) + uid-ownership check + SHA256 content-integrity check anchored in the signed operator-registry + mandatory backup acknowledgment; persistent startup WARN until hardware-backed install. Sparse-checkout / shallow-clone fallback uses TOFU + fast-forward-only + signature verification on revocation commits. Reference CLI binaries (`memforge init-operator`, `operator-registry`, `revoke-memories`, etc.) ship in v0.5.1. v0.4 folders remain well-formed under v0.5 readers. v0.5.0 ships with no BLOCKER-class known limitations; residual MAJORs + MINORs documented at `v0.5.0-known-limitations.md`.

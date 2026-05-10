@@ -10,6 +10,44 @@ The version number tracked here is the **package / tooling** version. The on-dis
 
 The Contributor License Agreement infrastructure is counsel-blocked; external pull requests are paused until the CLA flow lands.
 
+## [0.5.0] - 2026-05-10
+
+**Minor release.** Spec bump 0.4.0 -> 0.5.0. Extends single-operator multi-agent format to multi-identity team-scale memory with cryptographic attribution and a real-time messaging substrate (WebSocket). Reference CLI binaries ship in v0.5.1.
+
+### Added
+
+- New §"Multi-identity primitives": two identity classes (operator long-lived key; agent ephemeral per-session key). New REQUIRED v0.5+ frontmatter `identity` + `signature`. v0.4 frontmatter remains valid; v0.4 memories load read-only-untrusted under v0.5 readers.
+- New §"Cryptographic attribution": GPG (RSA-4096 or Ed25519) default. Signing-time-aware verification + `first_seen_at` clock-skew guard (default +/- 10 min) close the coordinated-backdate attack class. Cross-signed rotation chain bounded by min(N, 10) via fresh-start operator-registry.
+- New §"Operator identity + cross-store references": UUIDv7 at `~/.memforge/operator-identity.yaml` (per-machine, 0600/0700). Operator-registry at `<memory-root>/.memforge/operator-registry.yaml` (fail-closed signature verification + content-hash-anchored cache). `MEMFORGE_STORE = <operator-uuid>:<store-name>` for cross-store refs. Multi-operator trust-bootstrap procedure documented.
+- New §"Messaging adapter contract (WebSocket reference)": substrate locked WebSocket (40% latency benchmarks; OpenAI Responses API Feb 23 2026 launch alignment; Cursor/Cline/Vercel adoption). Sender-uid format `<operator-uuid>:<32-byte-hex>` mandatory. Sender-sequence + signed checkpoints every 100 sequences or 24 hours. Multi-server hard-stop for v0.5.0. Substrate-independent envelope contract: git-only writers must use same sender_uid + sequence + checkpoint machinery.
+- New §"Key lifecycle + revocation": revocation events as git commits with `memforge: revoke <key_id>` prefix. Reader walks git history. Sparse-checkout / shallow-clone fallback via remote-fetch with loud startup banner + audit MAJOR (revocation events NOT signature-verified in fallback mode; v0.5.0.1 patch target). Recovery-secret filesystem mode 0600/0700 + uid-ownership check; persistent startup WARN until hardware-backed install. Revocation snapshot mechanism bounds O(N) cold-start cost.
+- New §"Security considerations": operator-facing boundary statements (honest-operator assumption, software-only recovery-secret boundary, same-user shell malware, sparse-checkout caveats, cross-instance propagation lag, hardware-key recommendation, recovery-secret backup mechanism).
+- New §"Known limitations": 2 documented BLOCKERs (receiver-state silent-rollback window; remote-fetch unsigned revocation events) as v0.5.0.1 patch targets. Full list at `v0.5.0-known-limitations.md`.
+- New §"v0.5.0 surface map": ASCII diagram showing the Element 1 -> 2 -> 4 -> 5 dependency flow.
+- New invariants 16-22 in §"Integrity invariants" covering v0.5.0 frontmatter shape, clock-skew, mixed-deployment resolve, operator-registry, sender-sequence, identity-file FS modes, revocation commit prefix discipline.
+
+### Changed
+
+- Spec version 0.4.0 -> 0.5.0.
+- `spec/VERSION` updated to `0.5.0`.
+- Versioning history extended with v0.5.0 entry.
+- §"Not in scope" relabeled "Not in scope for v0.5.0" with expanded list covering hardware-key reference impl, 2-of-N multi-key signing, post-quantum, centralized identity, sub-second propagation, etc.
+
+### Closed in v0.5.0 (originally tagged as v0.5.0.1 patch targets)
+
+Two BLOCKER-class issues identified during v0.5 development have been closed in the v0.5.0 normative spec rather than deferred:
+
+- **Receiver-state silent-rollback window** -> closed via §"Receiver state (MUST)": mandates `<memory-root>/.memforge/receiver-state/<sender-uid>.yaml` (FS mode 0600/0700; ownership check); receiver MUST reject `seq <= highest_seen_sequence`; HALT on corruption.
+- **Remote-fetch unsigned revocation events** -> closed via §"Revocation events as git commits" (every revocation commit MUST be GPG-signed; signing-key-matches-revoked_by check) + §"Sparse-checkout / shallow-clone fallback verification mode" (pin remote URL + transport; TOFU on first fetch; fast-forward-only after; signature verification on every fetched revocation commit).
+
+### Known limitations
+
+v0.5.0 ships with **no BLOCKER-class known limitations**. Residual MAJORs + MINORs (refinements; not security gaps) tracked at `v0.5.0-known-limitations.md` for v0.5.1 / v0.5.x patches:
+
+- 6 MAJORs (checkpoint signer ambiguity, revocation snapshot ancestor + canonical hash, sender/receiver posture nuance, cache TTL high-stakes, cross-cutting fail-closed documentation, agent session attestation content scope).
+- 7 MINORs (cross-cutting fail-closed posture, TTL semantics, trust graph disclosure, agent session ID format, key rotation chain DoS, operator name homograph audit, v0.4 memory flooding rate-limit).
+- 4 reference-CLI MAJORs (`memforge init-operator`, `init-store`, `operator-registry`, `revoke-memories`) ship in v0.5.1 binary release.
+
 ## [0.4.3] - 2026-05-08
 
 Patch release: closes the duplicate-keys / growing-frontmatter regression in `memory-frontmatter-backfill` that surfaced when a memory file's `description:` value contained an unquoted colon-space. No spec changes (spec stays at 0.4.0).
