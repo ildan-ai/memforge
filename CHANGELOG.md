@@ -10,6 +10,36 @@ The version number tracked here is the **package / tooling** version. The on-dis
 
 The Contributor License Agreement infrastructure is counsel-blocked; external pull requests are paused until the CLA flow lands.
 
+## [0.5.6] - 2026-05-11
+
+**Docs + examples patch. No spec change. No code change. spec/VERSION stays at 0.5.3.** Closes "we described patterns but didn't ship code" gaps surfaced after v0.5.5: ship copy-paste-ready example scripts where the docs describe operator-side glue.
+
+### New: `examples/` directory
+
+Drop-in scripts operators can fork. Each example ships in two flavors: bash (macOS / Linux / Git Bash on Windows / WSL) and PowerShell (native Windows + cross-platform pwsh 7+).
+
+- `examples/git-hooks/commit-msg` — bash `commit-msg` hook that enforces the `memforge:` prefix grammar for Tier 2 scoped paths (operator-registry, config, snoozes, revocations). Rejects bad commits with diagnostic before they land.
+- `examples/git-hooks/commit-msg.ps1` — PowerShell port of the above. Windows install instructions in `examples/README.md` (thin `commit-msg` wrapper invoking pwsh).
+- `examples/scripts/memforge-auto-commit-watcher.sh` — bash file-system watcher that auto-commits memory `.md` writes. macOS (fswatch) and Linux (inotifywait) supported. Explicitly skips Tier 2 scoped paths so the `memforge` CLI's own commits are not raced.
+- `examples/scripts/memforge-auto-commit-watcher.ps1` — PowerShell port using `System.IO.FileSystemWatcher`; no external dependencies on Windows.
+- `examples/websocket/README.md` — scaffold for operators standing up the v0.5 WebSocket messaging substrate. Names this folder as starter material, NOT a deployable relay. Documents the gap: the reference CLI does not yet ship a WebSocket adapter; teams implement / contract their own relay against the spec contract.
+- `examples/websocket/config.example.yaml` — reference shape for the `.memforge/config.yaml` `messaging:` block when adapter is `websocket`. Forward-looking: schema a future MemForge client adapter will read.
+- `examples/websocket/probe.py` — minimal Python diagnostic that opens a `wss://` connection, authenticates with a per-operator bearer token, round-trips a placeholder envelope, and prints the echo. Verifies TLS handshake, auth, and relay reachability. Not a complete MemForge client; placeholder signatures noted in-source.
+- `examples/README.md` — index + Windows install instructions for each script.
+
+### Documentation
+
+- `docs/quickstart.md`: §"Commit hygiene + signed `memforge:` prefixes" now cross-links the bash + PowerShell example scripts. The two-pattern walkthrough (commit-msg hook + auto-commit watcher) shows the bash version inline and points readers at the PowerShell drop-ins.
+- `docs/team-bootstrap.md`: §"Pick your transport: git-only or WebSocket?" gains a new sub-section "Starter material for standing up a relay" pointing at `examples/websocket/`.
+
+### Pre-ship review
+
+Docs + examples patch; below the panel-gate bar in the release-rigor protocol. Sanitization grep on the staged diff is clean. Example scripts pass syntax-level validation where the validator is available locally: bash via `bash -n` (OK); Python (probe.py) via `ast.parse` (OK); YAML (config.example.yaml) via `yaml.safe_load` (OK). The PowerShell scripts (`commit-msg.ps1` and `memforge-auto-commit-watcher.ps1`) were authored to PowerShell 5.1 + pwsh 7+ idioms but ship UNTESTED on Windows: the operator-side dev box did not have pwsh installed. Windows users hitting a syntax error should file an Issue; expect a fast turnaround patch.
+
+### Spec compatibility
+
+No spec or code change. Adapters built against v0.5.3 / v0.5.4 / v0.5.5 work unchanged on v0.5.6.
+
 ## [0.5.5] - 2026-05-11
 
 **Docs-only patch. No spec change. No code change. No new tests.** Closes two documentation gaps surfaced by reader-question on the v0.5.4 blog post.

@@ -1,0 +1,64 @@
+#!/usr/bin/env bash
+# MemForge commit-msg hook. Enforces the `memforge:` prefix grammar for
+# scoped Tier-2 paths per the spec. Reject = exit 1; staged changes are
+# preserved so the operator can fix the message and try again.
+#
+# Install:
+#   cp examples/git-hooks/commit-msg .git/hooks/commit-msg
+#   chmod +x .git/hooks/commit-msg
+#
+# Extend the registered checks below as your team starts using
+# `memforge: resolve <topic>` and `memforge: alias <topic>`. The base
+# four (operator-registry, config, snooze, revoke) cover the common
+# Tier-2 mistakes.
+
+set -e
+
+msg_file="$1"
+msg=$(head -n1 "$msg_file" 2>/dev/null || true)
+staged=$(git diff --cached --name-only)
+
+touches_exact()   { echo "$staged" | grep -q "^$1$"; }
+touches_pattern() { echo "$staged" | grep -qE "$1"; }
+starts_with()     { [[ "$msg" =~ ^"$1" ]]; }
+
+fail() {
+  echo "MemForge commit-msg hook: rejecting commit." >&2
+  echo "  $1" >&2
+  [ -n "${2:-}" ] && echo "  Hint: $2" >&2
+  exit 1
+}
+
+# .memforge/operator-registry.yaml -> memforge: operator-registry OR memforge: rotate-key
+if touches_exact ".memforge/operator-registry.yaml"; then
+  if ! starts_with "memforge: operator-registry" && ! starts_with "memforge: rotate-key"; then
+    fail "operator-registry.yaml staged but commit prefix is not 'memforge: operator-registry' or 'memforge: rotate-key'." \
+         "Run the corresponding memforge CLI command and use the message it prints."
+  fi
+fi
+
+# .memforge/config.yaml -> memforge: config (Tier 2 BLOCKER per spec)
+if touches_exact ".memforge/config.yaml"; then
+  if ! starts_with "memforge: config"; then
+    fail ".memforge/config.yaml staged but commit prefix is not 'memforge: config'." \
+         "Per spec: config edits MUST land in 'memforge: config' commits that touch ONLY the config file."
+  fi
+fi
+
+# .memforge/snoozes/<topic>.yaml -> memforge: snooze <topic>
+if touches_pattern "^\.memforge/snoozes/.*\.yaml$"; then
+  if ! starts_with "memforge: snooze "; then
+    fail "Snooze file staged but commit prefix is not 'memforge: snooze <topic>'." \
+         "Snooze edits MUST land in 'memforge: snooze <topic>' commits."
+  fi
+fi
+
+# Revocation events -> memforge: revoke OR memforge: revocation-snapshot
+if touches_pattern "^\.memforge/revocations?/"; then
+  if ! starts_with "memforge: revoke" && ! starts_with "memforge: revocation-snapshot"; then
+    fail "Revocation artifact staged but commit prefix is not 'memforge: revoke' or 'memforge: revocation-snapshot'." \
+         "Run 'memforge revoke <key_id>' or 'memforge revocation-snapshot' and use the printed message."
+  fi
+fi
+
+exit 0

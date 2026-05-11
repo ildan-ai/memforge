@@ -54,6 +54,10 @@ WebSocket is opt-in. The git-only path remains a fully-supported v0.5 substrate;
 
 Stay on git-only. Reconsider when you can name a specific minute-scale-latency cost that the team is paying.
 
+### Starter material for standing up a relay
+
+When you do decide to bring up WebSocket, the [`examples/websocket/`](../examples/websocket/) folder is a scaffold. It includes a reference `messaging:` config block, a Python probe for verifying relay reachability + auth, and a README that names what's stub vs production. The MemForge reference CLI does not yet ship a WebSocket adapter; teams who need the substrate today implement the relay side themselves OR contract for one. The spec at `spec/SPEC.md` §"Messaging adapter contract (WebSocket reference; v0.5.0+)" is the normative contract.
+
 ## Step 1: Operator A initializes the store
 
 Operator A bootstraps the memory-root + commits the initial operator-registry:

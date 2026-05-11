@@ -1,0 +1,76 @@
+# Example `.memforge/config.yaml` showing the messaging:websocket block.
+#
+# Forward-looking: this is the config schema a future MemForge client
+# adapter will read. The current reference CLI (ildan-memforge v0.5.6)
+# does NOT ship a WebSocket adapter; operators using WebSocket today
+# stand up their own relay + client (see ./probe.py for a connectivity
+# probe; see ./README.md for the bigger picture).
+#
+# Drop this block into your real `.memforge/config.yaml` only after a
+# spec-conformant relay is reachable at messaging.url. The spec
+# (spec/SPEC.md §"Messaging adapter contract") is the source of truth
+# for every value below; this file documents the shape, not the policy.
+
+spec_version: 0.5.0
+
+# v0.4 audit knobs (unchanged in v0.5).
+audit:
+  audit_window_days: 30
+  snooze_horizon_days: 14
+  stale_collision_days: 7
+  snooze_cap_per_author: 10
+  decision_bearing_tags: []
+  default_export_tier: internal       # null disables the export-tier gate
+
+# v0.5 identity knobs.
+identity:
+  rotation_cooldown_hours: 24         # MUST >= 1; default 24
+  backdating_max_skew_seconds: 600    # default 600 (10 min)
+  future_max_skew_seconds: 60         # default 60 (1 min)
+  agent_session_max_lifetime_hours: 24
+
+# v0.5.3+ revocation walk caps (relevant whether or not WebSocket is on).
+revocation:
+  walk_max_commits: 100000            # default 100k
+  walk_max_bytes: 104857600           # default 100 MB
+
+# v0.5 messaging adapter. Omit this entire block to use the default
+# git-only substrate (correct for solo operators + low-cadence teams).
+messaging:
+  # Adapter selection. Recognized values: 'git' (default), 'websocket'.
+  # Future: 'kafka', 'nats', 'redis-streams', 'mcp-streaming'.
+  adapter: websocket
+
+  # MUST be wss:// (TLS); plain ws:// is rejected at startup unless
+  # MEMFORGE_ALLOW_WS_LOCALHOST_ONLY=1 AND the URL resolves to a
+  # loopback address. See spec §"Transport: TLS-only (wss://)".
+  url: wss://memforge-relay.example.com/v0.5
+
+  # Per-operator strong authentication. Pick exactly one of:
+  #   - mtls: client-certificate authentication; certificate subject
+  #           binds to operator-UUID; server validates against the
+  #           operator-registry. See spec §"Operator authentication".
+  #   - bearer: per-operator JWT signed by the operator's long-lived
+  #             key, max 1-hour expiry, channel-bound to the TLS
+  #             session. See spec.
+  # Static / shared / no-auth schemes are rejected at adapter startup.
+  auth:
+    method: bearer                          # OR: mtls
+    # When method=bearer:
+    token_env: MEMFORGE_RELAY_BEARER_TOKEN  # operator's JWT lives here
+    # When method=mtls:
+    # client_cert_path: ~/.memforge/relay-client.crt
+    # client_key_path:  ~/.memforge/relay-client.key
+
+  # Local-first messaging fallback (spec §"Sender / receiver MUST
+  # behavior"): when the WebSocket connection drops, the adapter
+  # queues outgoing writes locally and retries on reconnect. Hard cap
+  # below; exceeding it fail-closes new local writes (circuit-breaker
+  # per spec §"Circuit-breaker on local queue exhaustion").
+  max_local_queue_disk_space_mb: 1024       # default 1024 MB
+
+  # Operator-side acknowledgment that the relay is single-server
+  # (v0.5.0 spec limit). Set true after reading the multi-server
+  # warning in spec §"Multi-server hard-stop". Without this, the
+  # adapter emits a startup WARN.
+  acknowledge_single_server: true

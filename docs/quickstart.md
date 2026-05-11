@@ -144,12 +144,128 @@ If you commit registry/resolve/revoke changes under a different prefix, MemForge
 
 **Automation: Claude Code users get this for free.** If you drive MemForge through Claude Code's auto-memory system, the PostToolUse `memory-auto-commit.sh` hook commits every Write/Edit inside a memory folder automatically. You still need to honor the `memforge:`-prefix convention for the operations above (registry edits, resolves, revokes, snoozes, config edits, alias edits); those run through the `memforge` CLI which prints the right commit message for you.
 
-**Automation: non-Claude-Code users.** Wire your own. Two reasonable patterns:
+**Automation: non-Claude-Code users.** Wire your own. Two reasonable patterns with drop-in example scripts in the repo at [`examples/`](../examples/). Every example ships in bash (macOS / Linux / Git Bash on Windows / WSL) and PowerShell (native Windows + cross-platform pwsh 7+); install whichever matches your shell.
 
-- **Auto-commit on file write**, with a fallback prefix like `memory: write <relpath>`. Suitable for casual single-operator use. Make sure your hook does NOT auto-commit changes to `.memforge/operator-registry.yaml`, `.memforge/config.yaml`, or any memory whose change should land under a `memforge: resolve` / `memforge: snooze` / `memforge: alias` / `memforge: revoke` commit — for those, run the `memforge` CLI which prints the correct message and you commit manually (or extend the hook to recognize the staged paths and skip when the CLI is going to handle them).
-- **Pre-commit lint hook** that rejects a commit if the staged diff touches a path requiring a Tier 2 prefix (`.memforge/operator-registry.yaml`, files inside an actively-resolving topic, etc.) and the commit message does not match the expected prefix. Lower-friction than auto-commit; catches the common mistake.
+### Pattern 1: commit-msg hook for prefix enforcement (recommended starting point)
 
-**Bottom line.** Commits ARE the audit trail. The diff IS the receipt. Hygiene is the operator's responsibility; MemForge will work cleanly as long as the commits land with the right prefixes.
+A commit-msg hook is the lowest-friction way to catch the most common mistake: editing a Tier 2 file without using the right `memforge:` prefix. The hook rejects the commit with a diagnostic so you fix the message before it lands.
+
+bash drop-in at [`examples/git-hooks/commit-msg`](../examples/git-hooks/commit-msg). PowerShell drop-in at [`examples/git-hooks/commit-msg.ps1`](../examples/git-hooks/commit-msg.ps1) (Windows install instructions in [`examples/README.md`](../examples/README.md)). Install (bash):
+
+```bash
+cp examples/git-hooks/commit-msg .git/hooks/commit-msg
+chmod +x .git/hooks/commit-msg
+```
+
+Source of the bash version (also at the path above):
+
+```bash
+#!/usr/bin/env bash
+# MemForge commit-msg hook. Enforces the memforge: prefix grammar for
+# scoped Tier-2 paths per spec. Reject = exit 1; staged changes are
+# preserved so the operator can fix the message and try again.
+set -e
+
+msg_file="$1"
+msg=$(head -n1 "$msg_file" 2>/dev/null || true)
+staged=$(git diff --cached --name-only)
+
+touches_exact()   { echo "$staged" | grep -q "^$1$"; }
+touches_pattern() { echo "$staged" | grep -qE "$1"; }
+starts_with()     { [[ "$msg" =~ ^"$1" ]]; }
+
+fail() {
+  echo "MemForge commit-msg hook: rejecting commit." >&2
+  echo "  $1" >&2
+  [ -n "${2:-}" ] && echo "  Hint: $2" >&2
+  exit 1
+}
+
+# .memforge/operator-registry.yaml -> memforge: operator-registry OR memforge: rotate-key
+if touches_exact ".memforge/operator-registry.yaml"; then
+  if ! starts_with "memforge: operator-registry" && ! starts_with "memforge: rotate-key"; then
+    fail "operator-registry.yaml staged but commit prefix is not 'memforge: operator-registry' or 'memforge: rotate-key'." \
+         "Run the corresponding memforge CLI command and use the message it prints."
+  fi
+fi
+
+# .memforge/config.yaml -> memforge: config (Tier 2 BLOCKER per spec)
+if touches_exact ".memforge/config.yaml"; then
+  if ! starts_with "memforge: config"; then
+    fail ".memforge/config.yaml staged but commit prefix is not 'memforge: config'." \
+         "Per spec: config edits MUST land in 'memforge: config' commits that touch ONLY the config file."
+  fi
+fi
+
+# .memforge/snoozes/<topic>.yaml -> memforge: snooze <topic>
+if touches_pattern "^\.memforge/snoozes/.*\.yaml$"; then
+  if ! starts_with "memforge: snooze "; then
+    fail "Snooze file staged but commit prefix is not 'memforge: snooze <topic>'." \
+         "Snooze edits MUST land in 'memforge: snooze <topic>' commits."
+  fi
+fi
+
+# Revocation events -> memforge: revoke OR memforge: revocation-snapshot
+if touches_pattern "^\.memforge/revocations?/"; then
+  if ! starts_with "memforge: revoke" && ! starts_with "memforge: revocation-snapshot"; then
+    fail "Revocation artifact staged but commit prefix is not 'memforge: revoke' or 'memforge: revocation-snapshot'." \
+         "Run 'memforge revoke <key_id>' or 'memforge revocation-snapshot' and use the printed message."
+  fi
+fi
+
+exit 0
+```
+
+Extend the hook for `memforge: resolve <topic>` and `memforge: alias <topic>` as your team starts using those operations.
+
+### Pattern 2: auto-commit watcher for plain markdown memories
+
+Use a file-system watcher to auto-commit memory `.md` writes (the common case). The watcher explicitly skips Tier 2 scoped paths so it does not race the `memforge` CLI.
+
+bash drop-in at [`examples/scripts/memforge-auto-commit-watcher.sh`](../examples/scripts/memforge-auto-commit-watcher.sh) (requires fswatch on macOS or inotifywait on Linux). PowerShell drop-in at [`examples/scripts/memforge-auto-commit-watcher.ps1`](../examples/scripts/memforge-auto-commit-watcher.ps1) (uses `System.IO.FileSystemWatcher`; no external dependencies on Windows). Source of the bash version (also at the path above):
+
+```bash
+#!/usr/bin/env bash
+# MemForge auto-commit watcher. macOS: requires fswatch (brew install fswatch).
+# Linux: requires inotify-tools (apt install inotify-tools). Skips Tier 2
+# scoped paths so the memforge CLI's own commits are not raced.
+set -e
+ROOT="${1:-$PWD}"
+cd "$ROOT"
+
+scoped_path() {
+  case "$1" in
+    .memforge/operator-registry.yaml|.memforge/config.yaml) return 0 ;;
+    .memforge/snoozes/*|.memforge/revocations/*|.memforge/sender-sequence/*|.memforge/agent-sessions/*) return 0 ;;
+    *) return 1 ;;
+  esac
+}
+
+handle() {
+  local path="$1"
+  [ -f "$path" ] || return 0
+  local rel
+  rel=$(python3 -c "import os,sys; print(os.path.relpath(sys.argv[1], sys.argv[2]))" "$path" "$ROOT" 2>/dev/null || echo "$path")
+  scoped_path "$rel" && return 0
+  case "$rel" in *.md) ;; *) return 0 ;; esac
+  git add -- "$rel" 2>/dev/null || return 0
+  git diff --cached --quiet -- "$rel" && return 0
+  git commit -m "memory: auto-commit $rel" >/dev/null 2>&1 || true
+}
+
+if command -v fswatch >/dev/null 2>&1; then
+  fswatch -0 -r "$ROOT" | while IFS= read -r -d '' path; do handle "$path"; done
+elif command -v inotifywait >/dev/null 2>&1; then
+  inotifywait -m -r -e close_write --format '%w%f' "$ROOT" | while read -r path; do handle "$path"; done
+else
+  echo "Install fswatch (macOS) or inotify-tools (Linux), or use the Claude Code PostToolUse hook." >&2
+  exit 1
+fi
+```
+
+The Claude Code PostToolUse `memory-auto-commit.sh` hook (operator-side; not shipped in this repo) implements roughly the same shape, scoped to Claude Code's tool-call lifecycle rather than fs-level events. Fork either as a starting point.
+
+**Bottom line.** Commits ARE the audit trail. The diff IS the receipt. Hygiene is the operator's responsibility; MemForge will work cleanly as long as the commits land with the right prefixes. The commit-msg hook above is enough to catch the bulk of the common mistakes; the watcher pattern is the easy step beyond.
 
 ## Step 5: run the pre-flight checker
 

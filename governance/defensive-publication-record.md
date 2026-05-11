@@ -63,6 +63,7 @@ This file tracks MemForge's defensive-publication artifacts: the citable archiva
 | 0.5.2   | v0.5.2 | 2026-05-10          | Canonical-form NFC normalization + atomic secure-write + bounded seen-nonce set + native Windows |
 | 0.5.3   | v0.5.3 | 2026-05-10          | Registry-layer cool-down enforcement + bounded revocation walk + TOCTOU-safe read + SID-based Windows ACL denylist + framing-injection defense |
 | 0.5.4   | v0.5.4 | 2026-05-11          | memory-audit subfolder-pointer false-positive fix (no spec change) |
+| 0.5.5   | v0.5.5 | 2026-05-11          | Docs-only patch: WebSocket-vs-git decision framing + commit-hygiene section |
 
 The continuous-prior-art commitment: every spec-bumping commit is tagged with semver; every tag has a corresponding GitHub release; release notes name the substantive additions. Each commit is timestamped + indexed by GitHub + walkable by examiner prior-art search tools.
 
