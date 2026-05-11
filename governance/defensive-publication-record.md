@@ -27,6 +27,16 @@ This file tracks MemForge's defensive-publication artifacts: the citable archiva
   - Commit-level (the v0.5.3 tagged commit): `swh:1:rev:2c9a6f41e0112bdf7fefcdd40c0e877e87d0474a` — anchor for the underlying source-tree state.
   - Snapshot-level (whole repo at ingestion): `swh:1:snp:834e3bf3b276f5fa5017cb725308aabdb5719215` — anchor for "the whole memforge repo as it existed when the v0.5.3 ingestion ran".
 
+### v0.5.4
+
+- **Zenodo DOI:** *(none; patch-release-no-Zenodo cadence rule from §"Re-publication cadence" applies — v0.5.4 is a reference-CLI bug fix with no spec change, so it flows through Channel 3 GitHub release tag + Channel 1 Software Heritage only)*
+- **Tag pushed:** 2026-05-11
+- **PyPI published:** 2026-05-11 (verified via https://pypi.org/pypi/ildan-memforge/json)
+- **Software Heritage SWHIDs:** minted 2026-05-11 via save-code-now (request 2327403; ingestion succeeded on first poll, visit_status=full).
+  - Release-level (the v0.5.4 tag): `swh:1:rel:d25a13163db64530921a3bf96e7903f00ce4d272` — canonical prior-art anchor for "what we tagged as v0.5.4".
+  - Commit-level (the v0.5.4 tagged commit): `swh:1:rev:1943ee451d1ea8ad876f885c78008a73577403fd` — anchor for the underlying source-tree state.
+  - Snapshot-level: `swh:1:snp:7508cf252667e1a640aaad3bc58da65de1546113`.
+
 ## Channel 2 — Operator-brand timestamped disclosure
 
 ### v0.4.0
@@ -52,6 +62,7 @@ This file tracks MemForge's defensive-publication artifacts: the citable archiva
 | 0.5.1   | v0.5.1 | 2026-05-10          | Reference CLI + agent session attestation content scope |
 | 0.5.2   | v0.5.2 | 2026-05-10          | Canonical-form NFC normalization + atomic secure-write + bounded seen-nonce set + native Windows |
 | 0.5.3   | v0.5.3 | 2026-05-10          | Registry-layer cool-down enforcement + bounded revocation walk + TOCTOU-safe read + SID-based Windows ACL denylist + framing-injection defense |
+| 0.5.4   | v0.5.4 | 2026-05-11          | memory-audit subfolder-pointer false-positive fix (no spec change) |
 
 The continuous-prior-art commitment: every spec-bumping commit is tagged with semver; every tag has a corresponding GitHub release; release notes name the substantive additions. Each commit is timestamped + indexed by GitHub + walkable by examiner prior-art search tools.
 
