@@ -37,6 +37,20 @@ This file tracks MemForge's defensive-publication artifacts: the citable archiva
   - Commit-level (the v0.5.4 tagged commit): `swh:1:rev:1943ee451d1ea8ad876f885c78008a73577403fd` — anchor for the underlying source-tree state.
   - Snapshot-level: `swh:1:snp:7508cf252667e1a640aaad3bc58da65de1546113`.
 
+### v0.5.6
+
+- **Zenodo DOI:** [10.5281/zenodo.20115596](https://doi.org/10.5281/zenodo.20115596) (new version under the same concept DOI as v0.5.0 + v0.5.3).
+- **Minted:** 2026-05-11.
+- **Resource type:** Software.
+- **License:** Apache-2.0.
+- **Bundle contents:** SPEC.md (spec_version 0.5.3); VERSION; taxonomy.yaml; v0.5.6-known-limitations.md (living-doc snapshot at v0.5.6); CHANGELOG.md (full history through v0.5.6); LICENSE; README.md; full examples/ tree (commit-msg hook bash + PowerShell, auto-commit watcher bash + PowerShell, WebSocket scaffold).
+- **Bundle SHA-256:** `39a0b20a757d5a3565bad39d1373abf6bb8cb8c72deddff755255a5da090334e`
+- **Maintainer note:** v0.5.4 and v0.5.5 were skipped for Zenodo per the patch-no-Zenodo cadence rule; v0.5.6 mints a fresh Zenodo version because the new examples/ directory is canonical operator-side surface worth anchoring alongside the spec snapshot. The v0.5.3 Zenodo record at DOI 10.5281/zenodo.20114965 remains the historical anchor for the v0.5.3 spec snapshot.
+- **Software Heritage SWHIDs:** minted 2026-05-11 via save-code-now (request 2327504; ingestion succeeded, visit_status=full).
+  - Release-level (the v0.5.6 tag): `swh:1:rel:d53e346866ee28926494d71e985e7b7f083c141b`.
+  - Commit-level (the v0.5.6 tagged commit): `swh:1:rev:b5be5757991943dadc7875cf37cbba84eceac63e`.
+  - Snapshot-level: `swh:1:snp:2f7c7e1d201503679d62f3a49bc5f14c3ec33bf1`.
+
 ## Channel 2 — Operator-brand timestamped disclosure
 
 ### v0.4.0
@@ -64,6 +78,7 @@ This file tracks MemForge's defensive-publication artifacts: the citable archiva
 | 0.5.3   | v0.5.3 | 2026-05-10          | Registry-layer cool-down enforcement + bounded revocation walk + TOCTOU-safe read + SID-based Windows ACL denylist + framing-injection defense |
 | 0.5.4   | v0.5.4 | 2026-05-11          | memory-audit subfolder-pointer false-positive fix (no spec change) |
 | 0.5.5   | v0.5.5 | 2026-05-11          | Docs-only patch: WebSocket-vs-git decision framing + commit-hygiene section |
+| 0.5.6   | v0.5.6 | 2026-05-11          | Docs + examples patch: cross-platform commit-msg hook + auto-commit watcher (bash + PowerShell) + WebSocket scaffold (config example + Python relay-probe) |
 
 The continuous-prior-art commitment: every spec-bumping commit is tagged with semver; every tag has a corresponding GitHub release; release notes name the substantive additions. Each commit is timestamped + indexed by GitHub + walkable by examiner prior-art search tools.
 
