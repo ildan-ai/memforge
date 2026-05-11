@@ -11,6 +11,49 @@ The trust-bootstrap procedure is **operator-mediated out-of-band**: MemForge doe
 - Both operators have the `recovery-secret` installed + backup acknowledged.
 - A shared git repo for the memory-root that both can push to + pull from.
 
+## Pick your transport: git-only or WebSocket?
+
+MemForge v0.5 ships two messaging substrates. The decision is operational, not normative: the same memory verifies identically through either path (see SPEC.md §"Messaging adapters" for the substrate-independent envelope contract).
+
+### git-only (default)
+
+The default adapter writes a signed memory file to disk, commits it to the local repo, and pushes to the shared remote. Other operators pick up new writes on their next `git pull`. The substrate is the same git repo everyone already runs.
+
+**Use git-only when:**
+
+- One operator on the store. The substrate is solo; there is no second reader to race against.
+- Two or more operators, but write cadence is slow (a handful of memory writes per day total across the team) and the cost of a missed-cross-claim being caught at next pull (minutes to hours later) is acceptable.
+- You want zero infrastructure beyond the git remote you already have.
+
+**Limits:**
+
+- Cross-claim detection is bounded by pull cadence. Operator B will not see Operator A's competing claim until B pulls. Two agents writing under their respective operators within the same pull-cycle window can produce a momentarily-silent overwrite locally, surfaced only at the next pull or audit.
+- Local writes that the writer has not yet pushed are invisible to other operators. Standard git eventual-consistency.
+
+This is the right default for almost every team starting out.
+
+### WebSocket
+
+The WebSocket adapter adds a real-time relay between operators. Each operator's MemForge client opens an authenticated `wss://` connection to a relay server; signed memory envelopes broadcast to all connected operators within seconds. The local-first invariant still holds (every write lands in the local git repo first; relay propagation is best-effort), but cross-claim detection latency drops from "next pull" to "next message frame."
+
+**Use WebSocket when:**
+
+- Two or more operators on the store with high write cadence (dozens to hundreds of memory writes per day across the team) where minute-scale conflict-detection windows would let stale-consensus build up between pulls.
+- A central audit / governance surface needs to see every memory write as it happens (regulated environments, customer-side agents pushing into an operator-side audit chain).
+- You already operate one of the supported substrate options (Kafka, NATS JetStream, Redis Streams, MCP-streaming) and want to layer MemForge on top.
+
+**What it costs:**
+
+- You stand up a WebSocket relay. Reference contract is in SPEC.md §"Messaging adapter contract (WebSocket reference; v0.5.0+)" (TLS-only `wss://` transport, per-operator authentication, circuit-breaker on local-queue exhaustion, signed-checkpoint cadence).
+- Every operator's `.memforge/config.yaml` gets a `messaging.adapter: websocket` block plus the relay URL + auth credentials.
+- TLS terminates at the relay. The relay is in your trust boundary; the spec contract treats it as untrusted (signed envelopes, per-operator auth, circuit-breakers), but operationally you own its uptime.
+
+WebSocket is opt-in. The git-only path remains a fully-supported v0.5 substrate; pick WebSocket only when the latency math actually matters for your team. The signed-envelope contract (sender_uid + sequence_number + checkpoints) is identical across both, so a team can start on git-only and flip to WebSocket later without re-keying or losing audit continuity.
+
+### When in doubt
+
+Stay on git-only. Reconsider when you can name a specific minute-scale-latency cost that the team is paying.
+
 ## Step 1: Operator A initializes the store
 
 Operator A bootstraps the memory-root + commits the initial operator-registry:

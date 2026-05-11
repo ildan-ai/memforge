@@ -127,6 +127,30 @@ git add .memforge/operator-registry.yaml
 git commit -m "memforge: operator-registry init"
 ```
 
+## Commit hygiene + signed `memforge:` prefixes
+
+You will see "now run `git add` + `git commit -m 'memforge: ...'`" instructions throughout the reference CLI. The reasons are deliberate and worth knowing up front.
+
+**MemForge does not install git hooks.** The reference CLI writes files to disk + tells you what to commit. Pre-commit hooks, post-commit hooks, server-side hooks: those are your responsibility. The spec keeps it that way so MemForge works on every git host (GitHub, GitLab, Gitea, self-hosted, even bare-bones working trees) without injecting machinery you did not ask for.
+
+**The `memforge:` commit-message prefix is parsed.** Audit, resolve, and revoke walk the commit log and key behavior off the prefix:
+
+- `memforge: operator-registry <verb>` — only the registry file changes; other paths in the same commit are a Tier 2 audit BLOCKER.
+- `memforge: resolve <decision_topic>` — the only commit that may transition memories to `status: superseded` for that topic; cross-topic mutations in the same commit are BLOCKER.
+- `memforge: revoke <key_id>` / `memforge: revocation-snapshot <hash>` — revocation events; receivers walk these to build the revocation set.
+- `memforge: snooze <decision_topic>` / `memforge: config` / `memforge: alias <topic>` — each scoped to its own file. Wrong-prefix-or-out-of-scope commits are BLOCKER.
+
+If you commit registry/resolve/revoke changes under a different prefix, MemForge's audit will not parse them and downstream behavior breaks (memories never supersede, revoked keys keep verifying, etc.). Always use the prefix the CLI suggests.
+
+**Automation: Claude Code users get this for free.** If you drive MemForge through Claude Code's auto-memory system, the PostToolUse `memory-auto-commit.sh` hook commits every Write/Edit inside a memory folder automatically. You still need to honor the `memforge:`-prefix convention for the operations above (registry edits, resolves, revokes, snoozes, config edits, alias edits); those run through the `memforge` CLI which prints the right commit message for you.
+
+**Automation: non-Claude-Code users.** Wire your own. Two reasonable patterns:
+
+- **Auto-commit on file write**, with a fallback prefix like `memory: write <relpath>`. Suitable for casual single-operator use. Make sure your hook does NOT auto-commit changes to `.memforge/operator-registry.yaml`, `.memforge/config.yaml`, or any memory whose change should land under a `memforge: resolve` / `memforge: snooze` / `memforge: alias` / `memforge: revoke` commit — for those, run the `memforge` CLI which prints the correct message and you commit manually (or extend the hook to recognize the staged paths and skip when the CLI is going to handle them).
+- **Pre-commit lint hook** that rejects a commit if the staged diff touches a path requiring a Tier 2 prefix (`.memforge/operator-registry.yaml`, files inside an actively-resolving topic, etc.) and the commit message does not match the expected prefix. Lower-friction than auto-commit; catches the common mistake.
+
+**Bottom line.** Commits ARE the audit trail. The diff IS the receipt. Hygiene is the operator's responsibility; MemForge will work cleanly as long as the commits land with the right prefixes.
+
 ## Step 5: run the pre-flight checker
 
 `messaging-doctor` runs the v0.5+ fail-closed checklist + reports posture:

@@ -700,6 +700,8 @@ Operators SHOULD verify fingerprints via at least two independent channels for a
 
 v0.5.0 specifies a WebSocket reference adapter contract. Substrate locked: WebSocket. Adapter contract: hybrid MUST behavior + MAY substrate-detail.
 
+**When to use it.** WebSocket is opt-in. The default git-only substrate is correct for solo operators and for teams whose write cadence makes minute-scale pull-cadence latency acceptable. WebSocket is the right choice when minute-scale cross-claim-detection windows would let stale consensus build up between pulls (typically: two or more operators with high daily write cadence, or a central audit surface that needs every memory write in real time). The signed-envelope contract below applies identically across both substrates; teams can start on git-only and flip to WebSocket later without re-keying or losing audit continuity. Operator-decision framing with concrete trade-offs lives at `docs/team-bootstrap.md` §"Pick your transport: git-only or WebSocket?".
+
 ### Sender-uid format (MUST)
 
 `sender_uid = "<operator-uuid>:<32-byte-hex>"`. Cryptographic binding to operator-uuid + 256-bit-entropy random suffix. Generated at sender start. Persisted alongside sender-sequence file. Adapters MUST reject sender-uids that do NOT match this format.

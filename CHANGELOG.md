@@ -10,6 +10,25 @@ The version number tracked here is the **package / tooling** version. The on-dis
 
 The Contributor License Agreement infrastructure is counsel-blocked; external pull requests are paused until the CLA flow lands.
 
+## [0.5.5] - 2026-05-11
+
+**Docs-only patch. No spec change. No code change. No new tests.** Closes two documentation gaps surfaced by reader-question on the v0.5.4 blog post.
+
+### Documentation
+
+- `docs/team-bootstrap.md`: new section "Pick your transport: git-only or WebSocket?" between Prerequisites and Step 1. Operator-decision framing for the two v0.5 messaging substrates: when git-only is correct (solo / low-cadence teams), when WebSocket is the right choice (high cadence, central audit, regulated environments), what WebSocket costs (relay infrastructure + per-operator auth + TLS termination), and how teams can flip later without re-keying.
+- `docs/quickstart.md`: new section "Commit hygiene + signed `memforge:` prefixes" right after Step 4 (init-store). Explains that MemForge does not install git hooks (operator responsibility); documents the `memforge:` commit-prefix grammar that audit / resolve / revoke parse; covers the Claude Code PostToolUse auto-commit-hook bonus path; sketches two reasonable wire-your-own patterns for non-CC users.
+- `README.md`: pointer lines updated to surface the two new sections from the quickstart + team-bootstrap.
+- `spec/SPEC.md` §"Messaging adapter contract (WebSocket reference; v0.5.0+)": new opening paragraph "When to use it" with operator-decision framing + link to the team-bootstrap section.
+
+### Pre-ship review
+
+Docs-only patch; below the panel-gate bar in the release-rigor protocol. Sanitization grep on the staged diff is clean.
+
+### Spec compatibility
+
+No spec or code change. spec/VERSION stays at 0.5.3. Adapters built against v0.5.3 / v0.5.4 work unchanged on v0.5.5.
+
 ## [0.5.4] - 2026-05-11
 
 **Patch release. Reference-CLI bug fix only; no spec change (spec stays at 0.5.3).** This release ran the release-rigor critic + threat-modeler voices on the patch surface pre-tag; the critic surfaced one MAJOR (over-broad archive-subfolder exclusion) which was closed in-commit before tag.
