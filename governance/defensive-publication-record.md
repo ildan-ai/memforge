@@ -22,7 +22,10 @@ This file tracks MemForge's defensive-publication artifacts: the citable archiva
 - **Bundle contents:** SPEC.md (v0.5.3); spec/VERSION; spec/taxonomy.yaml; v0.5.3-known-limitations.md (renamed living-doc snapshot); CHANGELOG.md (full history through v0.5.3); LICENSE; README.md.
 - **Bundle SHA-256:** `c5b9775838f6130ba9c144c2ea31f763a1c60cce86df8423e77ad3b1df104023`
 - **Maintainer note:** v0.5.1 and v0.5.2 were skipped for Zenodo by maintainer decision; v0.5.3 is the first end-to-end-baked release in the v0.5.x line. Patch-release-no-Zenodo cadence rule below is suspended for the v0.5.x line; resumes from v0.6 minor bump.
-- **Software Heritage SWHID:** *(pending; submit https://github.com/ildan-ai/memforge to https://archive.softwareheritage.org for a v0.5.3 snapshot SWHID; record here when minted)*
+- **Software Heritage SWHIDs:** minted 2026-05-11 via save-code-now (request 2327338; ingestion completed 9 seconds after submission, visit_status=full).
+  - Release-level (the v0.5.3 tag): `swh:1:rel:bdd321df0d1a57b7bb1e5bae4c68bd7c237beea1` — canonical prior-art anchor for "what we tagged as v0.5.3".
+  - Commit-level (the v0.5.3 tagged commit): `swh:1:rev:2c9a6f41e0112bdf7fefcdd40c0e877e87d0474a` — anchor for the underlying source-tree state.
+  - Snapshot-level (whole repo at ingestion): `swh:1:snp:834e3bf3b276f5fa5017cb725308aabdb5719215` — anchor for "the whole memforge repo as it existed when the v0.5.3 ingestion ran".
 
 ## Channel 2 — Operator-brand timestamped disclosure
 
