@@ -10,6 +10,22 @@ The version number tracked here is the **package / tooling** version. The on-dis
 
 The Contributor License Agreement infrastructure is counsel-blocked; external pull requests are paused until the CLA flow lands.
 
+## [0.5.4] - 2026-05-11
+
+**Patch release. Reference-CLI bug fix only; no spec change (spec stays at 0.5.3).** This release ran the release-rigor critic + threat-modeler voices on the patch surface pre-tag; the critic surfaced one MAJOR (over-broad archive-subfolder exclusion) which was closed in-commit before tag.
+
+### Reference implementation changes
+
+- `memforge.cli.audit`: fix false-positive `Orphan pointer (no file)` integrity violations for MEMORY.md pointers targeting subfolder detail files that exist on disk. Background: the audit's canonical `_disk_md_files()` returns top-level `.md` + subfolder `README.md` rollups only, per spec §"Rollup subfolders"; pointers at `<topic>/<detail>.md` failed the disk-set check and were reported as missing even when the file was present in the tree. New `_all_md_files_recursive(folder)` helper distinguishes two cases at the pointer-check site: (a) pointer file truly missing → keep as INTEGRITY violation; (b) pointer file exists but at a non-canonical path → downgrade to HEALTH advisory `"Pointer at subfolder detail file (consider rollup README)"`. `--fix` continues to operate only on truly-orphan pointers; existing valid subfolder-detail pointers are never removed. The top-level `archive/` subfolder is excluded from the recursive walk (consistent with `_files_to_audit`).
+
+### Tests
+
+- 3 new audit tests: no integrity violation for an existing subfolder detail pointer; health advisory emitted for the same; truly-missing subfolder pointer still raises integrity violation. Full suite: 233 pass, 2 GPG-gated skipped.
+
+### Spec compatibility
+
+- No spec change. spec/VERSION stays at 0.5.3. Adapters built against v0.5.3 read paths work unchanged on v0.5.4.
+
 ## [0.5.3] - 2026-05-10
 
 **Patch release.** Spec bump 0.5.2 -> 0.5.3. Closes the 3 remaining v0.5.x MAJORs surfaced by the v0.5.2 retrospective threat-modeler pass. This release ran the full multi-voice review panel (architect + critic + threat-modeler) on both the spec delta and the new code surface pre-tag; findings identified by the panel were addressed before ship. Note: multi-voice panel review is an internal review pass, not a substitute for independent red-teaming or third-party security audit. See `spec/known-limitations.md` for the residuals that remain.

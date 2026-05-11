@@ -211,3 +211,131 @@ def test_no_orphan_pointer_for_rollup_readme(tmp_path: Path) -> None:
     output = buf.getvalue()
     assert "Orphan pointer (no file): forge/README.md" not in output
     assert "Orphan file (no pointer): forge/README.md" not in output
+
+
+def _seed_subfolder_detail(folder: Path, topic: str, name: str) -> None:
+    sub = folder / topic
+    sub.mkdir(exist_ok=True)
+    (sub / name).write_text(
+        "---\n"
+        f"name: {topic} {name} detail\n"
+        f"description: Detail file for {topic}\n"
+        "type: project\n"
+        "tier: detail\n"
+        "---\n\n"
+        f"Detail body for {topic}/{name}.\n"
+        "**Why:** test.\n"
+        "**How to apply:** test.\n",
+        encoding="utf-8",
+    )
+
+
+def test_no_orphan_pointer_for_subfolder_detail_file(tmp_path: Path) -> None:
+    """End-to-end: a MEMORY.md pointer at a subfolder detail file that
+    EXISTS on disk (e.g., `forge/project_x_deploy_state.md`) must not be
+    reported as `Orphan pointer (no file)`. The audit may downgrade to a
+    health advisory recommending the rollup-README pattern, but the file
+    is not missing and must not appear in the integrity-violation set.
+    """
+    from memforge.cli.audit import audit_target
+
+    _seed_top_level(tmp_path, "feedback_a.md")
+    _seed_subfolder_detail(tmp_path, "forge", "project_x_deploy_state.md")
+    (tmp_path / "MEMORY.md").write_text(
+        "# Memory Index\n\n"
+        "- [feedback A](feedback_a.md) - top-level entry\n"
+        "- [project X deploy](forge/project_x_deploy_state.md) - detail\n",
+        encoding="utf-8",
+    )
+
+    import io
+    from contextlib import redirect_stdout
+
+    buf = io.StringIO()
+    with redirect_stdout(buf):
+        violations, _ = audit_target(
+            tmp_path,
+            stale_days=365,
+            strict=False,
+            fix=False,
+            add_defaults=False,
+            json_out=False,
+        )
+
+    output = buf.getvalue()
+    assert "Orphan pointer (no file): forge/project_x_deploy_state.md" not in output
+    assert violations == 0, (
+        f"expected 0 integrity violations for a pointer at an existing "
+        f"subfolder detail file; got {violations}; output:\n{output}"
+    )
+
+
+def test_subfolder_detail_pointer_emits_health_advisory(tmp_path: Path) -> None:
+    """The downgraded check emits a health advisory pointing the operator
+    at the canonical rollup-README pattern, without raising an integrity
+    violation.
+    """
+    from memforge.cli.audit import audit_target
+
+    _seed_top_level(tmp_path, "feedback_a.md")
+    _seed_subfolder_detail(tmp_path, "forge", "project_x_deploy_state.md")
+    (tmp_path / "MEMORY.md").write_text(
+        "# Memory Index\n\n"
+        "- [feedback A](feedback_a.md) - top-level entry\n"
+        "- [project X deploy](forge/project_x_deploy_state.md) - detail\n",
+        encoding="utf-8",
+    )
+
+    import io
+    from contextlib import redirect_stdout
+
+    buf = io.StringIO()
+    with redirect_stdout(buf):
+        audit_target(
+            tmp_path,
+            stale_days=365,
+            strict=False,
+            fix=False,
+            add_defaults=False,
+            json_out=False,
+        )
+
+    output = buf.getvalue()
+    assert "Pointer at subfolder detail file" in output, (
+        f"expected health advisory recommending rollup README; output:\n{output}"
+    )
+
+
+def test_truly_missing_subfolder_pointer_still_violates(tmp_path: Path) -> None:
+    """Sanity: a MEMORY.md pointer at `sub/missing.md` where the file does
+    NOT exist on disk must still produce an integrity violation (the bug
+    fix only downgrades when the file actually exists).
+    """
+    from memforge.cli.audit import audit_target
+
+    _seed_top_level(tmp_path, "feedback_a.md")
+    (tmp_path / "forge").mkdir()
+    (tmp_path / "MEMORY.md").write_text(
+        "# Memory Index\n\n"
+        "- [feedback A](feedback_a.md) - top-level entry\n"
+        "- [missing](forge/does_not_exist.md) - truly orphan\n",
+        encoding="utf-8",
+    )
+
+    import io
+    from contextlib import redirect_stdout
+
+    buf = io.StringIO()
+    with redirect_stdout(buf):
+        violations, _ = audit_target(
+            tmp_path,
+            stale_days=365,
+            strict=False,
+            fix=False,
+            add_defaults=False,
+            json_out=False,
+        )
+
+    output = buf.getvalue()
+    assert "Orphan pointer (no file): forge/does_not_exist.md" in output
+    assert violations >= 1

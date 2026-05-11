@@ -75,6 +75,32 @@ def _disk_md_files(folder: Path) -> list[str]:
     return out
 
 
+def _all_md_files_recursive(folder: Path) -> set[str]:
+    """All .md files under folder, POSIX-relative.
+
+    Used to distinguish "pointer at truly-missing file" (integrity violation)
+    from "pointer at subfolder detail file that exists but is non-canonical"
+    (health advisory). Excludes MEMORY.md and the top-level archive/
+    subfolder (matching `_files_to_audit` semantics; a nested folder named
+    "archive" deeper in the tree is NOT excluded).
+    """
+    out: set[str] = set()
+    for p in folder.rglob("*.md"):
+        if p.name == "MEMORY.md":
+            continue
+        try:
+            # rglob may yield paths reached via a symlink that resolves
+            # outside `folder`; relative_to then raises ValueError. Skip
+            # those rather than crash.
+            rel = p.relative_to(folder)
+        except ValueError:
+            continue
+        if rel.parts and rel.parts[0] == "archive":
+            continue
+        out.add(rel.as_posix())
+    return out
+
+
 def _files_to_audit(folder: Path) -> list[str]:
     """All files whose frontmatter must be validated.
 
@@ -219,13 +245,24 @@ def audit_target(
             violations.append(f"Duplicate pointer in MEMORY.md: {p}")
     pointer_set = set(pointers)
     disk_set = set(_disk_md_files(target))
+    all_md_set = _all_md_files_recursive(target)
 
     for f in sorted(disk_set - pointer_set):
         orphan_files.append(f)
         violations.append(f"Orphan file (no pointer): {f}")
     for p in sorted(pointer_set - disk_set):
-        orphan_ptrs.append(p)
-        violations.append(f"Orphan pointer (no file): {p}")
+        if p in all_md_set:
+            # File exists inside a subfolder but is not a canonical rollup
+            # README. Per spec §"Rollup subfolders" the canonical pattern is
+            # to point MEMORY.md at `<topic>/README.md` (the rollup) and let
+            # the rollup link the detail files. Non-canonical but the file
+            # IS on disk, so this is a health advisory, not "no file".
+            health.append(
+                f"Pointer at subfolder detail file (consider rollup README): {p}"
+            )
+        else:
+            orphan_ptrs.append(p)
+            violations.append(f"Orphan pointer (no file): {p}")
 
     # ---- per-file frontmatter audit ----
     # Per spec §"Rollup subfolders", audit MUST recurse into rollup
