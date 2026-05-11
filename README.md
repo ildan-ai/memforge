@@ -2,7 +2,7 @@
 
 **Typed, git-native, dynamic memory for coding agents.** A markdown folder + a small spec + reference tooling. Works across Claude Code, Cursor, Aider, Codex, and GitHub Copilot Chat through thin adapters. As of v0.5, supports multi-operator teams with cryptographic attribution; as of v0.5.2, the reference CLI ships under a single `memforge` dispatcher with cross-platform support (macOS, Linux, native Windows).
 
-[![DOI](https://zenodo.org/badge/DOI/10.5281/zenodo.20113964.svg)](https://doi.org/10.5281/zenodo.20113964) **Current release: v0.5.2** ([PyPI](https://pypi.org/project/ildan-memforge/) | [CHANGELOG](./CHANGELOG.md) | [spec](./spec/SPEC.md))
+[![DOI](https://zenodo.org/badge/DOI/10.5281/zenodo.20114965.svg)](https://doi.org/10.5281/zenodo.20114965) **Current release: v0.5.3** ([PyPI](https://pypi.org/project/ildan-memforge/) | [CHANGELOG](./CHANGELOG.md) | [spec](./spec/SPEC.md))
 
 > **Status: pre-1.0; external PRs paused.** Issues and Discussions are open. External pull requests are paused until the Contributor License Agreement infrastructure lands. See [CONTRIBUTING.md](./CONTRIBUTING.md). Security reports go through the private channel in [SECURITY.md](./SECURITY.md).
 
@@ -10,7 +10,7 @@
 
 ```bash
 pip install ildan-memforge
-memforge --version                  # memforge 0.5.2
+memforge --version                  # memforge 0.5.3
 memforge init-operator --name "Your Name" --gen-key
 memforge recovery-init
 memforge recovery-backup-confirm --i-have-backed-up-the-secret
@@ -25,7 +25,7 @@ Full quickstart at [`docs/quickstart.md`](./docs/quickstart.md). Multi-operator 
 
 If you use MemForge in research or publications, please cite:
 
-> Hiltz, Mike. *MemForge: Portable, agent-neutral persistent memory format for AI coding agents (v0.5.2)*. Zenodo, 2026. DOI: [10.5281/zenodo.20113964](https://doi.org/10.5281/zenodo.20113964)
+> Hiltz, Mike. *MemForge: Portable, agent-neutral persistent memory format for AI coding agents (v0.5.3)*. Zenodo, 2026. DOI: [10.5281/zenodo.20114965](https://doi.org/10.5281/zenodo.20114965)
 
 ## The gap MemForge fills
 

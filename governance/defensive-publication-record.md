@@ -13,6 +13,17 @@ This file tracks MemForge's defensive-publication artifacts: the citable archiva
 - **Bundle contents:** SPEC.md (v0.5.0); spec/VERSION; spec/taxonomy.yaml; spec/v0.5.0-known-limitations.md; CHANGELOG.md (through v0.5.0); LICENSE; README.md (bundle map + Zenodo metadata template).
 - **Software Heritage SWHID:** *(pending; submit https://github.com/ildan-ai/memforge to https://archive.softwareheritage.org for a v0.5.0 snapshot SWHID; record here when minted)*
 
+### v0.5.3
+
+- **Zenodo DOI:** [10.5281/zenodo.20114965](https://doi.org/10.5281/zenodo.20114965) (new version under the same concept DOI as v0.5.0)
+- **Minted:** 2026-05-10
+- **Resource type:** Software
+- **License:** Apache-2.0
+- **Bundle contents:** SPEC.md (v0.5.3); spec/VERSION; spec/taxonomy.yaml; v0.5.3-known-limitations.md (renamed living-doc snapshot); CHANGELOG.md (full history through v0.5.3); LICENSE; README.md.
+- **Bundle SHA-256:** `c5b9775838f6130ba9c144c2ea31f763a1c60cce86df8423e77ad3b1df104023`
+- **Maintainer note:** v0.5.1 and v0.5.2 were skipped for Zenodo by maintainer decision; v0.5.3 is the first end-to-end-baked release in the v0.5.x line. Patch-release-no-Zenodo cadence rule below is suspended for the v0.5.x line; resumes from v0.6 minor bump.
+- **Software Heritage SWHID:** *(pending; submit https://github.com/ildan-ai/memforge to https://archive.softwareheritage.org for a v0.5.3 snapshot SWHID; record here when minted)*
+
 ## Channel 2 — Operator-brand timestamped disclosure
 
 ### v0.4.0
@@ -36,7 +47,8 @@ This file tracks MemForge's defensive-publication artifacts: the citable archiva
 | 0.4.3   | v0.4.3 | 2026-05-08          | Frontmatter backfill round-trip render fix |
 | 0.5.0   | v0.5.0 | 2026-05-10          | Multi-identity + cryptographic attribution + WebSocket messaging adapter |
 | 0.5.1   | v0.5.1 | 2026-05-10          | Reference CLI + agent session attestation content scope |
-| 0.5.2   | v0.5.2 | 2026-05-10          | Canonical-form NFC normalization + atomic secure-write + bounded seen-nonce set |
+| 0.5.2   | v0.5.2 | 2026-05-10          | Canonical-form NFC normalization + atomic secure-write + bounded seen-nonce set + native Windows |
+| 0.5.3   | v0.5.3 | 2026-05-10          | Registry-layer cool-down enforcement + bounded revocation walk + TOCTOU-safe read + SID-based Windows ACL denylist + framing-injection defense |
 
 The continuous-prior-art commitment: every spec-bumping commit is tagged with semver; every tag has a corresponding GitHub release; release notes name the substantive additions. Each commit is timestamped + indexed by GitHub + walkable by examiner prior-art search tools.
 

@@ -12,7 +12,7 @@ The Contributor License Agreement infrastructure is counsel-blocked; external pu
 
 ## [0.5.3] - 2026-05-10
 
-**Patch release.** Spec bump 0.5.2 -> 0.5.3. Closes the 3 remaining v0.5.x MAJORs surfaced by the v0.5.2 retrospective threat-modeler pass. v0.5.3 is the first MemForge release that ships with zero open MAJORs in the known-limitations document.
+**Patch release.** Spec bump 0.5.2 -> 0.5.3. Closes the 3 remaining v0.5.x MAJORs surfaced by the v0.5.2 retrospective threat-modeler pass. This release ran the full multi-voice review panel (architect + critic + threat-modeler) on both the spec delta and the new code surface pre-tag; findings identified by the panel were addressed before ship. Note: multi-voice panel review is an internal review pass, not a substitute for independent red-teaming or third-party security audit. See `spec/known-limitations.md` for the residuals that remain.
 
 ### Spec changes
 
@@ -28,7 +28,7 @@ The Contributor License Agreement infrastructure is counsel-blocked; external pu
 
 ### Documentation
 
-- `spec/known-limitations.md` (renamed from `spec/v0.5.0-known-limitations.md`; living document): updated to reflect v0.5.3 closures. All BLOCKER and security-relevant MAJOR residuals are now closed; only 4 MINOR refinements remain. SPEC.md cross-reference updated to point at the living-doc filename.
+- `spec/known-limitations.md` (renamed from `spec/v0.5.0-known-limitations.md`; living document): updated to reflect v0.5.3 closures of the BLOCKERs and security-relevant MAJORs surfaced by the internal multi-voice review panel. 4 MINOR refinements remain on the living doc. SPEC.md cross-reference updated to point at the living-doc filename. The "panel-identified" qualifier matters: independent red-teaming or third-party pentest may surface findings the internal panel did not.
 
 ### Tests
 

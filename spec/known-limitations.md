@@ -7,7 +7,9 @@
 
 ## Why this document exists
 
-Tracks residual non-BLOCKER refinements queued for future patches. A BLOCKER would block the release; anything tracked here is by definition a refinement that the release ships with, not a security gap.
+Tracks residual non-BLOCKER refinements queued for future patches. A BLOCKER would block the release; anything tracked here is by definition a refinement that the release ships with.
+
+**What this document is NOT.** This document tracks issues surfaced by the project's internal multi-voice review panel (architect + critic + threat-modeler). It is not a substitute for independent red-teaming, third-party pentest, or a formal security audit. Independent review may surface findings the internal panel did not. The "no residual BLOCKERs" status reflects the panel's review scope, not an external attestation.
 
 ---
 
@@ -29,7 +31,7 @@ The following items were tracked as residuals in the v0.5.0 known-limitations do
 | Bounded git-log walk in `walk_revocation_set` (MAJOR; unbounded walk was a DoS surface) | v0.5.3 | §"Reader-side revocation walk" bounded-walk mandate; default caps 100k commits / 100 MB |
 | TOCTOU between path-level mode-check and file read (MAJOR) | v0.5.3 | Integrity invariant 21 TOCTOU-safe-read addendum; `_security.secure_read_text` + `secure_read_bytes` |
 
-The v0.5.3 ship closes all BLOCKER and security-relevant MAJOR residuals identified to date.
+The v0.5.3 ship closes the BLOCKER and security-relevant MAJOR residuals surfaced by the project's internal multi-voice review panel to date. Independent red-teaming or third-party pentest has not been performed.
 
 ---
 
