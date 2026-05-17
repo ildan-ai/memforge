@@ -10,6 +10,14 @@ The version number tracked here is the **package / tooling** version. The on-dis
 
 The Contributor License Agreement infrastructure is counsel-blocked; external pull requests are paused until the CLA flow lands.
 
+### Added
+
+- `adapters/routemeld/` reference adapter for the routemeld IDE (a VS Code / Code-OSS fork with a bundled cert-authed chat participant + multi-provider model picker). Ships a README, `memory-config.json.template` (per-repo `.routemeld/memory.json` shape), and `settings.snippet.json` (user/workspace `routemeld.trust.memoryFiles` snippet). routemeld's chat participant reads referenced `MEMORY.md` files and inlines them into every chat turn's system prompt. Auto-commit uses the cross-platform `memory-watch` watcher. Adapter-status table in `adapters/README.md` updated.
+
+### Spec compatibility
+
+No spec or code change. Adapter-only addition. Compatible with v0.5.6.
+
 ## [0.5.6] - 2026-05-11
 
 **Docs + examples patch. No spec change. No code change. spec/VERSION stays at 0.5.3.** Closes "we described patterns but didn't ship code" gaps surfaced after v0.5.5: ship copy-paste-ready example scripts where the docs describe operator-side glue.

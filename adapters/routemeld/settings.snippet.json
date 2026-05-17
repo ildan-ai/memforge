@@ -1,0 +1,10 @@
+{
+	"routemeld.trust.memoryFiles": [
+		"${workspaceFolder}/.claude/memory/MEMORY.md",
+		"${userHome}/.claude/global-memory/MEMORY.md"
+	],
+	"routemeld.trust.sensitivityEnforcement": {
+		"restricted": "operator-cloud-only",
+		"privileged": "local-only"
+	}
+}

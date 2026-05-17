@@ -1,0 +1,15 @@
+{
+	"$schema": "https://routemeld.ai/schemas/memory-config-v0.1.json",
+	"memoryFiles": [
+		"${workspaceFolder}/.claude/memory/MEMORY.md",
+		"${userHome}/.claude/global-memory/MEMORY.md"
+	],
+	"sensitivityEnforcement": {
+		"restricted": "operator-cloud-only",
+		"privileged": "local-only"
+	},
+	"watcher": {
+		"enabled": true,
+		"command": "memory-watch"
+	}
+}

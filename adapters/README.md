@@ -19,10 +19,13 @@ Optional extras (some agents support them, others don't):
 | `aider/` | `--read MEMORY.md` (or `.aider.conf.yml`) | aider native + `memory-watch` for external writes | none | none |
 | `codex/` | `AGENTS.md` reference | `memory-watch` (or daemon) | none | none |
 | `vscode-copilot/` | `.github/copilot-instructions.md` + `github.copilot.chat.codeGeneration.instructions` setting | `memory-watch` (or daemon) | none | none |
+| `routemeld/` | `.routemeld/memory.json` or `routemeld.trust.memoryFiles` setting (read by the `routemeld-trust` chat participant) | `memory-watch` (or daemon) | none (planned) | Command Palette entries shelling to memforge CLI tools |
 
 The `codex/` adapter covers any agent that follows the AGENTS.md convention (Cline, Continue, Windsurf, future ones). The wiring is identical because AGENTS.md is the contract.
 
-GitHub Copilot Chat does NOT honor AGENTS.md; it has its own `.github/copilot-instructions.md` surface plus VS Code settings. Hence the dedicated `vscode-copilot/` adapter. If you run Copilot alongside other agents in the same repo, both `AGENTS.md` and `.github/copilot-instructions.md` can point at the same `MEMORY.md` — they coexist cleanly.
+GitHub Copilot Chat does NOT honor AGENTS.md; it has its own `.github/copilot-instructions.md` surface plus VS Code settings. Hence the dedicated `vscode-copilot/` adapter. If you run Copilot alongside other agents in the same repo, both `AGENTS.md` and `.github/copilot-instructions.md` can point at the same `MEMORY.md` (they coexist cleanly).
+
+The `routemeld/` adapter targets the [routemeld](https://routemeld.ai) IDE, a VS Code (Code-OSS) fork with a bundled cert-authed chat-participant + multi-provider model picker. routemeld reads its memory configuration from `.routemeld/memory.json` (per-repo) or the `routemeld.trust.memoryFiles` VS Code setting (user/workspace); the chat participant inlines referenced memory into every turn. If you run routemeld alongside GitHub Copilot Chat in the same repo, both adapters can point at the same `MEMORY.md`.
 
 ## Cross-platform support
 
