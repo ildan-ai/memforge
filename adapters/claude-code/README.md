@@ -41,6 +41,19 @@ CC's automatic session-start memory load does NOT fire a `Read` tool event. Only
 
 Register under `PostToolUse` with matcher `Read`.
 
+### Recall hook (spec v0.6.0)
+
+`hooks/memory_recall_hook.py` runs on every user prompt (`UserPromptSubmit`) and injects the descriptions of the memories whose triggers match the prompt, so the agent recalls the right memory at the right moment instead of relying on a bulk-loaded `MEMORY.md`. It invokes the installed `memory-recall` reader (spec v0.6.0 §"Recall operation") via `subprocess` (no shell), which reads a precompiled recall index. It is fail-open-empty: any failure prints nothing and never delays the prompt (a subprocess timeout guards latency). It is a Python hook (not bash) for Windows portability and to avoid shell-parsing fragility. Injected descriptions are wrapped in an untrusted-context preamble so the agent treats recalled text as reference, not instructions.
+
+Keep the recall index fresh one of two ways:
+
+- The auto-commit hook above already calls `memory-recall --rebuild` after each memory write (recall-index-only refresh; it does not regenerate `MEMORY.md`).
+- Or rebuild explicitly alongside the human index: `memory-index-gen --with-recall-index`.
+
+The recall index is a derived build artifact at `<memory-folder>/.memforge/recall-index.json`; it carries only memory descriptions (never bodies) and may be regenerated at any time.
+
+Register under `UserPromptSubmit`.
+
 ### Settings.json registration
 
 In `~/.claude/settings.json`:
@@ -63,6 +76,15 @@ In `~/.claude/settings.json`:
           "type": "command",
           "command": "/absolute/path/to/hooks/memory-read-tracker.sh",
           "timeout": 5
+        }]
+      }
+    ],
+    "UserPromptSubmit": [
+      {
+        "hooks": [{
+          "type": "command",
+          "command": "python3 /absolute/path/to/hooks/memory_recall_hook.py",
+          "timeout": 10
         }]
       }
     ]

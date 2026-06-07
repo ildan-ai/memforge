@@ -1,0 +1,7 @@
+#!/usr/bin/env python3
+"""Thin shim: invokes memforge.cli.recall.main()."""
+import sys
+from memforge.cli.recall import main
+
+if __name__ == "__main__":
+    sys.exit(main())

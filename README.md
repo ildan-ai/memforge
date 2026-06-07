@@ -193,7 +193,7 @@ Run `--help` on any of them.
 | --- | --- |
 | `memory-audit` | Schema + integrity check. Pass `--strict` in CI. |
 | `memory-audit-deep` | Recursive audit: UID uniqueness, taxonomy membership, supersedes resolution, link integrity. |
-| `memory-index-gen` | Build `MEMORY.md` from frontmatter as a CI artifact. RBAC-aware filtering for shared folders. |
+| `memory-index-gen` | Build `MEMORY.md` from frontmatter as a CI artifact. RBAC-aware filtering for shared folders. `--with-recall-index` also emits the recall inverted index. |
 | `memory-cluster-suggest` | Suggest rollup subfolders when a topic accumulates five or more memories. |
 | `memory-dlp-scan` | Pre-commit scanner for secrets, credentials, and PII in memory bodies. |
 | `memory-link-rewriter` | UID-based cross-folder link integrity (`check`, `rename`, `rename-batch`, `upgrade`). |
@@ -201,6 +201,7 @@ Run `--help` on any of them.
 | `memory-dedup` | LLM-backed near-duplicate detection. Local-only by default; reports candidates, never writes. |
 | `memory-rollup` | Bulk-move primitive: create / undo / list. Maintains an undo ledger. |
 | `memory-query` | Filter memories by topic, type, tag, status, owner, date range, or text. |
+| `memory-recall` | Query-triggered recall (v0.6.0): inject the descriptions of memories whose triggers match a query. Reads a precompiled index; fail-open-empty. |
 | `memory-watch` | Filesystem watcher (Linux + macOS via watchdog). |
 | `memory-promote` | Move a memory between folders with index fixup. |
 
@@ -221,6 +222,7 @@ Format invariants are in [`spec/SPEC.md`](./spec/SPEC.md). Topic taxonomy is in 
 | v0.5.0 | 2026-05-10 | Multi-identity + cryptographic attribution + WebSocket messaging adapter. Operator + agent identity as first-class peers with GPG signing. Sender-uid + sender-sequence + signed checkpoints. Signing-time-aware revocation verification + clock-skew guard. 24-hour cool-down on key rotation. Recovery-secret filesystem mode + SHA256-anchored content integrity. |
 | v0.5.1 | 2026-05-10 | Reference CLI ships (14 subcommands under `memforge` dispatcher). Closes v0.5.0 agent-session-attestation content-scope MAJOR with normative `nonce` + `expires_at` + `capability_scope`. Cross-cutting fail-closed posture (29-item operator reference). Privacy considerations (7 boundary statements). |
 | v0.5.2 | 2026-05-10 | Closes 2 BLOCKERs + 1 MAJOR from retrospective code panel. Canonical-form Unicode NFC normalization MUST on signed envelopes (closes repudiation via normalization drift). Atomic O_CREAT\|O_EXCL + fsync + os.replace on `write_secure_yaml` + `write_secure_bytes` (closes TOCTOU on file create). Seen-nonce set bounding MAY -> SHOULD with explicit GC contract (closes unbounded-set DoS). Cross-platform secure-file abstraction (`src/memforge/_security.py`): POSIX mode bits on macOS/Linux + NTFS ACLs (via `icacls`) on native Windows. CI matrix extends to Ubuntu + macOS + Windows. |
+| v0.6.0 | (unreleased) | Query-triggered recall. Three optional frontmatter fields (`triggers`, `always`, `do_not_inject`) + the §"Recall operation" spec contract (UI-neutral; descriptions only, never bodies; fail-open-empty). New `memory-recall` reader + `memory-index-gen --with-recall-index`. All fields optional, so pre-v0.6.0 folders stay well-formed and older tools ignore the new keys. |
 
 The reference implementation is running in production. External adoption is welcome once the CLA flow is live.
 
