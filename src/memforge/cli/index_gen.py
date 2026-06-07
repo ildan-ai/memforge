@@ -34,6 +34,7 @@ from pathlib import Path
 from typing import Any, Optional
 
 from memforge.frontmatter import has_frontmatter, parse as _mf_parse  # noqa: E402
+from memforge import recall as _recall  # noqa: E402  (v0.6.0 recall index)
 
 try:
     import yaml  # type: ignore
@@ -552,6 +553,7 @@ def process(
     mode: str,
     viewer_tier: Optional[str] = None,
     viewer_teams: Optional[list[str]] = None,
+    with_recall_index: bool = False,
 ) -> int:
     if not folder.exists():
         sys.stderr.write(f"error: folder does not exist: {folder}\n")
@@ -573,6 +575,13 @@ def process(
         return 1
     target.write_text(output, encoding="utf-8")
     print(f"WROTE {target} ({len(files)} index files)")
+    if with_recall_index:
+        try:
+            payload = _recall.build_index(folder)
+            ri = _recall.write_index(folder, payload)
+            print(f"WROTE {ri} ({payload['counts']['entries']} recall entries)")
+        except Exception as exc:  # never fail the MEMORY.md build on a recall-index error
+            sys.stderr.write(f"warning: recall index build failed for {folder}: {exc}\n")
     return 0
 
 
@@ -607,6 +616,14 @@ def main() -> int:
             "that team. Hierarchical access labels are not affected."
         ),
     )
+    p.add_argument(
+        "--with-recall-index",
+        action="store_true",
+        help=(
+            "Also emit the recall inverted index (.memforge/recall-index.json) "
+            "alongside MEMORY.md (spec v0.6.0 recall operation). Write mode only."
+        ),
+    )
     args = p.parse_args()
 
     folders = [Path(p).resolve() for p in args.path] if args.path else default_paths()
@@ -616,7 +633,7 @@ def main() -> int:
 
     rc = 0
     for f in folders:
-        result = process(f, args.mode, args.viewer_tier, args.viewer_teams)
+        result = process(f, args.mode, args.viewer_tier, args.viewer_teams, args.with_recall_index)
         if result != 0:
             rc = result
     return rc

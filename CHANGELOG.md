@@ -10,6 +10,31 @@ The version number tracked here is the **package / tooling** version. The on-dis
 
 The Contributor License Agreement infrastructure is counsel-blocked; external pull requests are paused until the CLA flow lands.
 
+## [0.6.0] - 2026-06-07
+
+**Minor spec bump: query-triggered recall. spec/VERSION 0.5.3 -> 0.6.0; package and spec versions re-converge at 0.6.0.** Adds an alternative, query-driven loading strategy so adapters can surface only the memories whose triggers match a query instead of bulk-loading the whole `MEMORY.md` index every session. All new frontmatter is OPTIONAL, so existing folders remain well-formed and older tools ignore the new keys.
+
+### Added
+
+- **Spec: three optional recall frontmatter fields** (`triggers`, `always`, `do_not_inject`) and a new normative §"Recall operation (v0.6.0+)" defined by frontmatter contract + post-conditions. The matching algorithm, index format, ranking, and injection mechanism are explicitly reference-implementation + adapter concerns (per the loading-semantics principle, SPEC §"Goal"). Recall surfaces memory `description` text, never bodies; honors `sensitivity` / `access` and the live-set partition; and is fail-open-empty (never blocks the operation it serves). Reconciles with the reserved outbound `dynamic_supplement` field. New integrity invariant 26.
+- **Tooling: `memory-index-gen --with-recall-index`** emits a derived recall inverted-index artifact alongside `MEMORY.md` (incremental + atomic). **New `memory-recall` reader** does query-time matching for latency-sensitive per-query hooks. The build step and query step are separate operations.
+- **Adapter: Claude Code recall hook** in `adapters/claude-code/` that shells the installed `memory-recall` on each prompt (with a hard shell timeout), plus recompile-on-change wiring.
+
+### Changed
+
+- Tier semantics: `tier: index` is now "eligible for session-start loading and/or query-triggered recall" (was "loaded at session start").
+
+### Spec compatibility
+
+- Minor bump. Every pre-v0.6.0 folder remains well-formed under v0.6.0 readers; v0.6.0 folders remain readable by v0.5.x tools, which ignore the unknown `triggers` / `always` / `do_not_inject` keys. No required-field changes.
+
+### Pre-ship review
+
+- §1 spec-delta panel (architect + adversarial critic, different model families): ship-with-fixes, 0 BLOCKERs; fixes applied in-commit.
+- §2 code threat-model panel (STRIDE, two families): 0 residual BLOCKERs; symlink-safe walk, load-time index hardening + injection preamble, fail-closed sensitivity, bounded reads. 5 security regression tests.
+- §6 test gate: full suite 264 passed / 2 skipped; CLI --help smoke OK; CI green across Ubuntu / macOS / Windows on Python 3.10 to 3.12.
+- Sanitization clean (operator paths, lockdown terms, dashes, hashtags) on diff, commit messages, and new files.
+
 ## [0.5.6] - 2026-05-11
 
 **Docs + examples patch. No spec change. No code change. spec/VERSION stays at 0.5.3.** Closes "we described patterns but didn't ship code" gaps surfaced after v0.5.5: ship copy-paste-ready example scripts where the docs describe operator-side glue.

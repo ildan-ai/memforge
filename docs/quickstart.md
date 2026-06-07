@@ -368,6 +368,26 @@ memforge memories-by-key ABCD1234...                   # dry-run list first
 memforge revoke-memories ABCD1234... --bulk             # apply
 ```
 
+## Recall (v0.6.0): query-triggered memory injection
+
+As a memory set grows, loading the whole `MEMORY.md` into every session gets expensive and the one-line pointers are too terse to reliably surface the right memory. Recall is an alternative: on a query (for example the user's prompt), surface only the descriptions of the memories whose triggers match.
+
+Build the recall index (a derived artifact at `.memforge/recall-index.json`):
+
+```bash
+memory-index-gen --with-recall-index --path ~/.claude/global-memory
+```
+
+Query it:
+
+```bash
+memory-recall "how do I rotate an operator key" --path ~/.claude/global-memory
+```
+
+Recall surfaces `description` text only (never bodies), honors `sensitivity` / `access`, and is fail-open-empty (it never blocks the caller). Mark a memory `always: true` to surface it on every query; mark it `do_not_inject: true` to exclude it from recall (for example, content already loaded by another path). Explicit `triggers: [...]` refine matching; without them, triggers are derived from the name, tags, and description.
+
+For Claude Code, register `adapters/claude-code/hooks/memory_recall_hook.py` under `UserPromptSubmit` to inject matches automatically, and let the auto-commit hook keep the index fresh via `memory-recall --rebuild`. See `adapters/claude-code/README.md`.
+
 ## What you have at the end
 
 - An operator-UUID bound to a long-lived signing key.

@@ -1,0 +1,18 @@
+# Optional operator synonym override for query-triggered recall (spec v0.6.0).
+#
+# Install at <memory-root>/.memforge/recall-synonyms.yaml. The recall index
+# build (memory-index-gen --with-recall-index, or memory-recall --rebuild)
+# merges these over the built-in defaults; your keys win on conflict.
+#
+# Shape: a `map` of canonical-token -> list of surface forms. At query time a
+# surface form found in the prompt is folded to its canonical token before
+# matching, so a memory whose triggers include the canonical token is found by
+# any of its forms. Keep entries lowercase; the matcher lowercases and
+# light-stems before lookup.
+map:
+  kubernetes: [k8s, kube, kubectl]
+  terraform: [tf, hcl, iac]
+  observability: [o11y, telemetry, tracing, metrics]
+  incident: [outage, sev, pager, postmortem]
+  authentication: [auth, authn, login, sso, oauth, oidc]
+  # add project-specific vocabulary here so recall matches your team's shorthand

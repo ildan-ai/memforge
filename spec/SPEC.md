@@ -1,6 +1,6 @@
 # MemForge spec
 
-Version 0.5.0.
+Version 0.6.0.
 
 ## Goal
 
@@ -44,6 +44,9 @@ superseded_by: [<uid>, ...]
 aliases: [<uid>, ...]
 pinned: <true | false>
 dynamic_supplement: [<query string>, ...]
+triggers: [<keyword or phrase>, ...]            # v0.6.0+: explicit recall keywords (see §"Recall operation")
+always: <true | false>                          # v0.6.0+: surface in recall regardless of query
+do_not_inject: <true | false>                   # v0.6.0+: exclude from query-triggered recall injection
 references_global: [<uid>, ...]
 referenced_by_global: [<uid>, ...]
 access: <label, e.g., public | internal | counsel | team:security>
@@ -114,7 +117,7 @@ Pointers to information in external systems (ticket trackers, dashboards, shared
 
 The `tier` field distinguishes memories by their role in the index:
 
-- **`index`** (default): Surfaces in MEMORY.md. Loaded at session start. Includes top-level memories AND rollup README.md files inside subfolders. Should be concise; the body of an index file should contain the synthesized rollup, not deep detail.
+- **`index`** (default): Surfaces in MEMORY.md. Eligible for session-start loading and/or query-triggered recall (see §"Recall operation"). Includes top-level memories AND rollup README.md files inside subfolders. Should be concise; the body of an index file should contain the synthesized rollup, not deep detail.
 - **`detail`**: Lives inside a rollup subfolder. NOT surfaced in MEMORY.md. Read on-demand when an agent needs deep detail beyond what the rollup README.md exposes. Carries the original conception trail, panel reviews, per-decision history, etc.
 
 Adapters MUST surface only `tier: index` files in the session-start MEMORY.md hotlist. Adapters MAY load `tier: detail` files on demand (for example, when the index rollup body references a specific detail UID).
@@ -263,6 +266,47 @@ For top-level files: `<path>` is the filename. For rollup README.md files: `<pat
 The hook line SHOULD stay under 150 characters (and 150 bytes; em-dashes are 3 UTF-8 bytes; prefer colons). Tools SHOULD flag overruns as warnings, not errors.
 
 Section headers (`##`, `###`) MAY group pointers by theme. An introductory paragraph at the top is permitted.
+
+## Recall operation (v0.6.0+)
+
+Earlier spec versions assume an adapter loads the `tier: index` hotlist (`MEMORY.md`) into every session. As a memory set grows, bulk-loading the whole index becomes token-expensive and the one-line index pointers become too terse to reliably surface the right memory at the right moment. The **recall operation** is an alternative, query-driven loading strategy: given a query string, a recall consumer surfaces only the memories whose triggers match, injecting their `description` text (not their bodies) so the agent can read the full file on demand.
+
+Consistent with the loading-semantics principle (see §"Goal": loading is the adapter's responsibility), this spec defines recall by its **frontmatter contract** and **operation post-conditions**, NOT by any index format, matching algorithm, ranking function, or injection mechanism. Those are reference-implementation and adapter concerns. Any implementation that honors the post-conditions below is a conforming recall consumer.
+
+### Frontmatter fields (all optional; v0.6.0+)
+
+- **`triggers`** (list of strings): explicit recall keywords or short phrases for this memory. Optional. A recall consumer MUST also derive base triggers from `name`, `tags`, and `description`, so `triggers` is a high-signal refinement, not a requirement. A memory with no `triggers` field is fully recall-eligible via its derived triggers. If `triggers` is present but is not a list of strings, a consumer MUST ignore it and fall back to derived triggers (audit WARN `triggers_malformed`).
+- **`always`** (boolean, default `false`): when `true`, the memory is surfaced by recall regardless of whether the query matches. This is the always-on tier (rules an agent should hold every session). An unbounded always-set defeats the recall budget (it is the recurring cost paid on every query), so operators SHOULD keep the always-set small and bounded. If `always` is present but not a boolean, a consumer MUST treat it as the default `false` and SHOULD emit audit WARN `always_malformed`.
+- **`do_not_inject`** (boolean, default `false`): when `true`, the memory is excluded from query-triggered recall injection. Use when the memory's content is already present in the agent's context by another path (for example, migrated into an always-loaded instruction file), so recall need not re-inject its description. `do_not_inject` does NOT remove the memory from the folder, the index, audits, or `MEMORY.md`; it only suppresses recall injection. If `do_not_inject` is present but not a boolean, a consumer MUST treat it as the default `false` and SHOULD emit audit WARN `do_not_inject_malformed`.
+
+`always` and `do_not_inject` are independent. `always: true` with `do_not_inject: true` means "always relevant, but already in context by another path"; a conforming consumer surfaces neither (the do-not-inject suppression wins the injection decision).
+
+### Relationship to `dynamic_supplement`
+
+`triggers` (recall) and `dynamic_supplement` are opposite directions and MUST NOT be conflated:
+
+- **Recall (inbound):** a query surfaces *this* memory. `triggers` help a memory *be found*.
+- **`dynamic_supplement` (outbound):** *this* memory declares queries whose results it wants pulled in as supplement. It describes what a memory *wants to know*.
+
+A recall consumer MUST ignore `dynamic_supplement` when computing recall matches.
+
+### Post-conditions (normative)
+
+Given a query string and a memory folder, a conforming recall consumer produces a result set such that the following hold. Post-conditions 1 and 2 define the candidate set (inclusion); post-conditions 3, 5, and 6 are exclusion filters applied to that candidate set; the final result set is the candidates minus the exclusions.
+
+1. **Always-set inclusion.** Every live memory with `always: true` AND `do_not_inject: false` is in the result set, independent of the query.
+2. **Match inclusion.** A live memory with `do_not_inject: false` is eligible for inclusion when the query matches its trigger set, where the trigger set is `explicit triggers UNION derived(name, tags, description)`. A memory with no `triggers` field is still match-eligible via its derived trigger set. Matching MAY apply case-folding, stemming, and synonym expansion; the specific scheme is implementation-defined.
+3. **Injection suppression.** No memory with `do_not_inject: true` appears in the result set.
+4. **Body exclusion.** The result set carries each memory's `description` plus a resolvable reference (path or uid), NOT its body. Because `description` is public-classification metadata that MUST be free of secrets, PII, and codenames (see §"Sensitivity and the description field"), recall injection is safe by construction. A consumer MUST NOT inject body content as part of recall.
+5. **Sensitivity / access honored.** A recall consumer MUST apply the same `sensitivity` and `access` filtering it would apply to any other surfacing path (see §"Sensitivity classification", §"Access labels").
+6. **Liveness.** Memories with `status ∈ {superseded, dropped, archived}` are excluded, consistent with the live-set partition in §"Status semantics".
+7. **Fail-open-empty.** A recall consumer that cannot produce a result (missing or unreadable index, parse error, timeout) MUST yield an empty result set and MUST NOT block, delay, or fail the operation it serves. Recall is an enhancement, never a gate.
+
+The result set MAY be ranked and truncated to a budget (top-K, character or token cap); ranking and budget are implementation-defined and non-normative.
+
+### Index artifact (informative)
+
+Recall is latency-sensitive when wired to a per-query hook, so reference implementations precompute an inverted index at memory-change time rather than walking the folder per query. The build step and the query step are separate operations; in the reference implementation `memory-index-gen` emits the recall index and a thin `memory-recall` reader consumes it. The index is a derived build artifact (like `MEMORY.md`); it is not part of the on-disk format contract and MAY be regenerated at any time. Implementations SHOULD version the artifact and reject an incompatible version by falling back to a rebuild or to empty recall (per post-condition 7).
 
 ## Multi-agent concurrency: competing claims
 
@@ -1025,6 +1069,7 @@ A MemForge folder is well-formed if, and only if:
 23. (v0.5.1+) Agent-signed writes MUST resolve to a valid session-attestation file at `<memory-root>/.memforge/agent-sessions/<agent-session-id>.yaml` whose `operator_signature` verifies against the operator-registry, whose `nonce` is unique in the per-receiver seen-nonce set, whose `signing_time` is within `[issued_at, expires_at]`, AND whose `signature.value` on the WRITE itself verifies against the attestation's `agent_pubkey` (using `agent_pubkey_algo`) over the canonical envelope `{memory_body, identity, sender_uid, sequence_number, signing_time}` per §"Signed envelope scope (normative)". The verification key for the write MUST come from the attestation, NOT the operator-registry (agent keys are ephemeral and never registry-listed). Failure: BLOCKER (nonce-replay / bad attestation signature / bad write signature) or MAJOR (expired / out-of-window).
 24. (v0.5.1+) Agent-signed writes MUST land at paths within `attestation.capability_scope.memory_roots` and the operation MUST be in `attestation.capability_scope.allowed_operations`. Out-of-scope path → BLOCKER `agent_session_out_of_scope_write`; out-of-scope operation → BLOCKER `agent_session_out_of_scope_operation`.
 25. (v0.5.1+) The `<agent-session-id>` portion of `identity` MUST match the regex `^[a-z0-9]+-\d{4}-\d{2}-\d{2}-[a-z0-9]{8,16}$`. Non-matching agent-session-ids are rejected on read with audit MAJOR `agent_session_id_format_invalid`.
+26. (v0.6.0+) The recall frontmatter fields are optional and, when present, well-typed: `triggers` MUST be a list of strings (malformed `triggers` is audit WARN `triggers_malformed`, and consumers fall back to derived triggers); `always` and `do_not_inject` MUST be boolean. A non-boolean `always` or `do_not_inject` is audit WARN (`always_malformed` / `do_not_inject_malformed`), NOT BLOCKER; consumers MUST treat the malformed value as the default `false` (no coercion of truthy strings). Absence is equivalent to `always: false`, `do_not_inject: false`, and derived-only triggers. These fields do not affect the well-formedness of any pre-v0.6.0 folder.
 
 The `tools/memory-audit` script verifies these invariants plus health heuristics. v0.4.0+ adds the Tier 1 / Tier 2 split documented in §"Multi-agent concurrency". v0.5.0+ adds the multi-identity + cryptographic-attribution + key-lifecycle invariants documented in §"Multi-identity primitives" + §"Cryptographic attribution" + §"Operator identity + cross-store references" + §"Messaging adapter contract" + §"Key lifecycle + revocation". v0.5.1+ adds agent-session attestation content scope + format guidance + cross-cutting fail-closed posture + privacy considerations.
 
@@ -1038,7 +1083,7 @@ The `references_global` and `referenced_by_global` fields support cross-folder r
 
 ## Versioning
 
-**Current spec version**: 0.5.3.
+**Current spec version**: 0.6.0.
 
 The spec version lives in `spec/VERSION`. Breaking changes bump per semantic versioning applied to spec semantics:
 
@@ -1047,6 +1092,8 @@ The spec version lives in `spec/VERSION`. Breaking changes bump per semantic ver
 - **Patch**: documentation or wording changes with no behavioral effect.
 
 v0.3.0 was a minor bump (new optional fields + rollup-subfolder formalization). v0.4.0 was a major bump: required-field set expanded, byte-match CI tightened, multi-agent concurrency surface added. v0.5.0 was a minor bump: v0.4 folders remain well-formed (the v0.5 frontmatter additions `identity` + `signature` are REQUIRED on v0.5+ writes but optional in v0.4 frontmatter). v0.4 memories load under v0.5 readers as `(v0.4: unsigned)` read-only-untrusted; mixed-deployment posture in §"Multi-identity primitives". v0.5.1 is a patch bump: closes the v0.5.0 agent-session-attestation content-scope MAJOR + 3 MINORs (agent-session-id format guidance, cross-cutting fail-closed posture, privacy considerations) and ships the reference CLI binaries; v0.5.0 folders remain well-formed under v0.5.1 readers.
+
+v0.6.0 is a minor bump: adds three OPTIONAL recall frontmatter fields (`triggers`, `always`, `do_not_inject`) and the §"Recall operation" contract. All three are optional, so every pre-v0.6.0 folder remains well-formed under v0.6.0 readers, and v0.6.0 folders remain readable by older tools (which ignore the unknown keys).
 
 Adapters and tools SHOULD declare which spec version they target.
 
@@ -1100,3 +1147,4 @@ Adapters MAY add encryption layers if they target a multi-developer or shared-wo
 - v0.5.1 , patch bump: closes the v0.5.0 agent-session-attestation content-scope MAJOR with normative `nonce` + `expires_at` + `capability_scope` content (§"Agent session attestation content scope (v0.5.1+)") and closes 3 v0.5.0 MINORs: agent-session-id format regex (in §"Frontmatter additions (v0.5.0+)"); cross-cutting fail-closed posture documentation as a single 29-item operator reference (§"Cross-cutting fail-closed posture (v0.5.1+)"); privacy considerations subsection with 7 boundary statements + out-of-scope list (§"Privacy considerations (v0.5.1+)"). Reference CLI ships: `memforge init-operator`, `init-store`, `operator-registry add|verify|remove|fresh-start`, `rotate-key`, `revoke`, `revocation-snapshot`, `memories-by-key`, `revoke-memories`, `upgrade-v04-memories`, `revoke-cache-refresh`, `messaging-doctor`, `recovery-init`, `recovery-backup-confirm`, `attest-agent`. New integrity invariants 23-25 (agent-session attestation verification, capability-scope enforcement, agent-session-id format). v0.5.0 folders remain well-formed under v0.5.1 readers; v0.5.0 attestation files lacking v0.5.1 required content fields are accepted with one-time MAJOR `v05_attestation_incomplete_content` per file until re-issued via the v0.5.1 reference CLI.
 - v0.5.3 , patch bump: closes the 3 remaining MAJORs from the v0.5.2 retrospective threat-modeler pass. Registry-layer cool-down enforcement: `memforge.registry.verify_signing_key_acceptable` now refuses a signing key in cool-down regardless of CLI consumer; CLI-only enforcement was a bypass surface. Bounded git-log walk: `walk_revocation_set` now streams output line-by-line with caps on commits-walked + bytes-read (default 100k commits / 100 MB; operator-configurable). TOCTOU-safe read on every secure-file path: `_security.secure_read_text` + `secure_read_bytes` use `O_NOFOLLOW` + post-open fd `fstat` verification on POSIX; path-level verify on Windows. v0.5.2 folders remain well-formed under v0.5.3 readers; no spec-frontmatter or normative-contract regressions.
 - v0.5.2 , patch bump: closes 2 BLOCKERs + 1 MAJOR surfaced by the post-v0.5.1 retrospective code + spec panel (critic via gemini-pro + threat-modeler via gemini-pro) AND adds native Windows support via a platform-agnostic ACL-based restriction abstraction. Canonical-form Unicode NFC normalization MUST on signed envelopes (§"Signed envelope scope (normative)"); closes the repudiation vector where visually-identical inputs in different normalization forms produced different signatures. Seen-nonce set bounding promoted from MAY to SHOULD with explicit GC contract; closes the unbounded-set DoS. Reference implementation atomicity: `write_secure_yaml` + `write_secure_bytes` now use O_CREAT|O_EXCL + atomic rename to close the TOCTOU window between file create and chmod. **Cross-platform secure-file abstraction:** §"Operator-identity file (per-machine)" + integrity invariant 21 are restated platform-agnostically; POSIX mode 0600/0700 and Windows NTFS ACLs (via `icacls`) are both normative implementations of the "file restricted to current owner" contract. v0.5.1 folders remain well-formed under v0.5.2 readers; the Unicode normalization change is backward-compatible for any input that was already in NFC form (the common case for ASCII + standard composed Unicode).
+- v0.6.0 , minor bump: query-triggered recall. Three new OPTIONAL frontmatter fields (`triggers`, `always`, `do_not_inject`) plus the §"Recall operation" section defining recall by frontmatter contract + post-conditions (UI-neutral; matching, index, and injection are reference-implementation + adapter concerns per the loading-semantics principle). Recall surfaces memory `description` text (never bodies), honors `sensitivity` / `access` + the live-set partition, and is fail-open-empty (never blocks the operation it serves). Reconciles with the reserved outbound `dynamic_supplement` field. Reference implementation: `memory-index-gen` emits a derived recall inverted-index artifact and a thin `memory-recall` reader does query-time matching for latency-sensitive per-query hooks. All fields optional, so pre-v0.6.0 folders remain well-formed and older tools ignore the new keys. New integrity invariant 26.

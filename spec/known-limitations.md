@@ -1,6 +1,6 @@
 # MemForge known limitations
 
-**Updated:** 2026-05-10 (covers v0.5.3 ship state)
+**Updated:** 2026-06-07 (covers v0.6.0 ship state)
 **Status:** Living document. Each spec release updates this file; the file ships with the Zenodo deposit for that release as a versioned snapshot.
 
 ---
@@ -32,6 +32,17 @@ The following items were tracked as residuals in the v0.5.0 known-limitations do
 | TOCTOU between path-level mode-check and file read (MAJOR) | v0.5.3 | Integrity invariant 21 TOCTOU-safe-read addendum; `_security.secure_read_text` + `secure_read_bytes` |
 
 The v0.5.3 ship closes the BLOCKER and security-relevant MAJOR residuals surfaced by the project's internal multi-voice review panel to date. Independent red-teaming or third-party pentest has not been performed.
+
+---
+
+## v0.6.0 (query-triggered recall)
+
+v0.6.0 adds query-triggered recall (three optional frontmatter fields + the §"Recall operation" contract + the `memory-recall` reader and `memory-index-gen --with-recall-index`). It ships with **no BLOCKER-class known limitations**: the internal spec-delta panel and code threat-model panel (two model families each) returned zero residual BLOCKERs. The threat-model fixes (symlink-safe walk, load-time index hardening plus an untrusted-context injection preamble, fail-closed sensitivity check, bounded file reads) landed in the v0.6.0 commit.
+
+Deferred refinements (not gaps):
+
+- **Embedding / semantic ranking.** v0.6.0 matching is deterministic keyword + light-stem + synonym expansion. Embedding-based ranking remains out of scope (it was already deferred under the reserved `dynamic_supplement` field); promote if recall miss-rate data justifies it.
+- **Per-file incremental index build.** The reference build recompiles the whole index and records per-file mtimes; it skips a rebuild when nothing changed, but does not yet do per-file incremental updates. Adequate for typical folder sizes; a v0.6.x optimization for very large folders.
 
 ---
 

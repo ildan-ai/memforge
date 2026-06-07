@@ -34,6 +34,14 @@ if [[ -n "$backfill_bin" ]]; then
   "$backfill_bin" --apply --path "$repo_root" >/dev/null 2>&1 || true
 fi
 
+# Refresh the recall index (spec v0.6.0) so query-triggered recall stays in sync
+# with the memory just written. Recall-index-only refresh (does not regenerate
+# MEMORY.md); idempotent; silently skipped if memory-recall is not on PATH.
+recall_bin=$(command -v memory-recall 2>/dev/null)
+if [[ -n "$recall_bin" ]]; then
+  "$recall_bin" --rebuild --path "$repo_root" >/dev/null 2>&1 || true
+fi
+
 if git diff --quiet && git diff --cached --quiet && [[ -z "$(git ls-files --others --exclude-standard)" ]]; then
   exit 0
 fi

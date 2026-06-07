@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "ildan-memforge"
-version = "0.5.6"
+version = "0.6.0"
 description = "MemForge: portable, agent-neutral persistent memory for coding agents (ILDAN)."
 readme = "README.md"
 license = { text = "Apache-2.0" }
@@ -44,6 +44,7 @@ memory-index-gen = "memforge.cli.index_gen:main"
 memory-link-rewriter = "memforge.cli.link_rewriter:main"
 memory-preamble-extract = "memforge.cli.preamble_extract:main"
 memory-query = "memforge.cli.query:main"
+memory-recall = "memforge.cli.recall:main"
 memory-rollup = "memforge.cli.rollup:main"
 memory-watch = "memforge.cli.watch:main"
 agents-md-gen = "memforge.cli.agents_md_gen:main"
