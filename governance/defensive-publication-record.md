@@ -60,7 +60,10 @@ This file tracks MemForge's defensive-publication artifacts: the citable archiva
 - **Bundle contents:** SPEC.md (spec_version 0.6.0); VERSION; taxonomy.yaml; known-limitations.md (living-doc snapshot at v0.6.1); CHANGELOG.md (full history through v0.6.1); LICENSE; README.md; full examples/ tree (commit-msg hook bash + PowerShell, auto-commit watcher bash + PowerShell, WebSocket scaffold, and the new examples/recall/ surface).
 - **Bundle SHA-256:** `4c5478c65da97a5389744234ff349ed72570e03bcf80de05a5641866485f2e9c`
 - **Maintainer note:** this deposit anchors the v0.6 spec line. The v0.6.0 minor spec bump (query-triggered recall) had not been deposited at its tag time, so the v0.6.1 head (current corrected state, carrying the docs + packaging patch over the unchanged v0.6.0 spec snapshot) is the deposited version. No separate v0.6.0 Zenodo record exists; spec/VERSION is 0.6.0 in this bundle. The v0.5.6 Zenodo record at DOI 10.5281/zenodo.20115596 remains the historical anchor for the v0.5.x line.
-- **Software Heritage SWHIDs:** pending (to be minted via save-code-now for the v0.6.1 tag; append here once ingestion succeeds).
+- **Software Heritage SWHIDs:** minted 2026-06-07 via save-code-now (request 2352141; ingestion succeeded, visit_status=full).
+  - Release-level (the v0.6.1 tag): `swh:1:rel:9aa073ef43f770aa61880abbaa8b48f5bac6d2d7`.
+  - Commit-level (the v0.6.1 tagged commit): `swh:1:rev:1ed9248d59819e00964886ad0286f574e15d825d`.
+  - Snapshot-level: `swh:1:snp:c290470c870e72a515042a9937e5318d0c1202d9`.
 
 ## Channel 2 — Operator-brand timestamped disclosure
 
