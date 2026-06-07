@@ -27,7 +27,7 @@ Full quickstart at [`docs/quickstart.md`](./docs/quickstart.md) (includes a sect
 
 If you use MemForge in research or publications, please cite:
 
-> Hiltz, Mike. *MemForge: Portable, agent-neutral persistent memory format for AI coding agents (v0.6.0)*. Zenodo, 2026. DOI: [10.5281/zenodo.20113963](https://doi.org/10.5281/zenodo.20113963)
+> Hiltz, Mike. *MemForge: Portable, agent-neutral persistent memory format for AI coding agents (v0.6.1)*. Zenodo, 2026. DOI: [10.5281/zenodo.20113963](https://doi.org/10.5281/zenodo.20113963)
 
 The DOI above is the version-agnostic concept DOI; it always resolves to the latest archived release.
 
