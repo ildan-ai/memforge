@@ -80,6 +80,7 @@ This file tracks MemForge's defensive-publication artifacts: the citable archiva
 | 0.5.5   | v0.5.5 | 2026-05-11          | Docs-only patch: WebSocket-vs-git decision framing + commit-hygiene section |
 | 0.5.6   | v0.5.6 | 2026-05-11          | Docs + examples patch: cross-platform commit-msg hook + auto-commit watcher (bash + PowerShell) + WebSocket scaffold (config example + Python relay-probe) |
 | 0.6.0   | v0.6.0 | 2026-06-07          | Minor spec bump: query-triggered recall (triggers/always/do_not_inject frontmatter + Recall operation spec contract); memory-recall reader + memory-index-gen --with-recall-index |
+| 0.6.1   | v0.6.1 | 2026-06-07          | Docs + packaging patch: PyPI trove classifiers (pyversions badge fix); README Status / CLI-count / tool-table corrections; DOI switched to concept DOI (no spec change) |
 
 The continuous-prior-art commitment: every spec-bumping commit is tagged with semver; every tag has a corresponding GitHub release; release notes name the substantive additions. Each commit is timestamped + indexed by GitHub + walkable by examiner prior-art search tools.
 
