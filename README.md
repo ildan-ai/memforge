@@ -2,7 +2,7 @@
 
 **Typed, git-native, dynamic memory for coding agents.** A markdown folder + a small spec + reference tooling. Works across Claude Code, Cursor, Aider, Codex, and GitHub Copilot Chat through thin adapters. As of v0.5, supports multi-operator teams with cryptographic attribution; as of v0.5.2, the reference CLI ships under a single `memforge` dispatcher with cross-platform support (macOS, Linux, native Windows); as of v0.6, query-triggered recall surfaces the memories matching a prompt on demand instead of bulk-loading the whole index.
 
-[![CI](https://github.com/ildan-ai/memforge/actions/workflows/ci.yml/badge.svg)](https://github.com/ildan-ai/memforge/actions/workflows/ci.yml) [![PyPI version](https://img.shields.io/pypi/v/ildan-memforge)](https://pypi.org/project/ildan-memforge/) [![Python versions](https://img.shields.io/pypi/pyversions/ildan-memforge)](https://pypi.org/project/ildan-memforge/) [![License: Apache 2.0](https://img.shields.io/badge/license-Apache%202.0-blue.svg)](./LICENSE) [![DOI](https://zenodo.org/badge/DOI/10.5281/zenodo.20115596.svg)](https://doi.org/10.5281/zenodo.20115596)
+[![CI](https://github.com/ildan-ai/memforge/actions/workflows/ci.yml/badge.svg)](https://github.com/ildan-ai/memforge/actions/workflows/ci.yml) [![PyPI version](https://img.shields.io/pypi/v/ildan-memforge)](https://pypi.org/project/ildan-memforge/) [![Python versions](https://img.shields.io/pypi/pyversions/ildan-memforge)](https://pypi.org/project/ildan-memforge/) [![License: Apache 2.0](https://img.shields.io/badge/license-Apache%202.0-blue.svg)](./LICENSE) [![DOI](https://zenodo.org/badge/DOI/10.5281/zenodo.20113963.svg)](https://doi.org/10.5281/zenodo.20113963)
 
 Docs: [PyPI](https://pypi.org/project/ildan-memforge/) | [CHANGELOG](./CHANGELOG.md) | [spec](./spec/SPEC.md) | [examples](./examples/)
 
@@ -12,7 +12,7 @@ Docs: [PyPI](https://pypi.org/project/ildan-memforge/) | [CHANGELOG](./CHANGELOG
 
 ```bash
 pip install ildan-memforge
-memforge --version                  # memforge 0.6.0
+memforge --version                  # memforge 0.6.1
 memforge init-operator --name "Your Name" --gen-key
 memforge recovery-init
 memforge recovery-backup-confirm --i-have-backed-up-the-secret
@@ -27,7 +27,9 @@ Full quickstart at [`docs/quickstart.md`](./docs/quickstart.md) (includes a sect
 
 If you use MemForge in research or publications, please cite:
 
-> Hiltz, Mike. *MemForge: Portable, agent-neutral persistent memory format for AI coding agents (v0.5.6)*. Zenodo, 2026. DOI: [10.5281/zenodo.20115596](https://doi.org/10.5281/zenodo.20115596)
+> Hiltz, Mike. *MemForge: Portable, agent-neutral persistent memory format for AI coding agents (v0.6.0)*. Zenodo, 2026. DOI: [10.5281/zenodo.20113963](https://doi.org/10.5281/zenodo.20113963)
+
+The DOI above is the version-agnostic concept DOI; it always resolves to the latest archived release.
 
 ## The gap MemForge fills
 
@@ -54,7 +56,7 @@ pip install ildan-memforge
 
 The PyPI distribution is published under `ildan-memforge` because the
 shorter `memforge` name is held by an unrelated project. The Python
-import path is still `memforge`, and the 17 CLI commands install with
+import path is still `memforge`, and the 19 CLI commands install with
 the same names (`memory-audit`, `memory-watch`, `memory-dlp-scan`,
 `memforge-resolve`, etc.).
 You can also install straight from source:
@@ -206,6 +208,9 @@ Run `--help` on any of them.
 | `memory-recall` | Query-triggered recall (v0.6.0): inject the descriptions of memories whose triggers match a query. Reads a precompiled index; fail-open-empty. |
 | `memory-watch` | Filesystem watcher (Linux + macOS via watchdog). |
 | `memory-promote` | Move a memory between folders with index fixup. |
+| `memory-frontmatter-backfill` | Populate v0.3.0 frontmatter on existing memory files (migration helper). |
+| `memory-preamble-extract` | Extract the `MEMORY.md` preamble into `_memforge.yaml` (Phase 1 migration helper). |
+| `agents-md-gen` | Generate an `AGENTS.md` surface from memory frontmatter, filtered by a sensitivity ceiling + byte budget. |
 
 `memforge <subcommand> --help` and `tools/README.md` have the long-form references.
 
@@ -224,7 +229,8 @@ Format invariants are in [`spec/SPEC.md`](./spec/SPEC.md). Topic taxonomy is in 
 | v0.5.0 | 2026-05-10 | Multi-identity + cryptographic attribution + WebSocket messaging adapter. Operator + agent identity as first-class peers with GPG signing. Sender-uid + sender-sequence + signed checkpoints. Signing-time-aware revocation verification + clock-skew guard. 24-hour cool-down on key rotation. Recovery-secret filesystem mode + SHA256-anchored content integrity. |
 | v0.5.1 | 2026-05-10 | Reference CLI ships (14 subcommands under `memforge` dispatcher). Closes v0.5.0 agent-session-attestation content-scope MAJOR with normative `nonce` + `expires_at` + `capability_scope`. Cross-cutting fail-closed posture (29-item operator reference). Privacy considerations (7 boundary statements). |
 | v0.5.2 | 2026-05-10 | Closes 2 BLOCKERs + 1 MAJOR from retrospective code panel. Canonical-form Unicode NFC normalization MUST on signed envelopes (closes repudiation via normalization drift). Atomic O_CREAT\|O_EXCL + fsync + os.replace on `write_secure_yaml` + `write_secure_bytes` (closes TOCTOU on file create). Seen-nonce set bounding MAY -> SHOULD with explicit GC contract (closes unbounded-set DoS). Cross-platform secure-file abstraction (`src/memforge/_security.py`): POSIX mode bits on macOS/Linux + NTFS ACLs (via `icacls`) on native Windows. CI matrix extends to Ubuntu + macOS + Windows. |
-| v0.6.0 | (unreleased) | Query-triggered recall. Three optional frontmatter fields (`triggers`, `always`, `do_not_inject`) + the §"Recall operation" spec contract (UI-neutral; descriptions only, never bodies; fail-open-empty). New `memory-recall` reader + `memory-index-gen --with-recall-index`. All fields optional, so pre-v0.6.0 folders stay well-formed and older tools ignore the new keys. |
+| v0.6.0 | 2026-06-07 | Query-triggered recall. Three optional frontmatter fields (`triggers`, `always`, `do_not_inject`) + the §"Recall operation" spec contract (UI-neutral; descriptions only, never bodies; fail-open-empty). New `memory-recall` reader + `memory-index-gen --with-recall-index`. All fields optional, so pre-v0.6.0 folders stay well-formed and older tools ignore the new keys. |
+| v0.6.1 | 2026-06-07 | Docs + packaging patch. PyPI trove classifiers added (fixes the Python-versions badge); README Status table, CLI count, and tool tables corrected; DOI badge + citation switched to the version-agnostic concept DOI. No spec change; no code change. |
 
 The reference implementation is running in production. External adoption is welcome once the CLA flow is live.
 

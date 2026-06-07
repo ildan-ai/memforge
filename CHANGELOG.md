@@ -10,6 +10,32 @@ The version number tracked here is the **package / tooling** version. The on-dis
 
 The Contributor License Agreement infrastructure is counsel-blocked; external pull requests are paused until the CLA flow lands.
 
+## [0.6.1] - 2026-06-07
+
+**Docs + packaging patch. No spec change. No code change. spec/VERSION stays at 0.6.0.** Corrects publicly-rendered metadata on the v0.6.0 release: the PyPI package page and README badge row carried a broken Python-versions badge, a stale Status table, and a version-pinned DOI. PyPI artifacts are immutable per version, so the fixes ship as 0.6.1.
+
+### Packaging
+
+- **PyPI trove classifiers added** (`Programming Language :: Python :: 3.10 / 3.11 / 3.12`, plus license / audience / topic). The shields.io `pypi/pyversions` badge reads classifiers, not `requires-python`, so without them the badge rendered "python | missing". Classifiers match the CI test matrix (3.10 to 3.12).
+
+### Documentation
+
+- README Status table: v0.6.0 row dated 2026-06-07 (was "(unreleased)").
+- README DOI badge + "Cite this work" switched from the v0.5.6 version-specific DOI to the version-agnostic concept DOI (`10.5281/zenodo.20113963`), which always resolves to the latest archived release.
+- README CLI-count corrected (17 -> 19 console scripts); `memory-frontmatter-backfill`, `memory-preamble-extract`, and `agents-md-gen` added to the tools table; quickstart `--version` comment bumped to 0.6.1.
+
+### Spec compatibility
+
+- None. Package-only patch; every folder valid under 0.6.0 stays valid.
+
+### Pre-ship review
+
+- WAIVER (§1 spec-delta panel): no `spec/SPEC.md` or `spec/VERSION` change.
+- WAIVER (§2 code threat-model panel): no `src/memforge/**` change (packaging metadata + markdown only).
+- §3 docs parity: README / CHANGELOG / Status table verified against the shipping version.
+- §6 test gate: full suite green; CLI `--help` smoke OK.
+- Sanitization clean (operator paths, lockdown terms, dashes, hashtags) on diff, commit message, and tag annotation.
+
 ## [0.6.0] - 2026-06-07
 
 **Minor spec bump: query-triggered recall. spec/VERSION 0.5.3 -> 0.6.0; package and spec versions re-converge at 0.6.0.** Adds an alternative, query-driven loading strategy so adapters can surface only the memories whose triggers match a query instead of bulk-loading the whole `MEMORY.md` index every session. All new frontmatter is OPTIONAL, so existing folders remain well-formed and older tools ignore the new keys.

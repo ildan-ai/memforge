@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "ildan-memforge"
-version = "0.6.0"
+version = "0.6.1"
 description = "MemForge: portable, agent-neutral persistent memory for coding agents (ILDAN)."
 readme = "README.md"
 license = { text = "Apache-2.0" }
@@ -12,6 +12,17 @@ authors = [
     { name = "ILDAN" },
 ]
 requires-python = ">=3.10"
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Intended Audience :: Developers",
+    "License :: OSI Approved :: Apache Software License",
+    "Operating System :: OS Independent",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Topic :: Software Development :: Libraries",
+]
 dependencies = [
     "PyYAML>=6.0",
     "watchdog>=4.0",
