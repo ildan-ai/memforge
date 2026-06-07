@@ -67,3 +67,12 @@ Starter material for operators standing up the v0.5 WebSocket messaging substrat
 - `websocket/probe.py` — minimal Python probe that verifies a relay is reachable, accepts your operator's bearer token, and round-trips a placeholder envelope.
 
 See `docs/team-bootstrap.md` §"Pick your transport: git-only or WebSocket?" for the operator-decision framing before standing any of this up.
+
+## Recall (`recall/`)
+
+Query-triggered recall (spec v0.6.0): surface the descriptions of memories whose triggers match a query, instead of bulk-loading the whole `MEMORY.md` every session.
+
+- `recall/recall-synonyms.example.yaml`: operator synonym override; copy to `<memory-root>/.memforge/recall-synonyms.yaml` to teach recall your team's vocabulary.
+- `recall/README.md`: build-then-query walkthrough + the Claude Code `UserPromptSubmit` hook wiring.
+
+See `docs/quickstart.md` §"Recall" and `spec/SPEC.md` §"Recall operation".

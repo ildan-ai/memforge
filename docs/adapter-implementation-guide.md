@@ -194,9 +194,29 @@ If you're integrating MemForge as the substrate for a multi-agent system, you sh
 - The resolve operation is the only path that mutates resolution state. All other writes are advisory until the resolve operation ratifies them.
 - `created_by` on snoozes is best-effort provenance. Pure git allows author amend; adapters seeking unforgeable provenance should require signed commits.
 
+## Implementing query-triggered recall (v0.6.0)
+
+Recall is an alternative to bulk-loading the `tier: index` hotlist (`MEMORY.md`) every session: given a query (for example the user's prompt), surface only the descriptions of the memories whose triggers match. The normative contract is in `spec/SPEC.md` §"Recall operation"; this is implementation guidance.
+
+**Two operations, kept separate.** Recall has a heavy compile-time step and a latency-sensitive query-time step. Do not fuse them:
+
+- **Build** (compile-time): walk the folder, derive each memory's trigger set from `triggers` UNION name + tags + description, and emit a derived inverted-index artifact. The reference implementation is `memory-index-gen --with-recall-index`, which writes `<memory-root>/.memforge/recall-index.json`. Rebuild on memory change (the Claude Code auto-commit hook calls `memory-recall --rebuild`).
+- **Query** (run-time): load the prebuilt index, match, rank, emit. The reference implementation is the `memory-recall` reader. It does no folder walk on the hot path.
+
+**Honor the post-conditions.** Always-set inclusion (`always: true`), `do_not_inject` suppression, body exclusion (surface `description` only, never bodies), `sensitivity` / `access` filtering, liveness, and fail-open-empty. Because `description` is public-classification metadata that MUST be free of secrets / PII / codenames, recall injection is safe by construction.
+
+**Per-query hook pattern (any adapter).** When wiring recall to a per-prompt hook:
+
+- Bound latency hard. A hung reader must never delay a prompt; wrap the call in a timeout (the reference Claude Code hook uses a subprocess timeout) and treat empty output as "no matches."
+- Fail open. Missing or corrupt index, parse error, timeout: emit nothing, exit success. Recall is an enhancement, never a gate.
+- Treat injected descriptions as untrusted reference context, not instructions. The reference reader prefixes a preamble telling the agent not to follow directives embedded in recalled text.
+- Call the installed package, not a vendored copy, so the adapter tracks spec updates.
+
+The Claude Code reference adapter is `adapters/claude-code/hooks/memory_recall_hook.py` (registered under `UserPromptSubmit`). Operator examples, including a synonym-override file, are in `examples/recall/`.
+
 ## Pointers
 
-- Spec: [`spec/SPEC.md`](../spec/SPEC.md), in particular §"Multi-agent concurrency: competing claims" and §"Integrity invariants".
+- Spec: [`spec/SPEC.md`](../spec/SPEC.md), in particular §"Recall operation", §"Multi-agent concurrency: competing claims", and §"Integrity invariants".
 - Reference CLI: [`src/memforge/cli/resolve.py`](../src/memforge/cli/resolve.py).
 - Audit: [`src/memforge/cli/audit.py`](../src/memforge/cli/audit.py) + [`src/memforge/cli/_concurrency_audit.py`](../src/memforge/cli/_concurrency_audit.py).
 - Migration fixer: [`src/memforge/cli/migrate_claim_block.py`](../src/memforge/cli/migrate_claim_block.py).
