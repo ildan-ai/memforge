@@ -1,8 +1,10 @@
 # MemForge
 
-**Typed, git-native, dynamic memory for coding agents.** A markdown folder + a small spec + reference tooling. Works across Claude Code, Cursor, Aider, Codex, and GitHub Copilot Chat through thin adapters. As of v0.5, supports multi-operator teams with cryptographic attribution; as of v0.5.2, the reference CLI ships under a single `memforge` dispatcher with cross-platform support (macOS, Linux, native Windows).
+**Typed, git-native, dynamic memory for coding agents.** A markdown folder + a small spec + reference tooling. Works across Claude Code, Cursor, Aider, Codex, and GitHub Copilot Chat through thin adapters. As of v0.5, supports multi-operator teams with cryptographic attribution; as of v0.5.2, the reference CLI ships under a single `memforge` dispatcher with cross-platform support (macOS, Linux, native Windows); as of v0.6, query-triggered recall surfaces the memories matching a prompt on demand instead of bulk-loading the whole index.
 
-[![DOI](https://zenodo.org/badge/DOI/10.5281/zenodo.20115596.svg)](https://doi.org/10.5281/zenodo.20115596) **Current release: v0.5.6** ([PyPI](https://pypi.org/project/ildan-memforge/) | [CHANGELOG](./CHANGELOG.md) | [spec](./spec/SPEC.md) | [examples](./examples/))
+[![CI](https://github.com/ildan-ai/memforge/actions/workflows/ci.yml/badge.svg)](https://github.com/ildan-ai/memforge/actions/workflows/ci.yml) [![PyPI version](https://img.shields.io/pypi/v/ildan-memforge)](https://pypi.org/project/ildan-memforge/) [![Python versions](https://img.shields.io/pypi/pyversions/ildan-memforge)](https://pypi.org/project/ildan-memforge/) [![License: Apache 2.0](https://img.shields.io/badge/license-Apache%202.0-blue.svg)](./LICENSE) [![DOI](https://zenodo.org/badge/DOI/10.5281/zenodo.20115596.svg)](https://doi.org/10.5281/zenodo.20115596)
+
+Docs: [PyPI](https://pypi.org/project/ildan-memforge/) | [CHANGELOG](./CHANGELOG.md) | [spec](./spec/SPEC.md) | [examples](./examples/)
 
 > **Status: pre-1.0; external PRs paused.** Issues and Discussions are open. External pull requests are paused until the Contributor License Agreement infrastructure lands. See [CONTRIBUTING.md](./CONTRIBUTING.md). Security reports go through the private channel in [SECURITY.md](./SECURITY.md).
 
@@ -10,7 +12,7 @@
 
 ```bash
 pip install ildan-memforge
-memforge --version                  # memforge 0.5.6
+memforge --version                  # memforge 0.6.0
 memforge init-operator --name "Your Name" --gen-key
 memforge recovery-init
 memforge recovery-backup-confirm --i-have-backed-up-the-secret
