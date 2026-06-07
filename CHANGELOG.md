@@ -10,7 +10,7 @@ The version number tracked here is the **package / tooling** version. The on-dis
 
 The Contributor License Agreement infrastructure is counsel-blocked; external pull requests are paused until the CLA flow lands.
 
-## [0.6.0] - Unreleased
+## [0.6.0] - 2026-06-07
 
 **Minor spec bump: query-triggered recall. spec/VERSION 0.5.3 -> 0.6.0; package and spec versions re-converge at 0.6.0.** Adds an alternative, query-driven loading strategy so adapters can surface only the memories whose triggers match a query instead of bulk-loading the whole `MEMORY.md` index every session. All new frontmatter is OPTIONAL, so existing folders remain well-formed and older tools ignore the new keys.
 
@@ -30,7 +30,10 @@ The Contributor License Agreement infrastructure is counsel-blocked; external pu
 
 ### Pre-ship review
 
-- Pending: §1 spec-delta panel (architect + adversarial critic), §2 code-surface threat-modeler pass, §6 test gate. Finalize this section + the release date at tag time.
+- §1 spec-delta panel (architect + adversarial critic, different model families): ship-with-fixes, 0 BLOCKERs; fixes applied in-commit.
+- §2 code threat-model panel (STRIDE, two families): 0 residual BLOCKERs; symlink-safe walk, load-time index hardening + injection preamble, fail-closed sensitivity, bounded reads. 5 security regression tests.
+- §6 test gate: full suite 264 passed / 2 skipped; CLI --help smoke OK; CI green across Ubuntu / macOS / Windows on Python 3.10 to 3.12.
+- Sanitization clean (operator paths, lockdown terms, dashes, hashtags) on diff, commit messages, and new files.
 
 ## [0.5.6] - 2026-05-11
 
