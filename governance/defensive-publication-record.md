@@ -51,6 +51,17 @@ This file tracks MemForge's defensive-publication artifacts: the citable archiva
   - Commit-level (the v0.5.6 tagged commit): `swh:1:rev:b5be5757991943dadc7875cf37cbba84eceac63e`.
   - Snapshot-level: `swh:1:snp:2f7c7e1d201503679d62f3a49bc5f14c3ec33bf1`.
 
+### v0.6.1
+
+- **Zenodo DOI:** [10.5281/zenodo.20580544](https://doi.org/10.5281/zenodo.20580544) (new version under the same concept DOI 10.5281/zenodo.20113963 as v0.5.0 + v0.5.3 + v0.5.6).
+- **Minted:** 2026-06-07.
+- **Resource type:** Software.
+- **License:** Apache-2.0.
+- **Bundle contents:** SPEC.md (spec_version 0.6.0); VERSION; taxonomy.yaml; known-limitations.md (living-doc snapshot at v0.6.1); CHANGELOG.md (full history through v0.6.1); LICENSE; README.md; full examples/ tree (commit-msg hook bash + PowerShell, auto-commit watcher bash + PowerShell, WebSocket scaffold, and the new examples/recall/ surface).
+- **Bundle SHA-256:** `4c5478c65da97a5389744234ff349ed72570e03bcf80de05a5641866485f2e9c`
+- **Maintainer note:** this deposit anchors the v0.6 spec line. The v0.6.0 minor spec bump (query-triggered recall) had not been deposited at its tag time, so the v0.6.1 head (current corrected state, carrying the docs + packaging patch over the unchanged v0.6.0 spec snapshot) is the deposited version. No separate v0.6.0 Zenodo record exists; spec/VERSION is 0.6.0 in this bundle. The v0.5.6 Zenodo record at DOI 10.5281/zenodo.20115596 remains the historical anchor for the v0.5.x line.
+- **Software Heritage SWHIDs:** pending (to be minted via save-code-now for the v0.6.1 tag; append here once ingestion succeeds).
+
 ## Channel 2 — Operator-brand timestamped disclosure
 
 ### v0.4.0
