@@ -1,6 +1,11 @@
 # memforge.recall: query-triggered recall reference implementation.
 #
-# Spec: 0.6.0  (SPEC.md §"Recall operation")
+# Spec: 0.6.1  (SPEC.md §"Recall operation"; tier-vs-recall clarification v0.6.1+)
+#
+# v0.6.1 conformance note: recall eligibility is governed by liveness +
+# sensitivity, NOT tier (SPEC §"Tier and recall"). This module stores `tier` but
+# never excludes on it; the optional "rank index above detail on a tie" allowance
+# is deliberately not implemented (ranking stays score / desc-length / uid).
 #
 # Two operations, deliberately separate per the spec:
 #   build_index(folder)            -> compile the inverted index from frontmatter
@@ -244,6 +249,17 @@ def build_index(folder: Path, synonyms: Optional[dict[str, list[str]]] = None) -
     (status in {active, proposed, gated}; absence => active), and derives the
     trigger set from explicit `triggers` UNION name + tags + description.
     Returns the index payload dict (caller writes it via write_index).
+
+    Synonym symmetry (recall-syn-01): when `synonyms` is None (the default and
+    the shipped-CLI path), both build and query resolve the SAME per-folder map
+    (default + any .memforge/recall-synonyms.yaml override), so they match. If
+    you pass an EXPLICIT `synonyms` map here that is NOT persisted as that
+    override file, you MUST pass the same map to recall(synonyms=...) at query
+    time. The default reader path reconstructs the folder map and, finding its
+    hash differs from the one this index was built with, falls back to the
+    built-in defaults -- so synonym-expanded triggers would silently fail to
+    match. Either persist the map as the folder override, or thread the explicit
+    map through both build_index and recall.
     """
     folder = Path(folder)
     if synonyms is None:
@@ -282,8 +298,14 @@ def build_index(folder: Path, synonyms: Optional[dict[str, list[str]]] = None) -
 
         uid = fm.get("uid") or f"path:{rel}"
         if uid in entries:
-            dup += 1
-            uid = f"{uid}#{dup}"
+            # Loop the disambiguation suffix until it is genuinely unused. A
+            # single `#{dup}` could collide with a memory that legitimately
+            # carries `uid: A#1`, silently overwriting that live entry and
+            # dropping it from the recall index (closes idxgen-02).
+            base = uid
+            while uid in entries:
+                dup += 1
+                uid = f"{base}#{dup}"
 
         name = str(fm.get("name") or path.stem)
         tags = fm.get("tags") or []
@@ -319,9 +341,15 @@ def build_index(folder: Path, synonyms: Optional[dict[str, list[str]]] = None) -
                     bucket.append(uid)
 
         # 2-word phrases from name + explicit triggers (high-signal sources).
+        # Skip pairs whose two tokens are identical post-canonicalization (e.g.
+        # "oauth login" -> "auth auth"): that is an artifact of stopword removal
+        # + synonym collapse, not genuine source adjacency, and it only ever
+        # inflates phrase score. Done symmetrically on the query side (recall-05).
         for src in [name] + list(explicit):
             toks = _normalize_tokens(src, rev, canon)
             for i in range(len(toks) - 1):
+                if toks[i] == toks[i + 1]:
+                    continue
                 ph = f"{toks[i]} {toks[i + 1]}"
                 bucket = phrases_map.setdefault(ph, [])
                 if uid not in bucket:
@@ -329,22 +357,32 @@ def build_index(folder: Path, synonyms: Optional[dict[str, list[str]]] = None) -
 
     payload = {
         "version": INDEX_VERSION,
-        "spec": "0.6.0",
+        "spec": "0.6.1",
         "folder": str(folder),
         "counts": {
             "entries": len(entries),
             "tokens": len(tokens_map),
             "phrases": len(phrases_map),
+            # Human/debug visibility only. The per-entry `always` flag on each
+            # entry is authoritative; recall() reconstructs the always-set from
+            # those flags and never reads a top-level always list (recall-03).
             "always": len(always),
         },
-        "always": sorted(always),
         "entries": entries,
         "tokens": tokens_map,
         "phrases": phrases_map,
         "manifest": manifest,
         "synonyms_hash": _synonyms_hash(synonyms),
     }
-    return payload
+    # Route the freshly built payload through the SAME sanitizer the load path
+    # uses (_sanitize_payload: strips control chars from name/desc/path, caps
+    # lengths, drops malformed entries). build_index feeds both the persisted
+    # index AND the CLI --rebuild path, which passes the in-memory payload
+    # straight to recall() without load_index. Without this, ANSI/control-char
+    # escapes smuggled via crafted frontmatter reach injected output on the
+    # rebuild path while being stripped on the load path (recall-01).
+    sanitized = _sanitize_payload(payload, str(folder))
+    return sanitized if sanitized is not None else payload
 
 
 def write_index(folder: Path, payload: dict[str, Any]) -> Path:
@@ -361,7 +399,14 @@ def write_index(folder: Path, payload: dict[str, Any]) -> Path:
 def index_is_stale(folder: Path, payload: dict[str, Any]) -> bool:
     """True if any in-scope file changed/added/removed vs the index manifest.
     Cheap whole-index staleness check (stat only); lets a rebuild be skipped
-    when nothing changed. Conservative: any error => stale (rebuild)."""
+    when nothing changed. Conservative: any error => stale (rebuild).
+
+    Limitation (recall-stale-01): this compares st_mtime with a 1e-6 tolerance.
+    On filesystems with coarse mtime granularity (some network/FAT volumes) or
+    for a content edit that lands within the same mtime tick, a real change can
+    be missed, leaving --rebuild serving a stale index. The escape hatch is
+    `memory-recall --force-rebuild`, which bypasses this check entirely; an
+    operator with a known-changed store on such a volume should use it."""
     try:
         folder = Path(folder)
         prior = payload.get("manifest", {})
@@ -460,16 +505,67 @@ def _sensitivity_ok(entry_sens: str, ceiling: Optional[str]) -> bool:
         return False  # fail closed on any internal error in a security check
 
 
+# Open hierarchical access labels: at recall time (no viewer-tier authorization
+# is plumbed through), only these two never restrict. Every OTHER non-team label
+# (counsel, restricted, privileged, or any unknown role) is treated as a
+# restriction the viewer cannot satisfy through this interface, so it fails
+# CLOSED. This mirrors cli/index_gen.apply_rbac_filter, where with no
+# --viewer-tier any tier/role label that is not satisfiable defaults to deny.
+_OPEN_ACCESS = frozenset({"public", "internal"})
+
+
 def _access_ok(entry_access: list[str], viewer_teams: Optional[set[str]]) -> bool:
-    # Team-scoped entries are visible only to viewers in a listed team. Entries
-    # with no team label are visible. Hierarchical access is handled by the
-    # sensitivity ceiling above; access teams are the orthogonal gate.
-    teams = [a for a in entry_access if a.startswith("team:")]
-    if not teams:
+    # Access RBAC, fail-CLOSED on any restricting label. Mirrors the structure of
+    # cli/index_gen.apply_rbac_filter (tier gate AND team gate) so build-time and
+    # recall-time RBAC agree:
+    #   - no access labels at all          -> visible (operator default)
+    #   - label in {public, internal}      -> open, does not restrict
+    #   - team:<x>                         -> the team gate passes iff the viewer
+    #                                         holds at least one listed team
+    #   - ANY OTHER label (counsel, an
+    #     unknown/privileged role, etc.)   -> default-DENY (the tier/role gate
+    #                                         cannot pass without viewer-tier auth,
+    #                                         which recall does not plumb through)
+    # This closes the prior bypass where a memory with access: [counsel] surfaced
+    # its description to every viewer because only `team:`-prefixed labels were
+    # gated; any non-`team:` restricting label slipped through as "no team".
+    if not entry_access:
         return True
-    if not viewer_teams:
+    teams = set(viewer_teams or set())
+    team_labels = [a for a in entry_access if a.startswith("team:")]
+    other_labels = [a for a in entry_access if not a.startswith("team:")]
+
+    # Tier/role gate: any non-team label that is not open is unsatisfiable here.
+    for label in other_labels:
+        if label not in _OPEN_ACCESS:
+            return False
+
+    # Team gate: present team labels require the viewer to hold one of them.
+    if team_labels and not (set(team_labels) & teams):
         return False
-    return bool(set(teams) & viewer_teams)
+    return True
+
+
+def _resolve_payload_synonyms(
+    payload: dict[str, Any], folder: str
+) -> tuple[dict[str, str], set[str]]:
+    """Build the (rev, canon) normalization tables to use for one payload's query
+    normalization, preferring the merged synonym map from the payload's own
+    folder so a per-folder operator override is applied symmetrically with build.
+    Falls back to the built-in defaults when the folder is unknown/unreadable or
+    when the loaded map's hash does not match the one the index was built with
+    (a stale index relative to the override; rebuild is the operator's fix)."""
+    if folder:
+        try:
+            merged = load_synonyms(Path(folder))
+            stored = payload.get("synonyms_hash")
+            # When the index recorded a hash, only trust the folder map if it
+            # still matches; otherwise the override changed since the last build.
+            if stored is None or _synonyms_hash(merged) == stored:
+                return _build_synonym_rev(merged)
+        except Exception:
+            pass  # fall through to defaults; recall never raises
+    return _build_synonym_rev(_DEFAULT_SYNONYMS)
 
 
 def recall(
@@ -484,13 +580,23 @@ def recall(
     """Match a query against one or more compiled index payloads and return a
     ranked, budgeted list of Hits (descriptions only). Honors the spec
     post-conditions: always-set inclusion, do_not_inject suppression, body
-    exclusion, sensitivity/access filtering, liveness (baked in at build)."""
-    if synonyms is None:
-        synonyms = _DEFAULT_SYNONYMS
-    rev, canon = _build_synonym_rev(synonyms)
-    qtoks = _normalize_tokens(query or "", rev, canon)
-    qtokset = set(qtoks)
-    qphrases = {f"{qtoks[i]} {qtoks[i + 1]}" for i in range(len(qtoks) - 1)}
+    exclusion, sensitivity/access filtering, liveness (baked in at build).
+
+    Synonym symmetry: the query MUST be normalized with the same synonym map the
+    index was built with, or an operator synonym override (e.g. {kubernetes:
+    [k8s]}) silently fails to match. When `synonyms` is given, it is applied to
+    every payload. When it is None (the common reader path), each payload's query
+    normalization uses the merged synonym map loaded from that payload's own
+    folder, so a per-folder override is honored. The build-time synonyms_hash is
+    used to confirm the loaded map matches the one the index was compiled with;
+    on mismatch we fall back to the built-in defaults for that payload (the index
+    is stale wrt the override and a rebuild is the operator's fix)."""
+    explicit_syn = synonyms is not None
+    # Cache rev/canon by folder so repeated payloads from the same folder do not
+    # re-load + re-build the synonym map.
+    _norm_cache: dict[str, tuple[dict[str, str], set[str]]] = {}
+    if explicit_syn:
+        _shared_rev, _shared_canon = _build_synonym_rev(synonyms)
 
     always_hits: list[Hit] = []
     matched: list[Hit] = []
@@ -502,6 +608,24 @@ def recall(
         tokens_map = payload.get("tokens", {})
         phrases_map = payload.get("phrases", {})
         folder = str(payload.get("folder", ""))
+
+        # Resolve the synonym map to normalize THIS payload's query against.
+        if explicit_syn:
+            rev, canon = _shared_rev, _shared_canon
+        else:
+            cached = _norm_cache.get(folder)
+            if cached is None:
+                cached = _resolve_payload_synonyms(payload, folder)
+                _norm_cache[folder] = cached
+            rev, canon = cached
+        qtoks = _normalize_tokens(query or "", rev, canon)
+        qtokset = set(qtoks)
+        # Symmetric with build: drop identical-adjacent pairs (recall-05).
+        qphrases = {
+            f"{qtoks[i]} {qtoks[i + 1]}"
+            for i in range(len(qtoks) - 1)
+            if qtoks[i] != qtoks[i + 1]
+        }
 
         score: dict[str, float] = {}
         for t in qtokset:
@@ -536,9 +660,17 @@ def recall(
 
     # Rank matched: score desc, then shorter description, then uid for stability.
     matched.sort(key=lambda h: (-h.score, len(h.desc), h.uid))
-    # Always-set is unconditional and comes first (dedup by uid against matched).
-    always_uids = {h.uid for h in always_hits}
-    ordered = always_hits + [h for h in matched if h.uid not in always_uids]
+    # Always-set is unconditional and comes first. Dedup the WHOLE ordered list
+    # by uid (first occurrence wins) so a uid present in two payloads (e.g. a
+    # global-memory file configured under two folders) is listed once, whether
+    # it is an always or a matched hit (recall-04).
+    ordered: list[Hit] = []
+    seen_uids: set[str] = set()
+    for h in always_hits + matched:
+        if h.uid in seen_uids:
+            continue
+        seen_uids.add(h.uid)
+        ordered.append(h)
 
     # Apply top-K + char budget. Always-items are never dropped; matched items
     # stop once top_k or the char budget is reached.
@@ -546,7 +678,18 @@ def recall(
     used = 0
     for h in ordered:
         if not h.always:
-            line_len = len(h.name) + len(h.desc) + len(h.path) + 6
+            # Mirror the rendered markdown line so the budget is honest:
+            #   "- {name} ({folder}/{path}): {desc}"
+            # The folder prefix (often 30-50+ chars) is part of the injected
+            # line, so it MUST be counted; the literal "- " + " (" + "/" + "): "
+            # separators are ~8 chars. The folder rstrip mirrors cli/recall.py.
+            line_len = (
+                len(h.name)
+                + len(h.folder.rstrip("/"))
+                + len(h.path)
+                + len(h.desc)
+                + 8
+            )
             if out and (len(out) >= top_k or used + line_len > char_budget):
                 break
             used += line_len

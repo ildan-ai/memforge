@@ -5,7 +5,11 @@ Spec ref: §"Sparse-checkout / shallow-clone fallback verification mode".
 This subcommand is for the sparse-checkout / shallow-clone deployment
 posture only. It re-fetches the remote ref pinned in
 `.memforge/config.yaml`, applies TOFU + fast-forward-only verification,
-and re-walks revocation commits under the v0.5.0 signature contract.
+and re-walks revocation commits under the v0.5.0 signature contract: every
+cached revocation has its `revocation_signature` verified against the
+operator-registry AND passes the `revoked_at` clock-skew guard before it is
+admitted to the cache (revocation-01). Unverified / out-of-skew bodies are
+dropped, never cached.
 """
 
 from __future__ import annotations
@@ -17,7 +21,7 @@ from pathlib import Path
 
 import yaml
 
-from memforge import revocation
+from memforge import registry as registry_mod, revocation
 from memforge.registry import REGISTRY_DIRNAME, REVOCATION_CACHE
 
 
@@ -72,8 +76,31 @@ def cmd(args: argparse.Namespace) -> int:
         )
         return 1
 
-    # Walk revocation set from the fetched HEAD.
-    rev_set = revocation.walk_revocation_set(memory_root)
+    # revocation-01: load + verify the operator-registry so each walked revoke
+    # body can be signature-verified against the registered signer key material
+    # BEFORE it is cached. Without this, an attacker who can land a commit on the
+    # fetched remote could inject forged / backdated revoke bodies that get
+    # cached and honored, or suppress a real revocation.
+    try:
+        registry = registry_mod.load_registry(memory_root, verify_signature=True)
+    except registry_mod.RegistryError as exc:
+        print(f"operator-registry load failed (needed to verify revocations): {exc}", file=sys.stderr)
+        return 1
+
+    # Walk revocation set from the fetched HEAD using the VERIFIED, snapshot-aware
+    # walker: a published `memforge: revocation-snapshot` commit bounds the walk
+    # (since_commit), the operator-configured caps in .memforge/config.yaml
+    # (revocation.walk_max_commits / walk_max_bytes) are honored, AND every
+    # admitted entry has a valid revocation_signature (resolved against the
+    # registry) plus passes the revoked_at clock-skew guard. Unverified /
+    # out-of-skew bodies are dropped, never cached (revocation-01).
+    try:
+        rev_set = revocation.walk_revocation_set_verified(
+            memory_root, registry, memory_root=memory_root
+        )
+    except revocation.RevocationError as exc:
+        print(f"revocation walk failed: {exc}", file=sys.stderr)
+        return 1
     cache_path = memory_root / REGISTRY_DIRNAME / REVOCATION_CACHE
     cache_path.parent.mkdir(parents=True, exist_ok=True)
     with open(cache_path, "w", encoding="utf-8") as f:

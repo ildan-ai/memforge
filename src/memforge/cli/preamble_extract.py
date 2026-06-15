@@ -23,7 +23,6 @@
 from __future__ import annotations
 
 import argparse
-import os
 import re
 import sys
 from pathlib import Path
@@ -74,7 +73,12 @@ def render_yaml(cfg: dict) -> str:
     """Hand-render a minimal YAML for the _memforge.yaml config. Avoids
     a PyYAML dependency for the writer side."""
     out: list[str] = []
-    title = cfg.get("title", "Memory Index").replace('"', '\\"')
+    # Escape backslash FIRST, then double-quote, for the double-quoted YAML
+    # scalar. Escaping only the quote left a literal backslash (e.g. a Windows
+    # path in the H1) producing an invalid/changed escape sequence that a real
+    # downstream YAML parser would mis-read or reject (preamble-01).
+    raw_title = cfg.get("title", "Memory Index")
+    title = raw_title.replace("\\", "\\\\").replace('"', '\\"')
     out.append(f'title: "{title}"')
     preamble = cfg.get("preamble", "")
     if not preamble:
@@ -121,17 +125,11 @@ def cmd_run(folders: list[Path], apply: bool) -> int:
 
 
 def default_paths() -> list[Path]:
-    out: list[Path] = []
-    home = Path.home()
-    user = os.environ.get("USER", "")
-    if user:
-        per_cwd = home / ".claude" / "projects" / f"{user}-claude-projects" / "memory"
-        if per_cwd.exists():
-            out.append(per_cwd)
-    glob = home / ".claude" / "global-memory"
-    if glob.exists():
-        out.append(glob)
-    return out
+    """Default memory folders via the centralized, IDE/OS-neutral resolver
+    (existence-filtered)."""
+    from memforge.paths import default_memory_paths
+
+    return [p for p in default_memory_paths() if p.exists()]
 
 
 def main() -> int:

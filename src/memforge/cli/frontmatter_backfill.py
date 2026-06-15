@@ -35,7 +35,6 @@
 from __future__ import annotations
 
 import argparse
-import os
 import re
 import sys
 from dataclasses import dataclass, field
@@ -108,12 +107,16 @@ def filename_slug(path: Path) -> str:
 
 def infer_topic_from_path(path: Path, folder_root: Path) -> Optional[str]:
     """Infer topic tag from path. Files under a named subfolder inherit
-    the subfolder name as topic. Top-level files get a topic derived
-    from filename prefix when it matches a value in the controlled
-    vocabulary (spec/taxonomy.yaml).
+    the subfolder name as topic. Top-level files get a topic derived from
+    filename prefix when it matches the inline KNOWN_TOPICS set below.
 
-    The KNOWN_TOPICS set below mirrors the starter taxonomy. Extend it
-    when you extend taxonomy.yaml for your project."""
+    NOTE (backfill-01): this does NOT read spec/taxonomy.yaml. KNOWN_TOPICS is a
+    hardcoded set that mirrors the starter taxonomy; it is intentionally inline
+    so backfill has zero runtime dependency on the (non-wheel-shipped) spec
+    data. A project whose controlled vocabulary differs will not have its custom
+    topics inferred here. Extend KNOWN_TOPICS in source when you extend your own
+    taxonomy.yaml, or add the topic tag manually. (A future seam could load the
+    vocabulary or accept a --taxonomy flag.)"""
     try:
         rel = path.relative_to(folder_root)
     except ValueError:
@@ -285,6 +288,7 @@ def apply_change(path: Path, additions: dict) -> None:
 def cmd_run(folders: list[Path], apply: bool, limit: int) -> int:
     total_files = 0
     total_changed = 0
+    total_would_change = 0
     for folder in folders:
         if not folder.exists():
             sys.stderr.write(f"warning: skipping nonexistent {folder}\n")
@@ -297,6 +301,11 @@ def cmd_run(folders: list[Path], apply: bool, limit: int) -> int:
             plan = plan_change(f, folder)
             if plan is not None:
                 plans.append(plan)
+        # Count would-change files from this single pass (every PlannedChange
+        # has a non-empty additions dict by construction in plan_change), so the
+        # summary line below does not re-invoke plan_change three more times per
+        # file and cannot None-deref on a file that changed between calls.
+        total_would_change += len(plans)
         if not plans:
             print("  (no changes needed)")
             continue
@@ -320,22 +329,15 @@ def cmd_run(folders: list[Path], apply: bool, limit: int) -> int:
 
     print(f"\nTotal files inspected: {total_files}; "
           f"{'changed' if apply else 'would change'}: "
-          f"{total_changed if apply else sum(len(plan_change(f, folder).additions) > 0 for folder in folders if folder.exists() for f in discover_files(folder) if plan_change(f, folder) is not None)}")
+          f"{total_changed if apply else total_would_change}")
     return 0
 
 
 def default_paths() -> list[Path]:
-    out: list[Path] = []
-    home = Path.home()
-    user = os.environ.get("USER", "")
-    if user:
-        per_cwd = home / ".claude" / "projects" / f"{user}-claude-projects" / "memory"
-        if per_cwd.exists():
-            out.append(per_cwd)
-    glob = home / ".claude" / "global-memory"
-    if glob.exists():
-        out.append(glob)
-    return out
+    # Centralized in memforge.paths (env override -> grandfathered .claude layout
+    # if present -> ~/.memforge). Preserve the .exists() filter.
+    from memforge.paths import default_memory_paths
+    return [p for p in default_memory_paths() if p.exists()]
 
 
 def main() -> int:

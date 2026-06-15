@@ -13,7 +13,6 @@
 from __future__ import annotations
 
 import argparse
-import os
 import re
 import sys
 from dataclasses import dataclass, field
@@ -21,6 +20,15 @@ from pathlib import Path
 from typing import Optional
 
 from memforge.frontmatter import parse as _mf_parse  # noqa: E402
+
+
+# Max score contribution from the other-tag Jaccard component (score_pair).
+# _candidate_pairs's prefilter assumes a pair sharing neither a topic-tag nor a
+# prefix token can score at most this value, so it drops such pairs. If the
+# operator's --threshold is at or below this, those dropped other-tag-only pairs
+# could have clustered, and the prefilter silently excludes them; cluster()
+# warns in that case (cluster-other-tag-deadweight-01).
+_OTHER_TAG_WEIGHT = 0.10
 
 
 @dataclass
@@ -97,7 +105,12 @@ def score_pair(a: FileRec, b: FileRec) -> dict:
     fn = jaccard(set(a.prefix_tokens[:3]), set(b.prefix_tokens[:3]))
     topic = jaccard(a.topic_tags, b.topic_tags)
     other = jaccard(a.other_tags, b.other_tags)
-    score = 0.55 * fn + 0.35 * topic + 0.10 * other
+    # Weights: filename-prefix 0.55, topic-tag 0.35, other-tag 0.10. The
+    # other-tag weight (_OTHER_TAG_WEIGHT) is coupled to _candidate_pairs's
+    # prefilter, which drops pairs sharing neither a topic-tag nor a prefix
+    # token on the reasoning that they could score at most 0.10. If you change
+    # this weight, revisit that prefilter (cluster-other-tag-deadweight-01).
+    score = 0.55 * fn + 0.35 * topic + _OTHER_TAG_WEIGHT * other
     return {
         "score": round(score, 3),
         "filename_prefix_jaccard": round(fn, 3),
@@ -159,6 +172,14 @@ def cluster(files: list[FileRec], threshold: float) -> list[list[FileRec]]:
         if rx != ry:
             parent[rx] = ry
 
+    if threshold <= _OTHER_TAG_WEIGHT:
+        sys.stderr.write(
+            f"warning: --threshold {threshold} <= other-tag weight "
+            f"{_OTHER_TAG_WEIGHT}; pairs sharing only an other-tag (no topic-tag "
+            "or filename-prefix token) are dropped by the candidate prefilter "
+            "and will NOT be clustered even though they could score at or above "
+            "this threshold (cluster-other-tag-deadweight-01)\n"
+        )
     candidates = _candidate_pairs(files)
     for i, j in candidates:
         s = score_pair(files[i], files[j])
@@ -264,17 +285,11 @@ def _suggested_why(group: list[FileRec], common_tokens: list[str], common_topics
 
 
 def default_paths() -> list[Path]:
-    out: list[Path] = []
-    home = Path.home()
-    user = os.environ.get("USER", "")
-    if user:
-        per_cwd = home / ".claude" / "projects" / f"{user}-claude-projects" / "memory"
-        if per_cwd.exists():
-            out.append(per_cwd)
-    glob = home / ".claude" / "global-memory"
-    if glob.exists():
-        out.append(glob)
-    return out
+    """Default memory folders via the centralized, IDE/OS-neutral resolver
+    (existence-filtered)."""
+    from memforge.paths import default_memory_paths
+
+    return [p for p in default_memory_paths() if p.exists()]
 
 
 def main() -> int:
@@ -282,7 +297,15 @@ def main() -> int:
         prog="memory-cluster-suggest",
         description="Surface candidate rollup clusters (Phase 1 T2 v1).",
     )
-    p.add_argument("--path", action="append", default=[], help="Folder (repeatable)")
+    p.add_argument(
+        "--path", action="append", default=[],
+        help=(
+            "Folder (repeatable). Scope is TOP-LEVEL ONLY by design: cluster "
+            "suggestion operates on un-rolled top-level files (the rollup "
+            "model). This differs from memory-query / memory-lint, which "
+            "recurse into rollup subfolders (cluster-01)."
+        ),
+    )
     p.add_argument(
         "--threshold",
         type=float,

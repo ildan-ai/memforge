@@ -24,6 +24,7 @@ from memforge.identity import (
     write_secure_yaml,
 )
 from memforge.registry import AGENT_SESSIONS_SUBDIR, REGISTRY_DIRNAME, SEEN_NONCES_SUBDIR
+from memforge.sender_sequence import exclusive_file_lock
 
 
 DEFAULT_SESSION_LIFETIME_HOURS = 24
@@ -93,11 +94,52 @@ def build_attestation(
     envelope = _canonical_for_signature(record)
     sig_b64 = crypto.gpg_sign_detached(envelope, fingerprint=signer_fingerprint)
     record["operator_signature"] = {
-        "algo": "gpg-ed25519",
+        # Record the signer key's ACTUAL algorithm rather than a hardcoded
+        # literal: verify_attestation re-checks sig.algo against the accepted
+        # set, so the stored algo must describe the key that actually signed.
+        "algo": _resolve_signer_algo(signer_fingerprint),
         "signing_time": now_iso(),
         "value": sig_b64,
     }
     return record
+
+
+def _resolve_signer_algo(fingerprint: str) -> str:
+    """Resolve the signing key's algorithm from the local keyring.
+
+    agent-algo-fallback-01: FAIL CLOSED when the key cannot be resolved to a
+    concrete algo rather than stamping a hardcoded `gpg-ed25519`. The stored
+    `operator_signature.algo` is re-checked by verify_attestation against the
+    accepted-algo gate, so a default-stamped label would describe an assumed
+    algorithm, not the key that actually signed (e.g. on a partner deploy with a
+    non-default keyring layout the resolve can miss and the label would become
+    decorative). We resolve from the secret keyring (the signing key) and from
+    the public keyring as a fallback, and raise AttestationError if neither can
+    classify the key's algo, so the stored value is always derived from the key
+    material.
+    """
+    norm = fingerprint.replace(" ", "").upper()
+    try:
+        for k in crypto.gpg_list_secret_keys():
+            if (k.get("fingerprint") or "").upper() == norm:
+                algo = k.get("algo")
+                if algo:
+                    return algo
+    except crypto.CryptoError:
+        pass
+    # Fallback: resolve from the public keyring material (covers isolated
+    # GNUPGHOME / subkey layouts the secret-key list may not surface cleanly).
+    try:
+        pub_algo = crypto.gpg_resolve_public_algo(fingerprint)
+    except crypto.CryptoError:
+        pub_algo = None
+    if pub_algo:
+        return pub_algo
+    raise AttestationError(
+        f"could not resolve the signing algorithm of key {fingerprint} from the gpg "
+        "keyring; refusing to stamp an assumed algo on the attestation "
+        "(agent-algo-fallback-01 fail-closed). Ensure the signing key is present."
+    )
 
 
 def save_attestation(memory_root: Path, record: dict) -> Path:
@@ -152,20 +194,45 @@ def verify_attestation(record: dict, *, signer_fingerprint: str) -> bool:
     return crypto.gpg_verify_detached(envelope, signature_b64=sig["value"], expected_fingerprint=signer_fingerprint)
 
 
+def _parse_iso_aware(value: str, *, field: str) -> datetime:
+    """Parse an ISO-8601 timestamp (accepting a trailing `Z`) to an aware datetime.
+
+    registry-03: `check_not_expired` must not do raw lexicographic string
+    comparison. A caller-supplied `+00:00`-form signing_time sorts below an
+    equal-instant `Z`-form issued_at/expires_at ('+' (0x2B) < 'Z' (0x5A)),
+    silently misjudging expiry. Parse both operands and fail closed
+    (`AttestationError`) on an unparseable input rather than string-comparing.
+    """
+    try:
+        dt = datetime.fromisoformat(value.replace("Z", "+00:00"))
+    except (ValueError, AttributeError) as exc:
+        raise AttestationError(
+            f"unparseable ISO-8601 timestamp for {field}: {value!r}. Fail-closed."
+        ) from exc
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=timezone.utc)
+    return dt
+
+
 def check_not_expired(record: dict, *, signing_time_iso: Optional[str] = None) -> None:
     """Raise `AttestationError` if `signing_time` is outside `[issued_at, expires_at]`.
 
     When `signing_time_iso` is None, uses current UTC time (used at
     attestation issuance to verify the freshly-built record).
+
+    registry-03: comparisons run on parsed aware datetimes (timezone-form
+    insensitive), not raw string compares; fails closed on unparseable input.
     """
-    when = signing_time_iso or now_iso()
-    if when < record["issued_at"]:
+    when = _parse_iso_aware(signing_time_iso or now_iso(), field="signing_time")
+    issued = _parse_iso_aware(record["issued_at"], field="issued_at")
+    expires = _parse_iso_aware(record["expires_at"], field="expires_at")
+    if when < issued:
         raise AttestationError(
-            f"signing_time {when} predates attestation issued_at {record['issued_at']}"
+            f"signing_time {when.isoformat()} predates attestation issued_at {record['issued_at']}"
         )
-    if when > record["expires_at"]:
+    if when > expires:
         raise AttestationError(
-            f"signing_time {when} > attestation expires_at {record['expires_at']}; attestation expired"
+            f"signing_time {when.isoformat()} > attestation expires_at {record['expires_at']}; attestation expired"
         )
 
 
@@ -198,11 +265,51 @@ def seen_nonce_path(memory_root: Path, operator_uuid: str) -> Path:
 
 
 def is_nonce_seen(memory_root: Path, operator_uuid: str, nonce: str) -> bool:
+    """Read-only seen-nonce check (NOT atomic with recording).
+
+    nonce-replay-01: this read happens OUTSIDE the lock that guards
+    record_seen_nonce, so a check-then-record across the lock gap leaves a
+    concurrent-replay TOCTOU window (two verifications of the same captured
+    attestation both observe 'not seen' before either records). Use
+    `claim_nonce` for the replay defense; it performs the check AND the record
+    atomically under one exclusive lock. This helper remains only for read-only
+    inspection / diagnostics where atomicity is not required.
+    """
     path = seen_nonce_path(memory_root, operator_uuid)
     if not path.is_file():
         return False
     data = yaml.safe_load(secure_read_text(path)) or {}
     return nonce in (data.get("nonces") or {})
+
+
+def claim_nonce(memory_root: Path, operator_uuid: str, nonce: str, *, expires_at: str) -> bool:
+    """Atomically check-and-record a nonce. Returns True if newly claimed.
+
+    nonce-replay-01: the replay defense MUST be atomic. This reads the
+    seen-nonce set, records the nonce, and (on a fresh nonce) writes the updated
+    set ALL while holding the same exclusive advisory lock, so two concurrent
+    verifications of the same captured attestation cannot both observe
+    'not seen'. Returns False (already seen -> reject the write as a replay) when
+    the nonce is already present; returns True (newly recorded -> admit) when it
+    was not. Callers branch on this single result instead of calling
+    `is_nonce_seen` then `record_seen_nonce` across a lock gap.
+    """
+    path = seen_nonce_path(memory_root, operator_uuid)
+    with exclusive_file_lock(path):
+        data = {}
+        if path.is_file():
+            data = yaml.safe_load(secure_read_text(path)) or {}
+        nonces = data.setdefault("nonces", {})
+        if nonce in nonces:
+            return False
+        nonces[nonce] = {"expires_at": expires_at, "first_seen_at": now_iso()}
+        # GC expired entries on the same write (mirrors record_seen_nonce).
+        cutoff = (datetime.now(timezone.utc) - timedelta(minutes=10)).isoformat().replace("+00:00", "Z")
+        expired = [n for n, meta in nonces.items() if meta.get("expires_at", "") < cutoff]
+        for n in expired:
+            del nonces[n]
+        write_secure_yaml(path, data)
+        return True
 
 
 def record_seen_nonce(memory_root: Path, operator_uuid: str, nonce: str, *, expires_at: str) -> None:
@@ -214,16 +321,24 @@ def record_seen_nonce(memory_root: Path, operator_uuid: str, nonce: str, *, expi
     already passed (relative to current wall-clock + the default
     backdating clock-skew window of 10 minutes, to stay safe for in-flight
     writes whose signing_time is within the legitimate skew window).
+
+    agent-session-01: the load -> mutate -> write cycle is serialized with the
+    same exclusive advisory lock as the sender-sequence increment, so two
+    concurrent attestation verifications for the same operator_uuid cannot both
+    read the prior nonce set and have the second write clobber the first (which
+    would drop a just-recorded nonce and re-open a replay window). is_nonce_seen
+    is the replay defense, so a lost-update there is a real concurrency gap.
     """
     path = seen_nonce_path(memory_root, operator_uuid)
-    data = {}
-    if path.is_file():
-        data = yaml.safe_load(secure_read_text(path)) or {}
-    nonces = data.setdefault("nonces", {})
-    nonces[nonce] = {"expires_at": expires_at, "first_seen_at": now_iso()}
-    # GC: drop entries whose expires_at + 10 min skew has already passed.
-    cutoff = (datetime.now(timezone.utc) - timedelta(minutes=10)).isoformat().replace("+00:00", "Z")
-    expired = [n for n, meta in nonces.items() if meta.get("expires_at", "") < cutoff]
-    for n in expired:
-        del nonces[n]
-    write_secure_yaml(path, data)
+    with exclusive_file_lock(path):
+        data = {}
+        if path.is_file():
+            data = yaml.safe_load(secure_read_text(path)) or {}
+        nonces = data.setdefault("nonces", {})
+        nonces[nonce] = {"expires_at": expires_at, "first_seen_at": now_iso()}
+        # GC: drop entries whose expires_at + 10 min skew has already passed.
+        cutoff = (datetime.now(timezone.utc) - timedelta(minutes=10)).isoformat().replace("+00:00", "Z")
+        expired = [n for n, meta in nonces.items() if meta.get("expires_at", "") < cutoff]
+        for n in expired:
+            del nonces[n]
+        write_secure_yaml(path, data)

@@ -14,10 +14,10 @@ Docs: [PyPI](https://pypi.org/project/ildan-memforge/) | [CHANGELOG](./CHANGELOG
 pip install ildan-memforge
 memforge --version                  # memforge 0.6.1
 memforge init-operator --name "Your Name" --gen-key
-memforge recovery-init
-memforge recovery-backup-confirm --i-have-backed-up-the-secret
 cd /path/to/memory-root
-memforge init-store
+memforge init-store                 # creates the signed operator-registry first
+memforge recovery-init              # anchors the recovery-secret SHA256 in that registry
+memforge recovery-backup-confirm --i-have-backed-up-the-secret
 memforge messaging-doctor           # verify v0.5 posture: ALL CHECKS PASSED
 ```
 
@@ -56,7 +56,7 @@ pip install ildan-memforge
 
 The PyPI distribution is published under `ildan-memforge` because the
 shorter `memforge` name is held by an unrelated project. The Python
-import path is still `memforge`, and the 19 CLI commands install with
+import path is still `memforge`, and the 20 CLI commands install with
 the same names (`memory-audit`, `memory-watch`, `memory-dlp-scan`,
 `memforge-resolve`, etc.).
 You can also install straight from source:
@@ -105,7 +105,10 @@ Other layouts work too; the tooling takes a `--path` argument everywhere.
 name: Use bun, not npm
 description: Bun is the package manager for this monorepo
 type: feedback
+uid: mem-2026-04-12-use-bun-not-npm
+tier: index
 tags: [topic:tooling, topic:javascript]
+owner: web-platform
 status: active
 created: 2026-04-12
 ---
@@ -206,13 +209,23 @@ Run `--help` on any of them.
 | `memory-rollup` | Bulk-move primitive: create / undo / list. Maintains an undo ledger. |
 | `memory-query` | Filter memories by topic, type, tag, status, owner, date range, or text. |
 | `memory-recall` | Query-triggered recall (v0.6.0): inject the descriptions of memories whose triggers match a query. Reads a precompiled index; fail-open-empty. |
+| `memory-lint` | Recall-readiness + token-cost quality analysis (v0.6.1). Collision-based recall scoring, always-set / description-length / body-length findings. Read-only; local-only by default, optional model-assisted suggestions behind explicit opt-in. |
 | `memory-watch` | Filesystem watcher (Linux + macOS via watchdog). |
 | `memory-promote` | Move a memory between folders with index fixup. |
 | `memory-frontmatter-backfill` | Populate v0.3.0 frontmatter on existing memory files (migration helper). |
 | `memory-preamble-extract` | Extract the `MEMORY.md` preamble into `_memforge.yaml` (Phase 1 migration helper). |
 | `agents-md-gen` | Generate an `AGENTS.md` surface from memory frontmatter, filtered by a sensitivity ceiling + byte budget. |
 
-`memforge <subcommand> --help` and `tools/README.md` have the long-form references.
+### Competing-claim consolidation (standalone console scripts)
+
+These ship as standalone console scripts today, not as `memforge` dispatcher subcommands (dispatcher integration is tracked in [`spec/known-limitations.md`](./spec/known-limitations.md) §"Reference CLI status").
+
+| Tool | What it does |
+| --- | --- |
+| `memforge-resolve <topic>` | Resolve a competing-claim group on a `decision_topic`: pick a winner, apply the superseded / superseded_by / ever_multi_member invariants, and emit a scope-locked `memforge: resolve <topic>` commit. |
+| `memforge-migrate-claim-block` | Rewrite legacy `status:` to the canonical `state:` key inside the competing-claim fenced block of `MEMORY.md`. |
+
+`memforge <subcommand> --help` (dispatcher subcommands), `<tool> --help` (standalone console scripts), and `tools/README.md` have the long-form references.
 
 ## Spec
 
@@ -230,7 +243,8 @@ Format invariants are in [`spec/SPEC.md`](./spec/SPEC.md). Topic taxonomy is in 
 | v0.5.1 | 2026-05-10 | Reference CLI ships (14 subcommands under `memforge` dispatcher). Closes v0.5.0 agent-session-attestation content-scope MAJOR with normative `nonce` + `expires_at` + `capability_scope`. Cross-cutting fail-closed posture (29-item operator reference). Privacy considerations (7 boundary statements). |
 | v0.5.2 | 2026-05-10 | Closes 2 BLOCKERs + 1 MAJOR from retrospective code panel. Canonical-form Unicode NFC normalization MUST on signed envelopes (closes repudiation via normalization drift). Atomic O_CREAT\|O_EXCL + fsync + os.replace on `write_secure_yaml` + `write_secure_bytes` (closes TOCTOU on file create). Seen-nonce set bounding MAY -> SHOULD with explicit GC contract (closes unbounded-set DoS). Cross-platform secure-file abstraction (`src/memforge/_security.py`): POSIX mode bits on macOS/Linux + NTFS ACLs (via `icacls`) on native Windows. CI matrix extends to Ubuntu + macOS + Windows. |
 | v0.6.0 | 2026-06-07 | Query-triggered recall. Three optional frontmatter fields (`triggers`, `always`, `do_not_inject`) + the §"Recall operation" spec contract (UI-neutral; descriptions only, never bodies; fail-open-empty). New `memory-recall` reader + `memory-index-gen --with-recall-index`. All fields optional, so pre-v0.6.0 folders stay well-formed and older tools ignore the new keys. |
-| v0.6.1 | 2026-06-07 | Docs + packaging patch. PyPI trove classifiers added (fixes the Python-versions badge); README Status table, CLI count, and tool tables corrected; DOI badge + citation switched to the version-agnostic concept DOI. No spec change; no code change. |
+| v0.6.1 (package) | 2026-06-07 | Docs + packaging patch. PyPI trove classifiers added (fixes the Python-versions badge); README Status table, CLI count, and tool tables corrected; DOI badge + citation switched to the version-agnostic concept DOI. No spec change; no code change at the tag. |
+| v0.6.1 (spec) | in flight | Recall-readiness lint. spec/VERSION 0.6.0 -> 0.6.1: new §"Recall-readiness lint" section + tier-vs-recall clarification. New `memory-lint` reader + `memory-audit` recall-field / always-set budget WARNs. Additive and backward-compatible; tracked under CHANGELOG `## [Unreleased]` pending the next package release. |
 
 The reference implementation is running in production. External adoption is welcome once the CLA flow is live.
 

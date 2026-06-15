@@ -31,14 +31,38 @@ def test_lm_studio_dispatcher_is_local(memory_dedup_module):
     assert memory_dedup_module.is_local_dispatcher("lms chat") is True
 
 
-def test_local_model_aliases_pass(memory_dedup_module):
-    """Any dispatcher invoking a known local-model alias by name is allowed."""
-    assert memory_dedup_module.is_local_dispatcher("some-cli --model gemma2") is True
-    assert memory_dedup_module.is_local_dispatcher("some-cli --model qwen2") is True
-    assert memory_dedup_module.is_local_dispatcher("some-cli --model deepseek-coder") is True
-    assert memory_dedup_module.is_local_dispatcher("some-cli --model llama3") is True
-    assert memory_dedup_module.is_local_dispatcher("some-cli --model phi3") is True
-    assert memory_dedup_module.is_local_dispatcher("some-cli --model mistral") is True
+def test_unknown_executable_with_model_flag_is_not_local(memory_dedup_module):
+    """Security: a model-name flag must NOT make an arbitrary command local.
+
+    The prior substring heuristic classified `some-cli --model gemma2` as
+    local, so a cloud exfil tool carrying that flag bypassed the gate. The
+    executable-allowlist classifier rejects an unknown executable; the
+    operator registers a genuine custom local runner via
+    MEMFORGE_LOCAL_DISPATCHERS instead.
+    """
+    assert memory_dedup_module.is_local_dispatcher("some-cli --model gemma2") is False
+    assert memory_dedup_module.is_local_dispatcher("python send.py --model llama3") is False
+
+
+def test_operator_registered_local_executable(memory_dedup_module, monkeypatch):
+    monkeypatch.setenv("MEMFORGE_LOCAL_DISPATCHERS", "my-runner,other")
+    assert memory_dedup_module.is_local_dispatcher("my-runner --model x") is True
+    assert memory_dedup_module.is_local_dispatcher("unlisted --model x") is False
+
+
+def test_network_indicator_rejected_even_with_local_exe(memory_dedup_module):
+    # An ollama-named command that still reaches the network is not local.
+    assert memory_dedup_module.is_local_dispatcher("ollama && curl https://x") is False
+    assert memory_dedup_module.is_local_dispatcher("sh -c 'curl https://host/ollama'") is False
+
+
+def test_local_model_runners_pass(memory_dedup_module):
+    """Known local model-runner executables are allowed."""
+    assert memory_dedup_module.is_local_dispatcher("ollama run gemma2") is True
+    assert memory_dedup_module.is_local_dispatcher("llamafile -m model.gguf") is True
+    assert memory_dedup_module.is_local_dispatcher("localai run x") is True
+    assert memory_dedup_module.is_local_dispatcher("vllm serve x") is True
+    assert memory_dedup_module.is_local_dispatcher("/usr/local/bin/ollama run x") is True
 
 
 def test_cloud_dispatchers_are_rejected(memory_dedup_module):
@@ -117,6 +141,60 @@ def test_collect_catalog_warns_on_long_descriptions(tmp_path, memory_dedup_modul
     assert len(warnings) == 1
     assert "rule-a.md" in warnings[0]
     assert "80 chars" in warnings[0]
+
+
+# ---------- cloud-egress sensitivity/access containment (dedup-sensitivity-02) ----------
+
+
+def _seed_labeled(folder: Path, name: str, description: str, *, sensitivity: str = "",
+                  access: str = "") -> None:
+    fm = [f"name: {name}", f"description: {description}", "type: feedback"]
+    if sensitivity:
+        fm.append(f"sensitivity: {sensitivity}")
+    if access:
+        fm.append(f"access: {access}")
+    body = "---\n" + "\n".join(fm) + "\n---\nbody content here\n"
+    (folder / f"{name.replace(' ', '_')}.md").write_text(body, encoding="utf-8")
+
+
+def test_restricted_description_hard_redacted_on_cloud_path(tmp_path, memory_dedup_module):
+    """dedup-sensitivity-02: with cloud_dispatch=True, a restricted memory's
+    description is HARD-redacted regardless of redact_descriptions=False, so the
+    documented --no-redact-descriptions --allow-cloud-dispatcher pair cannot
+    exfiltrate it. A public memory in the same folder still ships raw."""
+    _seed_labeled(tmp_path, "secret-rule", "TOP SECRET CODENAME PHOENIX",
+                  sensitivity="restricted")
+    _seed_labeled(tmp_path, "public-rule", "ordinary public guidance",
+                  sensitivity="public")
+
+    _, lines, warnings = memory_dedup_module.collect_catalog(
+        tmp_path, redact_descriptions=False, warn_threshold=999, cloud_dispatch=True
+    )
+    joined = "\n".join(lines)
+    assert "TOP SECRET CODENAME PHOENIX" not in joined
+    assert "ordinary public guidance" in joined  # public still ships
+    assert any("secret-rule.md" in w and "withheld" in w for w in warnings)
+
+
+def test_access_restricted_description_hard_redacted_on_cloud_path(tmp_path, memory_dedup_module):
+    _seed_labeled(tmp_path, "counsel-rule", "privileged legal strategy text",
+                  sensitivity="internal", access="[counsel]")
+    _, lines, _ = memory_dedup_module.collect_catalog(
+        tmp_path, redact_descriptions=False, warn_threshold=999, cloud_dispatch=True
+    )
+    assert "privileged legal strategy text" not in "\n".join(lines)
+
+
+def test_restricted_description_shipped_on_LOCAL_path(tmp_path, memory_dedup_module):
+    """The egress gate is CLOUD-only: with cloud_dispatch=False (a local model),
+    a restricted memory's description ships when --no-redact is set (local never
+    leaves the box)."""
+    _seed_labeled(tmp_path, "secret-rule", "TOP SECRET CODENAME PHOENIX",
+                  sensitivity="restricted")
+    _, lines, _ = memory_dedup_module.collect_catalog(
+        tmp_path, redact_descriptions=False, warn_threshold=999, cloud_dispatch=False
+    )
+    assert "TOP SECRET CODENAME PHOENIX" in "\n".join(lines)
 
 
 # ---------- end-to-end CLI: dispatcher refusal ----------

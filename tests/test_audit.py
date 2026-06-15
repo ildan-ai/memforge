@@ -170,7 +170,6 @@ def test_files_to_audit_catches_yaml_parse_failure_in_detail_file(tmp_path: Path
         audit_target(
             tmp_path,
             stale_days=365,
-            strict=False,
             fix=False,
             add_defaults=False,
             json_out=False,
@@ -202,7 +201,6 @@ def test_no_orphan_pointer_for_rollup_readme(tmp_path: Path) -> None:
         violations, _ = audit_target(
             tmp_path,
             stale_days=365,
-            strict=False,
             fix=False,
             add_defaults=False,
             json_out=False,
@@ -256,7 +254,6 @@ def test_no_orphan_pointer_for_subfolder_detail_file(tmp_path: Path) -> None:
         violations, _ = audit_target(
             tmp_path,
             stale_days=365,
-            strict=False,
             fix=False,
             add_defaults=False,
             json_out=False,
@@ -294,7 +291,6 @@ def test_subfolder_detail_pointer_emits_health_advisory(tmp_path: Path) -> None:
         audit_target(
             tmp_path,
             stale_days=365,
-            strict=False,
             fix=False,
             add_defaults=False,
             json_out=False,
@@ -330,7 +326,6 @@ def test_truly_missing_subfolder_pointer_still_violates(tmp_path: Path) -> None:
         violations, _ = audit_target(
             tmp_path,
             stale_days=365,
-            strict=False,
             fix=False,
             add_defaults=False,
             json_out=False,

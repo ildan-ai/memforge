@@ -1,6 +1,6 @@
 # MemForge known limitations
 
-**Updated:** 2026-06-07 (covers v0.6.0 ship state)
+**Updated:** 2026-06-14 (covers v0.6.1 ship state)
 **Status:** Living document. Each spec release updates this file; the file ships with the Zenodo deposit for that release as a versioned snapshot.
 
 ---
@@ -46,6 +46,18 @@ Deferred refinements (not gaps):
 
 ---
 
+## v0.6.1 (recall-readiness lint)
+
+v0.6.1 is a patch bump: it adds the §"Recall-readiness lint" spec section and the §"Tier and recall (clarification, v0.6.1+)" note, the `memory-lint` reader, and a set of WARN-only `memory-audit` recall-field + always-set budget checks. No frontmatter or normative-contract change, so every v0.6.0 folder remains conformant. The internal spec-delta panel and code threat-model panel returned **no BLOCKER-class known limitations**.
+
+Deferred refinements (not gaps):
+
+- **Lint scoring algorithm is non-normative.** The spec defines lint by the dimensions it scores and the safety posture it MUST observe, not by a scoring algorithm, numeric threshold, or model prompt. The reference implementation's collision-based recall score and its default thresholds (`--min-score`, description/body length cutoffs) are implementation choices that MAY change between patch releases without a spec bump; do not treat a specific numeric score as a conformance signal.
+- **Always-set budget is advisory only.** The `memory-audit` always-set budget check (configurable count + combined-description-char budget under `recall.*` in `.memforge/config.yaml`) is WARN-only health, never an integrity violation, so `--strict` is unaffected and existing stores never fail on upgrade. A hard budget gate is not in scope for v0.6.x.
+- **Lint never mutates and never gates.** Lint is read-only and its model-assisted suggestion layer is off by default (local-only when enabled; metadata-only cloud payload unless `--allow-cloud-body`; deterministic secret pre-scan fail-closed). Auto-applying a suggested description / trigger set is out of scope; the operator edits files.
+
+---
+
 ## Residual MINORs (v0.5.x patch targets)
 
 These are refinements / nice-to-haves; not security gaps and not gating release rigor.
@@ -75,6 +87,7 @@ v0.5.1 shipped 14 subcommands under a single `memforge` dispatcher (init-operato
 Still v0.5.x scope:
 
 - `memforge recovery-init --hardware <yubikey|secure-enclave|tpm>`: hardware-backed recovery-secret install.
+- `memforge resolve <topic>` integration into the top-level dispatcher (currently shipping as the standalone `memforge-resolve` console script; the spec describes the resolve operation by post-conditions, so the standalone script is conformant, but the dispatcher subcommand is the intended ergonomic form).
 - `memforge migrate-claim-block` integration into the top-level dispatcher (currently shipping as a standalone console script).
 - `memforge verify-memory <path>`: CLI helper that runs the canonical verify-flow (registry-membership + cool-down + revocation + signature). Spec mandates the contract via `memforge.registry.verify_signing_key_acceptable`; CLI delivery is a v0.5.x ergonomics improvement.
 

@@ -1,7 +1,8 @@
-# memory-audit-deep — v0.3.0-aware recursive memory audit (Phase 1 T4).
+# memory-audit-deep: recursive memory audit (Phase 1 T4).
 #
-# Sibling to the bash `memory-audit` (which audits flat-folder structural
-# integrity). This tool walks rollup subfolders and validates:
+# Sibling to `memory-audit` (the Python `memforge.cli.audit`, a rewrite of the
+# original bash tool, which audits flat-folder structural integrity). This tool
+# walks rollup subfolders and validates:
 #   - UID uniqueness across the entire tree
 #   - tag membership against taxonomy.yaml
 #   - supersedes / superseded_by resolution
@@ -9,7 +10,8 @@
 #   - rollup README.md `last_reviewed` staleness (>90 days)
 #
 # ADR: 0001 §Phase 1 T4
-# Spec: 0.3.0
+# Spec: 0.6.x (tracks spec/VERSION; recurses rollup subfolders per
+#        §"Rollup subfolders").
 #
 # Defaults: per-cwd memory + ~/.claude/global-memory/. Override via --path.
 # Excludes archive/ and .git/. Returns exit 1 with --strict on violations.
@@ -17,7 +19,6 @@
 from __future__ import annotations
 
 import argparse
-import os
 import re
 import sys
 from dataclasses import dataclass, field
@@ -51,13 +52,42 @@ def parse_frontmatter(text: str) -> dict:
     return fm
 
 
+def _taxonomy_candidate_paths(memforge_root: Optional[Path]) -> list[Path]:
+    """Ordered candidate locations for spec/taxonomy.yaml.
+
+    When the operator passes --memforge-root, ONLY that root is honored (an
+    explicit override must not silently fall through to a packaged copy). When
+    no root is given, search both the installed-package layout and the source
+    tree so tag-membership enforcement works from a wheel AND from a checkout
+    (craft-01: the prior single Path(__file__).parent.parent/spec path never
+    existed in either layout, silently disabling the check everywhere).
+    """
+    if memforge_root is not None:
+        return [memforge_root / "spec" / "taxonomy.yaml"]
+    here = Path(__file__).resolve()
+    return [
+        # Installed-package data: <site-packages>/memforge/spec/taxonomy.yaml.
+        here.parent.parent / "spec" / "taxonomy.yaml",
+        # Source checkout: <repo-root>/spec/taxonomy.yaml (src layout, so the
+        # repo root is three parents up from src/memforge/cli/audit_deep.py).
+        here.parents[3] / "spec" / "taxonomy.yaml",
+    ]
+
+
+def find_taxonomy_path(memforge_root: Optional[Path]) -> Optional[Path]:
+    """Return the first existing taxonomy.yaml candidate, or None."""
+    for cand in _taxonomy_candidate_paths(memforge_root):
+        if cand.exists():
+            return cand
+    return None
+
+
 def load_taxonomy(memforge_root: Optional[Path]) -> dict:
-    """Loads taxonomy.yaml from memforge/spec/. Returns empty dict if not
-    found or PyYAML missing."""
-    if memforge_root is None:
-        memforge_root = Path(__file__).resolve().parent.parent
-    tax_path = memforge_root / "spec" / "taxonomy.yaml"
-    if not tax_path.exists() or not _HAVE_YAML:
+    """Loads taxonomy.yaml from the first existing candidate location. Returns
+    empty dict if not found or PyYAML missing. Use find_taxonomy_path() to
+    distinguish 'not found' (path is None) from 'found but empty/unparseable'."""
+    tax_path = find_taxonomy_path(memforge_root)
+    if tax_path is None or not _HAVE_YAML:
         return {}
     try:
         with tax_path.open("r", encoding="utf-8") as f:
@@ -203,17 +233,11 @@ def audit(folder: Path, taxonomy_values: dict[str, set[str]], stale_days: int) -
 
 
 def default_paths() -> list[Path]:
-    out: list[Path] = []
-    home = Path.home()
-    user = os.environ.get("USER", "")
-    if user:
-        per_cwd = home / ".claude" / "projects" / f"{user}-claude-projects" / "memory"
-        if per_cwd.exists():
-            out.append(per_cwd)
-    glob = home / ".claude" / "global-memory"
-    if glob.exists():
-        out.append(glob)
-    return out
+    """Default memory folders via the centralized, IDE/OS-neutral resolver
+    (existence-filtered)."""
+    from memforge.paths import default_memory_paths
+
+    return [p for p in default_memory_paths() if p.exists()]
 
 
 def main() -> int:
@@ -234,6 +258,17 @@ def main() -> int:
         default=None,
         help="Override memforge repo root for taxonomy.yaml lookup",
     )
+    p.add_argument(
+        "--allow-missing-taxonomy",
+        action="store_true",
+        help=(
+            "Downgrade a missing/unloadable taxonomy.yaml (or absent PyYAML) "
+            "from a --strict hard error to a warning. The other strict checks "
+            "(UID uniqueness, broken mem:uid links, rollup staleness) still run "
+            "and still gate exit status. Use when your deploy carries no "
+            "namespaced tags to enforce."
+        ),
+    )
     args = p.parse_args()
 
     folders = [Path(p).resolve() for p in args.path] if args.path else default_paths()
@@ -244,11 +279,23 @@ def main() -> int:
     memforge_root = Path(args.memforge_root).resolve() if args.memforge_root else None
     taxonomy = load_taxonomy(memforge_root)
     tax_values = known_namespace_values(taxonomy)
-    if not tax_values:
-        sys.stderr.write(
-            "warning: taxonomy.yaml not loaded (PyYAML missing or file not found); "
-            "tag-membership checks will be skipped\n"
+
+    # Distinguish "taxonomy could not be loaded" (tag-membership enforcement is
+    # OFF) from "taxonomy loaded but defines no values". A partner reading
+    # "clean (no violations)" must not mistake a silently-disabled check for an
+    # enforced one (craft-01). Surface the skip in the report, and under --strict
+    # treat it as a hard error so an installed deploy without the taxonomy data
+    # fails loudly rather than green-lighting un-validated tags.
+    taxonomy_loaded = find_taxonomy_path(memforge_root) is not None and _HAVE_YAML
+    if not taxonomy_loaded:
+        reason = (
+            "PyYAML missing" if not _HAVE_YAML else "taxonomy.yaml not found"
         )
+        skip_msg = (
+            f"taxonomy.yaml not loaded ({reason}); tag-membership checks are "
+            "SKIPPED (not enforced)"
+        )
+        sys.stderr.write(f"warning: {skip_msg}\n")
 
     total = 0
     for folder in folders:
@@ -257,6 +304,10 @@ def main() -> int:
             continue
         violations = audit(folder, tax_values, args.stale_days)
         print(f"\n====== {folder} ======")
+        if not taxonomy_loaded:
+            # Make the disabled-check explicit in the per-folder report so a
+            # "clean" result is never read as "tags validated".
+            print(f"  NOTE: {skip_msg}")
         if not violations:
             print("  clean (no violations)")
         else:
@@ -266,6 +317,24 @@ def main() -> int:
             total += len(violations)
 
     print(f"\nTotal violations: {total}")
+    if args.strict and not taxonomy_loaded:
+        if args.allow_missing_taxonomy:
+            # Opt-out: a deploy with no namespaced tags to enforce should not be
+            # forced to a hard CI failure just because the packaged taxonomy
+            # data / PyYAML is absent. Warn loudly but let the other strict
+            # checks decide exit status (closes recall-05).
+            sys.stderr.write(
+                "warning: --strict with taxonomy.yaml unloadable, but "
+                "--allow-missing-taxonomy is set; tag-membership enforcement is "
+                "SKIPPED and does not fail the run\n"
+            )
+        else:
+            sys.stderr.write(
+                "error: --strict and taxonomy.yaml could not be loaded; refusing to "
+                "report success while tag-membership enforcement is disabled "
+                "(pass --allow-missing-taxonomy to downgrade this to a warning)\n"
+            )
+            return 1
     if args.strict and total > 0:
         return 1
     return 0

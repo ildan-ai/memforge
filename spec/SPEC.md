@@ -1,6 +1,6 @@
 # MemForge spec
 
-Version 0.6.0.
+Version 0.6.1.
 
 ## Goal
 
@@ -40,7 +40,6 @@ updated: <YYYY-MM-DD>
 last_reviewed: <YYYY-MM-DD>
 status: <active | proposed | gated | superseded | dropped | archived>
 supersedes: [<uid>, ...]
-superseded_by: [<uid>, ...]
 aliases: [<uid>, ...]
 pinned: <true | false>
 dynamic_supplement: [<query string>, ...]
@@ -210,7 +209,7 @@ The repository ships `tests/conformance/sensitivity/` with documented scenarios 
 - `export-tier-privileged`: all four levels.
 - `label-mismatch-blocked`: a file claiming `sensitivity: public` with restricted-tier body content; the export tooling MUST refuse the file (BLOCKER from DLP cross-check before export).
 
-The conformance harness (`pytest tests/conformance/sensitivity/`) is enabled by default. Adapter authors who deliberately target a non-secure-mode profile MAY skip via `pytest.skip("non-secure-mode")` with the rationale documented in their adapter README; spec-conformance claims are forfeit for the skipped scenarios.
+The conformance harness (`pytest tests/test_conformance_sensitivity.py`) is enabled by default. (The scenario fixtures live under `tests/conformance/sensitivity/`; the test module that drives them is `tests/test_conformance_sensitivity.py`. Pointing pytest at the fixtures directory collects zero tests and falsely passes.) Adapter authors who deliberately target a non-secure-mode profile MAY skip via `pytest.skip("non-secure-mode")` with the rationale documented in their adapter README; spec-conformance claims are forfeit for the skipped scenarios.
 
 #### Config keys (added to `.memforge/config.yaml`)
 
@@ -247,7 +246,7 @@ The `tags` field carries a list of taxonomy entries. Tags follow `<namespace>:<v
 - `area:<name>` , broader area for cross-cutting concerns (e.g., `area:ops`, `area:governance`).
 - `priority:<value>` , operational priority (e.g., `priority:critical`).
 
-The controlled vocabulary lives in `spec/taxonomy.yaml`. The vocabulary is versioned with the spec. Adapters MAY warn on tags outside the vocabulary; tools SHOULD provide a synonym map (e.g., `oauth` → `topic:auth`).
+The controlled vocabulary lives in `spec/taxonomy.yaml`. The vocabulary carries its own independent `version` plus a `spec_compatible` range declaring which spec versions it is valid against; it is revised on its own cadence rather than tracking every spec release. Adapters MAY warn on tags outside the vocabulary; tools SHOULD provide a synonym map (e.g., `oauth` → `topic:auth`).
 
 ## Index format (`MEMORY.md`)
 
@@ -308,6 +307,42 @@ The result set MAY be ranked and truncated to a budget (top-K, character or toke
 
 Recall is latency-sensitive when wired to a per-query hook, so reference implementations precompute an inverted index at memory-change time rather than walking the folder per query. The build step and the query step are separate operations; in the reference implementation `memory-index-gen` emits the recall index and a thin `memory-recall` reader consumes it. The index is a derived build artifact (like `MEMORY.md`); it is not part of the on-disk format contract and MAY be regenerated at any time. Implementations SHOULD version the artifact and reject an incompatible version by falling back to a rebuild or to empty recall (per post-condition 7).
 
+### Tier and recall (clarification, v0.6.1+)
+
+Recall eligibility is governed by liveness and sensitivity, not by tier. A live `tier: detail` memory carries a `description` and is recall-eligible on the same terms as a `tier: index` memory; the `index`/`detail` split governs the session-start `MEMORY.md` hotlist (§"Tier semantics"), not query-driven recall. A consumer MAY rank `index`-tier memories above `detail`-tier on a tie, but MUST NOT exclude a live `detail` memory from recall solely for being detail-tier.
+
+## Recall-readiness lint (v0.6.1+)
+
+The **lint operation** is a quality analysis distinct from audit. Audit (§"Integrity invariants", §"Audit invariants for competing claims") answers a deterministic, binary question: is this memory *conformant*? Lint answers a graded question: is this memory *recall-effective and token-efficient*? Lint is advisory, it is READ-ONLY (it MUST NOT mutate memory files), and it MUST NOT be a hard gate on any other operation (a non-deterministic quality signal must never block a conformance-correct write or a resolve).
+
+This spec defines lint by the dimensions it scores and the safety posture it MUST observe, NOT by a scoring algorithm, numeric threshold, or model prompt. Any implementation that scores these dimensions and honors the safety posture is a conforming lint.
+
+### Dimensions
+
+1. **Recall-context.** How findable is the memory through the recall trigger model (§"Recall operation")? A description is recall-strong when it contributes distinctive query-bearing terms beyond what `name` and `tags` already supply, and recall-weak when it is contentless filler, contributes no terms the name does not, or contributes only terms that are common across the corpus (high-collision, hard to disambiguate from neighbors). A conforming implementation SHOULD evaluate findability against the same trigger derivation the recall consumer uses, so the score reflects real recall behavior rather than a parallel heuristic.
+
+2. **Token-cost.** What does the memory cost the recall budget? Covers: `description` length (the per-match injection cost); the always-set budget (see below); `do_not_inject` candidacy (a memory whose rule already lives in an always-loaded instruction file need not be re-injected); and oversized `index`-tier bodies (a read-cost signal; suggests rollup or `tier: detail`).
+
+3. **Well-formedness handoff.** Deterministic conformance (required fields, enum validity, malformed recall fields, missing `**Why:**`/`**How to apply:**`) is audit's job, not lint's. Lint SHOULD defer to audit for these rather than re-implement them, keeping a clean seam between deterministic conformance and graded quality.
+
+### Always-set budget (advisory)
+
+The always-set (memories with `always: true` and `do_not_inject: false`) is injected on every recall query, so it is the recurring per-query cost. Tooling SHOULD surface a budget WARN when the always-set exceeds a configured count OR a configured combined-`description`-character budget. This is **advisory (WARN), never a BLOCKER** in v0.6.1: an existing memory set may already exceed the budget, and an upgrade MUST NOT fail a conformant store on a quality threshold (consistent with the v0.3.x degraded-mode principle). The budget is operator-configurable; reference defaults are a small count and a small character total. A future spec revision MAY tighten this to a hard cap after a deprecation window.
+
+### Cloud-dispatch safety posture (normative)
+
+A lint implementation that consults an external (network-bound) model to suggest improved descriptions or triggers MUST observe the following, because memory content is operator data and a description may carry sensitive material if the store is not yet compliant with §"Sensitivity and the description field":
+
+1. **Local-only by default.** External dispatch MUST be off unless the operator explicitly enables it. A consumer MUST be runnable with no external dispatch at all.
+2. **Metadata-only by default.** When external dispatch is enabled, the default payload MUST be limited to recall metadata (`name`, `tags`, `description`). Shipping the memory **body** to an external model MUST require a separate, stronger operator opt-in.
+3. **Pre-dispatch screen.** A deterministic secret/credential screen MUST run on the payload before any external dispatch; a positive screen MUST suppress dispatch for that memory (fail-closed).
+4. **Sensitivity and access honored.** External dispatch MUST honor the same `sensitivity`/`access` filtering as any other surfacing path.
+5. **Suggestions are advisory.** Returned suggestions MUST NOT be written to memory files automatically; applying a suggestion is an operator action.
+
+### Consolidation orchestration (informative)
+
+An adapter MAY orchestrate lint around the resolve operation (§"The resolve operation"): lint the competing candidates before resolution (so the operator chooses among well-formed claims), then, after the scope-locked `memforge: resolve` commit, regenerate the recall index so the new active winner is immediately recallable. The index regeneration MUST be a separate step from the resolve commit, since the resolve commit may touch only the topic's group members (resolve post-condition 4); folding index regeneration or content repair into the resolve commit is a scope violation. Verifying the winner is recallable after regeneration (a smoke query) is a recommended post-condition.
+
 ## Multi-agent concurrency: competing claims
 
 (v0.4.0+. Closes the v0.3.x §"Not in scope" deferral on multi-user concurrency.)
@@ -347,7 +382,7 @@ Implementation surface (informative):
 
 | Surface | How the resolve operation appears |
 | --- | --- |
-| CLI reference (load-bearing) | `memforge resolve <topic>` binary, ships in the canonical reference package. |
+| CLI reference (load-bearing) | `memforge-resolve <topic>` console script, ships in the canonical reference package. (Currently a standalone console script, not a `memforge` dispatcher subcommand; see `known-limitations.md` §"Reference CLI status".) |
 | Claude Code | Skill at `~/.claude/skills/consolidate-memory/SKILL.md` wrapping the CLI or implementing natively. |
 | Cursor / Continue.dev / Aider | Slash command or rule that runs the CLI. |
 | Plain shell / vim / emacs | Direct CLI invocation. |
@@ -734,7 +769,7 @@ The format is filesystem + git; trust establishment is operator-mediated out-of-
 1. Operator A initializes (`memforge init-operator` + `memforge init-store` for the first repo).
 2. Operator B initializes on their own machine.
 3. Operator A and Operator B exchange public-key fingerprints out-of-band (Signal / phone / in-person / verified email). This is standard PGP-trust-bootstrap; the spec does not invent a new primitive.
-4. Operator A: `memforge operator-registry add <operator-b-uuid> --pubkey-fingerprint <fpr>`. CLI verifies the fingerprint matches the pubkey material before adding.
+4. Operator A: `memforge operator-registry add --operator-uuid <operator-b-uuid> --operator-name "<operator-b-name>" --pubkey-fingerprint <fpr>`. All three are required flags. CLI verifies the fingerprint matches the pubkey material before adding.
 5. Operator A commits with prefix `memforge: operator-registry`; registry is signed by A; B's entry has `chain_index: 0`.
 6. Operator B clones the repo; B's adapter loads operator-registry signed by A; B sees A as trusted (B already trusts A's key) and themselves listed; B may write under their identity.
 
@@ -907,7 +942,7 @@ To bound O(N) cold-start cost, operator MAY publish a snapshot of the current re
 git commit --message "memforge: revocation-snapshot <hash>" --allow-empty
 ```
 
-Commit body contains the full current revocation set, signed by operator's long-lived key. Adapter walks git history from the latest snapshot forward (NOT from the beginning). *Snapshot canonical hash + ancestor-of-verified-head verification: v0.5.0.1 patch target.*
+Commit body contains the full current revocation set, signed by operator's long-lived key. Adapter walks git history from the latest snapshot forward (NOT from the beginning); the walk is bounded with caps on commits-walked + bytes-read as of v0.5.3 (`walk_revocation_set`). *Snapshot canonical hash + ancestor-of-verified-head verification remains a deferred hardening item.*
 
 ### Cross-instance revocation propagation (documented limitation)
 
@@ -922,7 +957,7 @@ Operator-facing boundary statements collected for v0.5.0 deployment:
 1. **Honest-operator assumption.** v0.5.0 trust model assumes operators publish revocation events promptly after compromise detection. Without trusted timestamping, coordinated backdating attacks are bounded but not fully prevented by the clock-skew guard. Recommended mitigation: NTP-synced clocks + server-signed receipt times (v0.5.x).
 2. **Software-only recovery-secret boundary.** Default v0.5.0 install is software-only filesystem-mode-protected. Does NOT protect against full-system compromise. Recommended mitigation: hardware-backed recovery-secret + offline backup on separate physical media.
 3. **Same-user shell malware.** FS-mode + uid-ownership checks bound this; an attacker who escalates to operator's uid has full-system compromise (out of v0.5.0 scope).
-4. **Sparse-checkout / shallow-clone revocation verification.** v0.5.0 ships with unsigned-revocation-commit acceptance in remote-fetch fallback mode. Documented as Known Limitation 2. Mitigation: use full-history mode until v0.5.0.1.
+4. **Sparse-checkout / shallow-clone revocation verification.** Remote-fetch fallback mode verifies revocation commits with TOFU + fast-forward-only + signature verification (§"Sparse-checkout / shallow-clone fallback verification mode"); the prior unsigned-revocation-commit acceptance is closed. The bounded git-log walk for the revocation set landed in v0.5.3 (caps on commits-walked + bytes-read). Operators who prefer signed-commit verification on a local clone use full-history mode.
 5. **Cross-instance revocation propagation lag.** Up to 1 hour TTL between instances in default config. Mitigation: high-stakes deployments single-instance until v0.6+ gossip.
 6. **Hardware-key recommendation for operator long-lived keys.** Spec recommends YubiKey / Secure Enclave / TPM-attested storage for production. v0.5.0 software-only reference is for low-stakes / dogfooding.
 7. **Recovery-secret backup mechanism.** Options for offline storage: USB key in a safe; printed QR code in fireproof storage; encrypted text on dedicated removable media. The recovery-secret must be available + uncompromised + physically separated from the signing-key machine for the key-compromise recovery procedure to function.
@@ -1083,7 +1118,7 @@ The `references_global` and `referenced_by_global` fields support cross-folder r
 
 ## Versioning
 
-**Current spec version**: 0.6.0.
+**Current spec version**: 0.6.1.
 
 The spec version lives in `spec/VERSION`. Breaking changes bump per semantic versioning applied to spec semantics:
 
@@ -1095,6 +1130,8 @@ v0.3.0 was a minor bump (new optional fields + rollup-subfolder formalization). 
 
 v0.6.0 is a minor bump: adds three OPTIONAL recall frontmatter fields (`triggers`, `always`, `do_not_inject`) and the §"Recall operation" contract. All three are optional, so every pre-v0.6.0 folder remains well-formed under v0.6.0 readers, and v0.6.0 folders remain readable by older tools (which ignore the unknown keys).
 
+v0.6.1 is a patch bump: adds the §"Recall-readiness lint" section (lint dimensions, always-set budget guidance, a normative cloud-dispatch safety posture, informative consolidation orchestration) and the §"Tier and recall (clarification, v0.6.1+)" note (a live `tier: detail` memory is recall-eligible; the `index`/`detail` split governs the session-start `MEMORY.md` hotlist, not query-driven recall). Additive and backward-compatible: no frontmatter or normative-contract change, so every v0.6.0 folder remains conformant under v0.6.1 readers.
+
 Adapters and tools SHOULD declare which spec version they target.
 
 ## Expected content sensitivity
@@ -1105,7 +1142,7 @@ The `sensitivity` and `access` frontmatter fields exist to let adapters make con
 
 Adapters MAY add encryption layers if they target a multi-developer or shared-workspace scenario, but the core format assumes plaintext-at-rest is acceptable for the content the format is designed to hold.
 
-## Not in scope for v0.5.1
+## Not in scope as of v0.6.1
 
 - Specific RBAC enforcement (adapter responsibility, not spec).
 - Encryption protocols (adapter responsibility).
@@ -1145,6 +1182,7 @@ Adapters MAY add encryption layers if they target a multi-developer or shared-wo
 - v0.4.0 , major bump: `uid`, `tier`, `tags`, `owner`, `status`, `created` required (was optional in v0.3.x). v0.3.x files load in degraded mode. Reader contract tightened for byte-match CI on generated `MEMORY.md`. New §"Multi-agent concurrency" section adds five frontmatter keys (`decision_topic`, `replaces`, `superseded_by`, `topic_aliases`, `ever_multi_member`), a snooze record (`.memforge/snoozes/<topic>.yaml`), a config file (`.memforge/config.yaml`), the resolve operation contract, the canonical reader-side competing-claim block, and a layered Tier 1 + Tier 2 audit rule set. Status enumeration is now strictly enforced (BLOCKER on any value outside the six listed). Sensitivity enforcement (`§"Sensitivity enforcement"`) adds three default-on, operator-disable-able checks (export-tier gate, DLP label/content cross-check, conformance fixtures) with a hard floor at `privileged`. Closes the v0.3.x §"Not in scope" deferral on multi-user concurrency.
 - v0.5.0 , minor bump: extends single-operator multi-agent format to multi-identity team-scale memory with cryptographic attribution and a real-time messaging substrate. Eight new sections: §"v0.5.0 surface map", §"Multi-identity primitives", §"Cryptographic attribution", §"Operator identity + cross-store references", §"Messaging adapter contract" (with subsections including the normative §"Receiver state", §"Connection security" mandating wss:// + per-operator strong auth, and circuit-breaker), §"Key lifecycle + revocation" (with mandatory cool-down on key rotation closing the rotation-as-privilege-escalation attack), §"Security considerations" (eleven enumerated boundary statements), §"Known limitations". New REQUIRED v0.5+ frontmatter: `identity` + `signature` (v0.4 frontmatter remains valid; v0.5 readers tag unsigned v0.4 memories as read-only-untrusted). WebSocket locked as v0.5.0 messaging substrate (OpenAI Responses API Feb 23 2026 launch alignment); multi-server hard-stop for v0.5.0. Sender-uid format `<operator-uuid>:<32-byte-hex>` mandatory; sender-sequence + signed checkpoints every 100 sequences or 24 hours. Signing-time-aware revocation verification + `first_seen_at` clock-skew guard (default ±10 min) close the coordinated-backdate attack class. `revoked_at` clock-skew guard closes the immortal-revocation attack. Recovery-secret filesystem mode (0600/0700) + uid-ownership check + SHA256 content-integrity check anchored in the signed operator-registry + mandatory backup acknowledgment; persistent startup WARN until hardware-backed install. Sparse-checkout / shallow-clone fallback uses TOFU + fast-forward-only + signature verification on revocation commits. Reference CLI binaries (`memforge init-operator`, `operator-registry`, `revoke-memories`, etc.) ship in v0.5.1. v0.4 folders remain well-formed under v0.5 readers. v0.5.0 ships with no BLOCKER-class known limitations; residual MAJORs + MINORs documented at `v0.5.0-known-limitations.md`.
 - v0.5.1 , patch bump: closes the v0.5.0 agent-session-attestation content-scope MAJOR with normative `nonce` + `expires_at` + `capability_scope` content (§"Agent session attestation content scope (v0.5.1+)") and closes 3 v0.5.0 MINORs: agent-session-id format regex (in §"Frontmatter additions (v0.5.0+)"); cross-cutting fail-closed posture documentation as a single 29-item operator reference (§"Cross-cutting fail-closed posture (v0.5.1+)"); privacy considerations subsection with 7 boundary statements + out-of-scope list (§"Privacy considerations (v0.5.1+)"). Reference CLI ships: `memforge init-operator`, `init-store`, `operator-registry add|verify|remove|fresh-start`, `rotate-key`, `revoke`, `revocation-snapshot`, `memories-by-key`, `revoke-memories`, `upgrade-v04-memories`, `revoke-cache-refresh`, `messaging-doctor`, `recovery-init`, `recovery-backup-confirm`, `attest-agent`. New integrity invariants 23-25 (agent-session attestation verification, capability-scope enforcement, agent-session-id format). v0.5.0 folders remain well-formed under v0.5.1 readers; v0.5.0 attestation files lacking v0.5.1 required content fields are accepted with one-time MAJOR `v05_attestation_incomplete_content` per file until re-issued via the v0.5.1 reference CLI.
-- v0.5.3 , patch bump: closes the 3 remaining MAJORs from the v0.5.2 retrospective threat-modeler pass. Registry-layer cool-down enforcement: `memforge.registry.verify_signing_key_acceptable` now refuses a signing key in cool-down regardless of CLI consumer; CLI-only enforcement was a bypass surface. Bounded git-log walk: `walk_revocation_set` now streams output line-by-line with caps on commits-walked + bytes-read (default 100k commits / 100 MB; operator-configurable). TOCTOU-safe read on every secure-file path: `_security.secure_read_text` + `secure_read_bytes` use `O_NOFOLLOW` + post-open fd `fstat` verification on POSIX; path-level verify on Windows. v0.5.2 folders remain well-formed under v0.5.3 readers; no spec-frontmatter or normative-contract regressions.
 - v0.5.2 , patch bump: closes 2 BLOCKERs + 1 MAJOR surfaced by the post-v0.5.1 retrospective code + spec panel (critic via gemini-pro + threat-modeler via gemini-pro) AND adds native Windows support via a platform-agnostic ACL-based restriction abstraction. Canonical-form Unicode NFC normalization MUST on signed envelopes (§"Signed envelope scope (normative)"); closes the repudiation vector where visually-identical inputs in different normalization forms produced different signatures. Seen-nonce set bounding promoted from MAY to SHOULD with explicit GC contract; closes the unbounded-set DoS. Reference implementation atomicity: `write_secure_yaml` + `write_secure_bytes` now use O_CREAT|O_EXCL + atomic rename to close the TOCTOU window between file create and chmod. **Cross-platform secure-file abstraction:** §"Operator-identity file (per-machine)" + integrity invariant 21 are restated platform-agnostically; POSIX mode 0600/0700 and Windows NTFS ACLs (via `icacls`) are both normative implementations of the "file restricted to current owner" contract. v0.5.1 folders remain well-formed under v0.5.2 readers; the Unicode normalization change is backward-compatible for any input that was already in NFC form (the common case for ASCII + standard composed Unicode).
+- v0.5.3 , patch bump: closes the 3 remaining MAJORs from the v0.5.2 retrospective threat-modeler pass. Registry-layer cool-down enforcement: `memforge.registry.verify_signing_key_acceptable` now refuses a signing key in cool-down regardless of CLI consumer; CLI-only enforcement was a bypass surface. Bounded git-log walk: `walk_revocation_set` now streams output line-by-line with caps on commits-walked + bytes-read (default 100k commits / 100 MB; operator-configurable). TOCTOU-safe read on every secure-file path: `_security.secure_read_text` + `secure_read_bytes` use `O_NOFOLLOW` + post-open fd `fstat` verification on POSIX; path-level verify on Windows. v0.5.2 folders remain well-formed under v0.5.3 readers; no spec-frontmatter or normative-contract regressions.
 - v0.6.0 , minor bump: query-triggered recall. Three new OPTIONAL frontmatter fields (`triggers`, `always`, `do_not_inject`) plus the §"Recall operation" section defining recall by frontmatter contract + post-conditions (UI-neutral; matching, index, and injection are reference-implementation + adapter concerns per the loading-semantics principle). Recall surfaces memory `description` text (never bodies), honors `sensitivity` / `access` + the live-set partition, and is fail-open-empty (never blocks the operation it serves). Reconciles with the reserved outbound `dynamic_supplement` field. Reference implementation: `memory-index-gen` emits a derived recall inverted-index artifact and a thin `memory-recall` reader does query-time matching for latency-sensitive per-query hooks. All fields optional, so pre-v0.6.0 folders remain well-formed and older tools ignore the new keys. New integrity invariant 26.
+- v0.6.1 , patch bump: adds the §"Recall-readiness lint" section (defines the lint operation by the dimensions it scores and a normative cloud-dispatch safety posture, NOT by a scoring algorithm; lint is advisory, read-only, and never a hard gate) plus the §"Tier and recall (clarification, v0.6.1+)" note (a live `tier: detail` memory is recall-eligible on the same terms as an `index`-tier memory; the `index`/`detail` split governs the session-start `MEMORY.md` hotlist, not query-driven recall). Reference implementation: the `memory-lint` reader scores recall-readiness + token cost, and `memory-audit` adds spec-mandated recall-field WARNs plus an advisory always-set budget WARN. No frontmatter or normative-contract change, so every v0.6.0 folder remains conformant under v0.6.1 readers.

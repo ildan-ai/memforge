@@ -283,3 +283,104 @@ def test_load_config_preserves_other_keys(tmp_path):
 def test_defaults_are_a_dict():
     assert isinstance(DEFAULTS, dict)
     assert "audit" in DEFAULTS and "dlp" in DEFAULTS
+
+
+def test_nullable_key_null_is_preserved(tmp_path):
+    """config-merge-01: a NULLABLE_KEYS key set to null is PRESERVED (gate off),
+    while a non-nullable key set to null reverts to its enforce-True default."""
+    from memforge.cli._config import NULLABLE_KEYS
+
+    assert "default_export_tier" in NULLABLE_KEYS
+    cfg_dir = tmp_path / ".memforge"
+    cfg_dir.mkdir()
+    (cfg_dir / "config.yaml").write_text(
+        "audit:\n"
+        "  default_export_tier: null\n"
+        "  enforce_sensitivity_export_gate: null\n",
+        encoding="utf-8",
+    )
+    cfg = load_config(start=tmp_path)
+    # Nullable key: null preserved.
+    assert cfg["audit"]["default_export_tier"] is None
+    # Non-nullable security flag: null reverts to the fail-safe default (True).
+    assert cfg["audit"]["enforce_sensitivity_export_gate"] is True
+
+
+# ---------------------------------------------------------------------------
+# config-01: DLP sensitivity parser agrees with the canonical YAML parser
+# ---------------------------------------------------------------------------
+
+
+def test_parse_frontmatter_flow_style_is_memforge_and_classified():
+    """Regression for config-01.
+
+    Flow-style frontmatter `{name: x, type: user, sensitivity: restricted}`
+    was read as is_memforge=False by the old hand-rolled regex, so the DLP
+    cross-check was SKIPPED entirely (is_memforge gate). The canonical parser
+    reads it correctly, closing the sensitivity_label_mismatch evasion.
+    """
+    text = "---\n{name: x, type: user, sensitivity: restricted}\n---\nbody\n"
+    is_mf, sens = parse_frontmatter_sensitivity(text)
+    assert is_mf is True
+    assert sens == "restricted"
+
+
+def test_parse_frontmatter_quoted_sensitivity_read_correctly():
+    """Regression for config-01: quoted `sensitivity: "restricted"` was read as
+    'internal' by the old regex (the quotes were captured), under-classifying
+    the file. The canonical parser strips the quotes."""
+    text = '---\nname: x\ntype: user\nsensitivity: "restricted"\n---\nbody\n'
+    is_mf, sens = parse_frontmatter_sensitivity(text)
+    assert is_mf is True
+    assert sens == "restricted"
+
+
+def test_parse_frontmatter_single_quoted_sensitivity():
+    text = "---\nname: x\ntype: user\nsensitivity: 'privileged'\n---\nbody\n"
+    is_mf, sens = parse_frontmatter_sensitivity(text)
+    assert is_mf is True
+    assert sens == "privileged"
+
+
+def test_cross_check_flow_style_label_mismatch_now_fires():
+    """End-to-end: a flow-style memory declaring public but containing an ARN
+    now correctly triggers the BLOCKER (was silently skipped pre-config-01)."""
+    text = "---\n{name: x, type: feedback, sensitivity: public}\n---\n\nbody"
+    result = check_sensitivity_mismatch(text, Path("x"), [_finding("aws_arn")])
+    assert result is not None
+    assert result.pattern == "sensitivity_label_mismatch"
+
+
+# ---------------------------------------------------------------------------
+# audit-helper-01: export-tier gate fails closed on unknown sensitivity
+# ---------------------------------------------------------------------------
+
+
+def test_export_tier_gate_unknown_sensitivity_fails_closed():
+    """Regression for audit-helper-01.
+
+    An unrecognized sensitivity (tier_rank -1) was <= any real export tier and
+    PASSED the gate. It must now fail closed: an unknown label cannot be
+    cleared for export.
+    """
+    msg = _export_tier_gate("secret", "restricted", True)
+    assert msg is not None
+    assert "unrecognized" in msg
+
+
+def test_export_tier_gate_known_below_still_passes():
+    assert _export_tier_gate("internal", "restricted", True) is None
+
+
+# ---------------------------------------------------------------------------
+# config-03: spec_version default is current, not stale 0.4.0
+# ---------------------------------------------------------------------------
+
+
+def test_default_spec_version_is_not_stale():
+    """Regression for config-03: the default spec_version a fresh repo inherits
+    must track the shipping package, not the old hardcoded 0.4.0."""
+    from memforge import __version__
+
+    assert DEFAULTS["spec_version"] != "0.4.0"
+    assert DEFAULTS["spec_version"] == __version__

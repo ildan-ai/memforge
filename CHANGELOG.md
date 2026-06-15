@@ -10,9 +10,49 @@ The version number tracked here is the **package / tooling** version. The on-dis
 
 The Contributor License Agreement infrastructure is counsel-blocked; external pull requests are paused until the CLA flow lands.
 
+## [0.7.0] - unreleased
+
+**Minor: new `memory-lint` quality CLI + a broad security/correctness hardening pass. Package 0.7.0 ships the spec-0.6.1 surface; the spec track is on its own SemVer line.** All new frontmatter and config keys are optional, so existing folders remain conformant.
+
+### Added
+
+- **`memory-lint`** (20th console script): a recall-readiness + token-cost quality analyzer, sibling to `memory-audit`. Audit is deterministic conformance (binary pass/fail); lint is graded quality: it scores how findable each memory is through the recall trigger model (collision-based, reusing the recall index's own derivation), and flags token-cost issues (oversized descriptions, an over-budget always-set, weak-recall always-set members, oversized index-tier bodies, `do_not_inject` candidates). Lint is READ-ONLY and never gates another operation. Cloud safety: local-only by default, metadata-only payload, body behind a stronger opt-in, a fail-closed secret pre-scan, AND sensitivity/access filtering (restricted/privileged memories are never dispatched to a cloud model). Suggestions are advisory only.
+- **`memory-audit` recall-field + budget checks**: spec-mandated WARNs for malformed `triggers`/`always`/`do_not_inject`, an advisory always-set budget WARN (configurable count + combined-description-char budget under `recall.*`), and a high-precision relative-date WARN scoped to `type: project`. All WARN-only (health), never integrity violations.
+
+### Security
+
+- **Path-traversal containment** across `resolve`, `rollup`, `index-gen` (slug validation + resolved-path containment; no arbitrary file delete/move/read outside the memory folder from hostile memory content).
+- **Recall + lint + dedup RBAC**: recall `_access_ok` is fail-closed for non-`team:` access labels (counsel/role); lint and dedup cloud dispatch honor sensitivity/access; `memory-audit` and DLP read sensitivity through the one canonical parser.
+- **Cryptographic attribution**: registry signatures verify against the registered key material in an ephemeral keyring (not the ambient GPG keyring), pin the exact fingerprint (RSA-4096 signing-subkey supported), bind the signing key id, and refuse to sign or load with a superseded key. The revocation-snapshot walk floor is disabled (full verified walk; pre-snapshot revocations stay enforced).
+- **DLP coverage** broadened (bare AWS secret with padding, 64-char hex, unquoted credentials, spaced SSN); the hardened `is_local_dispatcher` classifies by executable allowlist (extensible via `MEMFORGE_LOCAL_DISPATCHERS`) so a cloud command cannot pose as local; `agents-md-gen` DLP pre-scan fails closed; YAML emission escapes control characters.
+
+### Changed
+
+- **Portability**: `default_memory_paths()` is now the single source for all CLIs: `MEMFORGE_MEMORY_PATH` env override, then a grandfathered Claude Code layout if present, then the IDE-neutral `~/.memforge/{memory,global-memory}` default. OS-neutral user detection (`USER` or `USERNAME`). The package is IDE- and OS-agnostic out of the box.
+
+### Spec
+
+- spec/VERSION 0.6.0 -> 0.6.1. Added "Recall-readiness lint" (dimensions, always-set budget guidance, normative cloud-dispatch safety posture, informative consolidation orchestration) and a tier-vs-recall clarification (live `tier: detail` memories are recall-eligible; the index/detail split governs the `MEMORY.md` hotlist, not query-driven recall). Additive and backward-compatible.
+
+### CI
+
+- New `package-version-check` (asserts `__version__` == installed metadata == a matching CHANGELOG heading), a release-time `test` gate (pytest + version consistency on the exact tag commit), a deep verified secret-scan gating PRs, and conservative runtime-dependency upper bounds.
+
+### Spec compatibility
+
+- Minor + backward-compatible. Every pre-0.7.0 memory folder remains well-formed: all new frontmatter (`triggers`/`always`/`do_not_inject` from 0.6.0) and config keys (`recall.*`) are optional, and the new audit checks are WARN-only (never integrity violations). The package version (0.7.0) and the spec version (0.6.1, an additive lint section) move on independent SemVer tracks.
+
+### Pre-ship review
+
+- §1 spec-delta + §2 code threat-model: a multi-pass adversarial review (15 grounded reviewers across craftsmanship / extensibility / documentation / security, with an adversarial-verify pass on every high-severity finding, run to convergence over three iterations plus a targeted security re-verify). All BLOCKERs + confirmed MAJORs closed in-commit with regression tests; the deploy-critical security class (path traversal, recall RBAC, cryptographic-attribution trust root, revocation correctness) is fixed and re-verified.
+- §6 test gate: full suite 495 passed / 1 skipped (gpg-gated crypto exercised); all CLI `--help` smokes OK; clean wheel builds at 0.7.0 with the `memory-lint` console script.
+- Sanitization clean (operator paths, lockdown terms, dashes, hashtags) on the staged diff, the commit message, and new files.
+
 ## [0.6.1] - 2026-06-07
 
-**Docs + packaging patch. No spec change. No code change. spec/VERSION stays at 0.6.0.** Corrects publicly-rendered metadata on the v0.6.0 release: the PyPI package page and README badge row carried a broken Python-versions badge, a stale Status table, and a version-pinned DOI. PyPI artifacts are immutable per version, so the fixes ship as 0.6.1.
+**Docs + packaging patch (as tagged). At the v0.6.1 tag this was a package-only release: no spec change, no code change, spec/VERSION 0.6.0.** Corrects publicly-rendered metadata on the v0.6.0 release: the PyPI package page and README badge row carried a broken Python-versions badge, a stale Status table, and a version-pinned DOI. PyPI artifacts are immutable per version, so the fixes ship as 0.6.1.
+
+> Note for readers of the current tree: the **spec** version (an independent SemVer track per the header above) is bumped to 0.6.1 by the `## [Unreleased]` recall-readiness work, which also adds the `memory-lint` code surface. That spec-and-code work is NOT part of the tagged v0.6.1 package release described in this section; see `## [Unreleased]` for the in-flight changes the working tree carries.
 
 ### Packaging
 

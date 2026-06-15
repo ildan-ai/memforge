@@ -1,5 +1,5 @@
 # MemForge example taxonomy
-# Spec version: 0.3.0
+# Spec version: 0.6.1
 #
 # This is a STARTER taxonomy meant to be replaced with your project's
 # own controlled vocabulary. The goal of this file is to demonstrate the
@@ -19,7 +19,7 @@
 # vocabulary tags.
 
 version: 0.3.1
-spec_compatible: ">=0.3.0,<0.4.0"
+spec_compatible: ">=0.3.0,<0.7.0"
 
 namespaces:
 

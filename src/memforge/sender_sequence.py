@@ -6,13 +6,14 @@ checkpoints (MUST)", integrity invariant 20.
 
 from __future__ import annotations
 
+import contextlib
 import os
 import re
 import secrets
 import stat
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
-from typing import Optional
+from typing import Iterator, Optional
 
 import yaml
 
@@ -20,6 +21,45 @@ from memforge import crypto
 from memforge._security import secure_read_text
 from memforge.identity import IdentityError, check_fs_mode, now_iso, write_secure_yaml
 from memforge.registry import SENDER_SEQUENCE_SUBDIR, REGISTRY_DIRNAME
+
+try:
+    import fcntl  # POSIX advisory file locking
+except ImportError:  # pragma: no cover - Windows
+    fcntl = None  # type: ignore[assignment]
+
+
+@contextlib.contextmanager
+def exclusive_file_lock(target_path: Path) -> Iterator[None]:
+    """Hold an exclusive advisory lock across a read-modify-write on `target_path`.
+
+    seq-01 / agent-session-01: the per-sender sequence increment and the
+    seen-nonce record are read-modify-write cycles spanning a load + a separate
+    atomic write. The atomic write closes the WRITE race, but not the RMW race:
+    two concurrent same-uid writers can both read state N and both persist N+1,
+    minting duplicate sequence numbers (defeating the per-sender monotonic
+    anti-replay floor in SPEC.md:804) or clobbering a just-recorded nonce
+    (re-opening a replay window). We serialize the whole cycle on a `.lock`
+    sibling file via POSIX `flock` (LOCK_EX). On a platform without `fcntl`
+    (Windows) the lock is a best-effort no-op and the caller relies on the
+    single-writer-per-sender_uid assumption documented on the public helpers.
+    """
+    if fcntl is None:
+        # No advisory locking available (Windows). Single-writer-per-sender_uid
+        # is the documented assumption; proceed without a lock.
+        yield
+        return
+    lock_path = target_path.with_suffix(target_path.suffix + ".lock")
+    lock_path.parent.mkdir(parents=True, exist_ok=True)
+    fd = os.open(str(lock_path), os.O_CREAT | os.O_RDWR, 0o600)
+    try:
+        fcntl.flock(fd, fcntl.LOCK_EX)
+        yield
+    finally:
+        try:
+            fcntl.flock(fd, fcntl.LOCK_UN)
+        except OSError:
+            pass
+        os.close(fd)
 
 
 SENDER_UID_RE = re.compile(r"^[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}:[0-9a-f]{64}$")
@@ -79,20 +119,31 @@ def load_sender_sequence(memory_root: Path, sender_uid: str) -> dict:
 
 
 def increment_sequence(memory_root: Path, sender_uid: str) -> int:
-    """Atomically increment the per-sender sequence. Returns the new sequence.
+    """Increment the per-sender sequence under an exclusive lock. Returns the new value.
+
+    seq-01: the load -> +1 -> write cycle is serialized with an exclusive
+    advisory lock (`exclusive_file_lock`) on a `.lock` sibling so two concurrent
+    same-uid writers cannot both read sequence N and both persist N+1 (which
+    would mint duplicate sequence numbers and defeat the per-sender monotonic
+    anti-replay floor in SPEC.md:804). `write_secure_yaml` already makes the
+    WRITE atomic (O_CREAT|O_EXCL tmp + rename); the lock closes the
+    read-modify-write race that spans the load and the write. On a platform
+    without POSIX advisory locking the lock is a no-op and the documented
+    single-writer-per-sender_uid assumption applies.
 
     Detects uint64 overflow (per invariant 20) and raises `IdentityError`.
     """
-    data = load_sender_sequence(memory_root, sender_uid)
-    current = int(data.get("current_sequence", 0))
-    new_seq = current + 1
-    if new_seq >= (1 << 64):
-        raise IdentityError(
-            f"sender-sequence overflow for {sender_uid!r}; rotate to a new sender-uid"
-        )
-    data["current_sequence"] = new_seq
     path = sender_sequence_path(memory_root, sender_uid)
-    write_secure_yaml(path, data)
+    with exclusive_file_lock(path):
+        data = load_sender_sequence(memory_root, sender_uid)
+        current = int(data.get("current_sequence", 0))
+        new_seq = current + 1
+        if new_seq >= (1 << 64):
+            raise IdentityError(
+                f"sender-sequence overflow for {sender_uid!r}; rotate to a new sender-uid"
+            )
+        data["current_sequence"] = new_seq
+        write_secure_yaml(path, data)
     return new_seq
 
 
@@ -109,10 +160,29 @@ def should_publish_checkpoint(data: dict) -> bool:
     last_seq = int(last.get("sequence", 0))
     if current - last_seq >= CHECKPOINT_INTERVAL_SEQUENCES:
         return True
+    # sender-seq-02: distinguish "no parseable prior timestamp" (tamper /
+    # corruption) from "time elapsed". The old code returned True on
+    # ValueError/KeyError, silently forcing an extra checkpoint and MASKING
+    # tampering of a signed-store-state file (SPEC.md:789-804, FS 0600). Fail
+    # closed (raise IdentityError) on a malformed checkpoint timestamp, matching
+    # the module's otherwise fail-closed posture, instead of treating corruption
+    # as "time to checkpoint".
+    raw_ts = last.get("timestamp")
+    if raw_ts is None:
+        raise IdentityError(
+            "last checkpoint entry has no `timestamp`; sender-sequence checkpoint "
+            "metadata is corrupt or tampered. Fail-closed (sender-seq-02)."
+        )
     try:
-        last_ts = datetime.fromisoformat(last["timestamp"].replace("Z", "+00:00"))
-    except (ValueError, KeyError):
-        return True
+        last_ts = datetime.fromisoformat(str(raw_ts).replace("Z", "+00:00"))
+    except (ValueError, TypeError) as exc:
+        raise IdentityError(
+            f"last checkpoint `timestamp` {raw_ts!r} is not parseable ISO-8601; "
+            "sender-sequence checkpoint metadata is corrupt or tampered. "
+            "Fail-closed (sender-seq-02)."
+        ) from exc
+    if last_ts.tzinfo is None:
+        last_ts = last_ts.replace(tzinfo=timezone.utc)
     elapsed = datetime.now(timezone.utc) - last_ts
     return elapsed >= timedelta(hours=CHECKPOINT_INTERVAL_HOURS)
 

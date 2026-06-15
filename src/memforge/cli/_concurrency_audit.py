@@ -391,7 +391,17 @@ def tier2_findings(
     out: list[Finding] = []
     repo_top = _git_toplevel(target)
     if repo_top is None:
-        return out  # silent skip; tier 2 is optional
+        # Not a git repo, or the git binary is unavailable. Surface a WARN so a
+        # partner running --strict on a shallow CI checkout (or without git)
+        # does not read silence as "commit-log invariants passed" when they were
+        # never evaluated (closes recall-06).
+        out.append((
+            "WARN",
+            "Tier 2 commit-log audit SKIPPED: no git toplevel for "
+            f"{target} (not a git repo, or git unavailable); commit-log "
+            "invariants were NOT evaluated",
+        ))
+        return out
 
     # Build list of recent commits and their messages.
     try:
@@ -401,7 +411,13 @@ def tier2_findings(
              "--pretty=format:%H%x09%s"],
             capture_output=True, text=True, check=True,
         )
-    except subprocess.CalledProcessError:
+    except (subprocess.CalledProcessError, FileNotFoundError) as exc:
+        out.append((
+            "WARN",
+            "Tier 2 commit-log audit SKIPPED: `git log` failed for "
+            f"{repo_top} ({type(exc).__name__}); commit-log invariants were "
+            "NOT evaluated",
+        ))
         return out
 
     for line in log_proc.stdout.splitlines():

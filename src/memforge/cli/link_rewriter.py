@@ -1,11 +1,19 @@
-# memory-link-rewriter — link integrity + UID rewriting for MemForge folders.
+# memory-link-rewriter : link integrity + UID rewriting for MemForge folders.
 #
 # Spec: 0.4.0
 #
 # Subcommands:
-#   check   — validate UID uniqueness + link integrity (path links + mem:uid)
-#   rename  — move a file + rewrite all internal references to it
-#   upgrade — rewrite path-form internal links to mem:uid form (when target has uid)
+#   check        : validate UID uniqueness + link integrity (path links + mem:uid)
+#   rename       : move a file + rewrite all internal references to it
+#   rename-batch : move MANY files + rewrite all internal references in ONE pass;
+#                  reads a JSON payload [{"src": "...", "dst": "..."}, ...] from
+#                  --json or stdin. This is the cross-tool contract memory-rollup
+#                  shells out to (one folder index + one file walk per rollup).
+#                  Failure contract: on any per-move error rename-batch attempts
+#                  full rollback of the moves it already performed and returns rc=2;
+#                  a caller seeing rc!=0 should assume the move did NOT complete and
+#                  re-run `check` to confirm folder integrity before retrying.
+#   upgrade      : rewrite path-form internal links to mem:uid form (when target has uid)
 #
 # Lays the foundation for the index generator + memory-rollup tool, both
 # of which depend on stable UID resolution.
@@ -27,18 +35,16 @@ import argparse
 import os
 import re
 import sys
-from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Iterable
 
 from memforge.frontmatter import parse as _mf_parse, has_frontmatter as _mf_has_fm  # noqa: E402
+from memforge.paths import default_memory_paths  # noqa: E402
+from memforge.models import FolderIndex, Link, Memory  # noqa: E402
+from memforge.discovery import walk_memory_files  # noqa: E402
 
-USER = os.environ.get("USER", "")
-DEFAULT_PATHS = [
-    Path.home() / ".claude" / "projects" / f"{USER}-claude-projects" / "memory",
-    Path.home() / ".claude" / "global-memory",
-]
-ARCHIVE_DIRNAME = "archive"
+# Centralized in memforge.paths (env override -> grandfathered .claude layout if
+# present -> ~/.memforge). Keeps the package IDE/OS-neutral.
+DEFAULT_PATHS = default_memory_paths()
 
 # Markdown link regex: captures [text](target).
 # Skips images (![...](...)) and reference-style links ([text][ref]).
@@ -46,24 +52,9 @@ LINK_RE = re.compile(r"(?<!!)\[([^\]\n]+?)\]\(([^)\n]+?)\)")
 MEM_URI_RE = re.compile(r"^mem:([A-Za-z0-9_\-]+)$")
 
 
-@dataclass
-class Memory:
-    path: Path                    # absolute path on disk
-    relpath: Path                 # path relative to root (memory folder)
-    root: Path                    # the memory folder root
-    uid: str | None = None
-    name: str | None = None
-    tier: str | None = None
-    has_frontmatter: bool = False
-
-
-@dataclass
-class FolderIndex:
-    root: Path
-    memories: list[Memory] = field(default_factory=list)
-    by_uid: dict[str, Memory] = field(default_factory=dict)
-    by_relpath: dict[str, Memory] = field(default_factory=dict)
-    duplicate_uids: list[tuple[str, list[Memory]]] = field(default_factory=list)
+# Memory, FolderIndex, and Link are the canonical shared domain models
+# (memforge.models), imported above. This tool no longer forks its own
+# divergent copies (closes models-01 / discovery-02).
 
 
 # ----- frontmatter parsing -----
@@ -81,18 +72,10 @@ def has_frontmatter(text: str) -> bool:
 
 # ----- folder scan -----
 
-def walk_memory_files(root: Path) -> Iterable[Path]:
-    """Yield all .md files under root, excluding archive/ subtrees and MEMORY.md."""
-    for dirpath, dirnames, filenames in os.walk(root):
-        # prune archive
-        if ARCHIVE_DIRNAME in dirnames:
-            dirnames.remove(ARCHIVE_DIRNAME)
-        for fn in filenames:
-            if not fn.endswith(".md"):
-                continue
-            if fn == "MEMORY.md":
-                continue
-            yield Path(dirpath) / fn
+# walk_memory_files is the canonical discovery walk (memforge.discovery),
+# imported above. It prunes archive/ and MEMORY.md and yields filenames in
+# sorted order (stable-order contract), replacing the prior ad-hoc, unsorted
+# local copy (closes discovery-02).
 
 
 def index_folder(root: Path) -> FolderIndex:
@@ -114,6 +97,7 @@ def index_folder(root: Path) -> FolderIndex:
             name=fm.get("name"),
             tier=fm.get("tier"),
             has_frontmatter=has_frontmatter(text),
+            frontmatter=fm,
         )
         idx.memories.append(m)
         idx.by_relpath[str(m.relpath)] = m
@@ -130,13 +114,7 @@ def index_folder(root: Path) -> FolderIndex:
 
 # ----- link extraction + classification -----
 
-@dataclass
-class Link:
-    text: str
-    target: str
-    is_mem_uri: bool
-    uid: str | None  # set if is_mem_uri
-    span: tuple[int, int]  # (start, end) in source text
+# Link is the canonical shared model (memforge.models), imported above.
 
 
 def extract_links(text: str) -> list[Link]:
@@ -528,7 +506,31 @@ def main() -> int:
             except _json.JSONDecodeError as e:
                 print(f"error: invalid JSON for rename-batch: {e}", file=sys.stderr)
                 return 2
-            pairs = [(Path(item["src"]), Path(item["dst"])) for item in items]
+            # Validate the decoded shape before building Path pairs so a payload
+            # that parses but has the wrong structure (e.g. ["a","b"], {"src":1},
+            # or an item missing 'dst') errors cleanly instead of crashing with a
+            # KeyError/TypeError traceback (rename-batch-input-01).
+            if not isinstance(items, list):
+                print(
+                    "error: rename-batch payload must be a JSON list of "
+                    '{"src": "...", "dst": "..."} objects',
+                    file=sys.stderr,
+                )
+                return 2
+            pairs = []
+            for item in items:
+                if (
+                    not isinstance(item, dict)
+                    or not isinstance(item.get("src"), str)
+                    or not isinstance(item.get("dst"), str)
+                ):
+                    print(
+                        "error: each rename-batch item must be an object with "
+                        'string "src" and "dst" fields',
+                        file=sys.stderr,
+                    )
+                    return 2
+                pairs.append((Path(item["src"]), Path(item["dst"])))
             rc = max(rc, cmd_rename_batch(idx, pairs, dry_run=args.dry_run))
         elif args.cmd == "upgrade":
             rc = max(rc, cmd_upgrade(idx, dry_run=args.dry_run))

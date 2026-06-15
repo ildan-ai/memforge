@@ -32,7 +32,7 @@ v0.5.2+ supports macOS, Linux, and native Windows. POSIX implementations enforce
 ```bash
 pip install ildan-memforge
 memforge --version
-# memforge 0.5.2
+# memforge 0.6.1
 ```
 
 On macOS / Homebrew Python or any system with `EXTERNALLY-MANAGED` Python, prefer:
@@ -387,6 +387,18 @@ memory-recall "how do I rotate an operator key" --path ~/.claude/global-memory
 Recall surfaces `description` text only (never bodies), honors `sensitivity` / `access`, and is fail-open-empty (it never blocks the caller). Mark a memory `always: true` to surface it on every query; mark it `do_not_inject: true` to exclude it from recall (for example, content already loaded by another path). Explicit `triggers: [...]` refine matching; without them, triggers are derived from the name, tags, and description.
 
 For Claude Code, register `adapters/claude-code/hooks/memory_recall_hook.py` under `UserPromptSubmit` to inject matches automatically, and let the auto-commit hook keep the index fresh via `memory-recall --rebuild`. See `adapters/claude-code/README.md`.
+
+### Check recall-readiness (`memory-lint`)
+
+Recall only works if descriptions are findable. `memory-lint` scores how each memory would fare against the recall trigger model and flags token-cost issues. It is read-only and local-only by default:
+
+```bash
+memory-lint --path ~/.claude/global-memory
+```
+
+A memory scores low when its description is contentless ("Notes"), adds no distinctive term the name does not already carry, or shares only common terms with the rest of the corpus. Lint also flags over-budget always-sets, oversized descriptions/bodies, and (with `--injected-file CLAUDE.md`) memories that may already live in an always-loaded file. Pass `--json` for machine output, `--strict` to exit nonzero on weak memories in CI.
+
+Model-assisted suggestions (sharper description + triggers) are opt-in and off by default. To enable, point `--dispatcher` at a local model; cloud models require the explicit `--allow-cloud`, and shipping the memory body (not just metadata) requires the stronger `--allow-cloud-body`. A deterministic secret scan blocks dispatch fail-closed. Suggestions are advisory; lint never edits files.
 
 ## What you have at the end
 

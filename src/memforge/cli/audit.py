@@ -11,7 +11,6 @@ from __future__ import annotations
 
 import argparse
 import json
-import os
 import re
 import sys
 from datetime import datetime, timezone
@@ -31,11 +30,14 @@ POINTER_LINE_BYTE_CAP = 150
 
 
 def _default_paths() -> list[Path]:
-    user = os.environ.get("USER", "")
-    return [
-        Path.home() / ".claude" / "projects" / f"{user}-claude-projects" / "memory",
-        Path.home() / ".claude" / "global-memory",
-    ]
+    """Default memory folders via the centralized, IDE/OS-neutral resolver.
+
+    Existence-filtered for consistency with the sibling audit-deep / audit-log
+    tools (ext-01): a non-Claude-Code user gets [] and the no-folders path
+    rather than a per-folder '(directory does not exist, skipping)' banner."""
+    from memforge.paths import default_memory_paths
+
+    return [p for p in default_memory_paths() if p.exists()]
 
 
 _POINTER_RE = re.compile(r"\[[^\]]+\]\(([^)]+\.md)\)")
@@ -112,6 +114,16 @@ def _files_to_audit(folder: Path) -> list[str]:
     archive/). The orphan-pointer check still runs against
     `_disk_md_files()`, which only includes pointer-comparable files.
 
+    Depth contract: this is intentionally ONE level deep (top-level + first-
+    level subfolder), because the spec §"Rollup subfolders" rollup model is a
+    single `<topic>/` directory of detail files. This is shallower than the
+    rglob helpers (`_all_md_files_recursive`, the v0.4 concurrency
+    `collect_state`), which are fully recursive for cross-file invariants (uid
+    uniqueness, alias graphs) that must see the whole tree. A .md file two-plus
+    levels deep is therefore walked by those helpers but NOT frontmatter-
+    validated here; that is by design for the current rollup model (audit-03).
+    Switch to rglob (excluding archive/) if a deeper nesting convention lands.
+
     Returns sorted POSIX-relative paths.
     """
     out: list[str] = []
@@ -133,6 +145,77 @@ def _file_has_why(body: str) -> bool:
 
 def _file_has_apply(body: str) -> bool:
     return "**How to apply:**" in body
+
+
+# v0.6.0 recall-field shape checks. The spec (§"Recall operation") makes
+# `triggers`, `always`, and `do_not_inject` optional, but says a consumer MUST
+# fall back to safe defaults AND a tool SHOULD emit an audit WARN when a field
+# is present but malformed. These are WARN-only (health), never integrity
+# BLOCKERs: a malformed recall field degrades recall, it does not corrupt the
+# store.
+
+
+def _recall_field_warnings(fname: str, fm: dict) -> list[str]:
+    out: list[str] = []
+    if "triggers" in fm:
+        trig = fm.get("triggers")
+        if not (isinstance(trig, list) and all(isinstance(t, str) for t in trig)):
+            out.append(
+                f"{fname}: triggers_malformed (present but not a list of strings; "
+                "recall falls back to derived triggers)"
+            )
+    for field in ("always", "do_not_inject"):
+        if field in fm and not isinstance(fm.get(field), bool):
+            out.append(
+                f"{fname}: {field}_malformed (present but not a boolean; "
+                "recall treats it as the default false)"
+            )
+    return out
+
+
+# v0.6.1 relative-date heuristic. The spec (§"project") says project memories
+# MUST use absolute dates ("Thursday"/"next week" lose meaning as a memory
+# ages). This is a high-precision WARN scoped to type:project only, per the
+# design-panel guidance (deterministic, never fails audit, suggest an absolute
+# date rather than rewrite). Kept tight to avoid false positives on legitimate
+# rolling phrases ("current branch", "Q3 roadmap", "this quarter we close the
+# round"). "this <period>" is intentionally NOT matched: it is overwhelmingly a
+# legitimate rolling reference, not an aging absolute date (closes recall-02).
+# Only "last"/"next" (unambiguously past/future relative offsets) are flagged.
+# craft-04: covers number-WORDS, DIGITS ("2 weeks ago", "revisit in 3 days"),
+# and last/next + (period | weekday). Bare weekday names ("we ship Thursday")
+# are intentionally NOT matched: standalone weekday words are too common in
+# legitimate prose to flag at high precision, so this heuristic is a deliberate
+# high-precision subset and NOT a completeness guarantee (a clean run does not
+# prove "no relative dates present").
+_REL_DATE_RE = re.compile(
+    r"\b(yesterday|tomorrow"
+    r"|(last|next)\s+(week|month|quarter|year"
+    r"|mon(day)?|tue(s|sday)?|wed(nesday)?|thu(r|rs|rsday)?|fri(day)?|"
+    r"sat(urday)?|sun(day)?)"
+    r"|(a|an|one|two|three|four|five|six|seven|eight|nine|ten|few|several|\d+)\s+"
+    r"(day|days|week|weeks|month|months)\s+ago)\b",
+    re.IGNORECASE,
+)
+
+
+def _relative_date_warning(fname: str, ftype: str, body: str) -> Optional[str]:
+    if ftype != "project":
+        return None
+    m = _REL_DATE_RE.search(body)
+    if not m:
+        return None
+    return (
+        f"{fname} (project): relative date '{m.group(0)}' "
+        "(project memories should use absolute dates; they lose meaning as the "
+        "memory ages)"
+    )
+
+
+def _is_live_status(status: str) -> bool:
+    """Live set per spec §'Status semantics': active|proposed|gated (and the
+    absent default, which is active)."""
+    return status in ("", "active", "proposed", "gated")
 
 
 def _read_ledger(folder: Path) -> dict[str, str]:
@@ -170,12 +253,26 @@ def _export_tier_gate(
     sens_effective = sens if sens else "internal"
     sens_r = tier_rank(sens_effective)
     export_r = tier_rank(export_tier)
+    if sens_r < 0:
+        # Unrecognized sensitivity label: fail-closed. tier_rank returns -1 for
+        # an unknown tier, which would otherwise be <= any real export tier and
+        # silently clear the gate. An unknown label cannot be cleared for
+        # export (closes audit-helper-01).
+        return (
+            f"unrecognized sensitivity '{sens_effective}' cannot be cleared "
+            f"for export tier '{export_tier}'"
+        )
     if sens_r <= export_r:
         return None
     is_privileged = sens_effective == "privileged"
     if not enforce and not is_privileged:
         return None
-    suffix = " (privileged hard-floor)" if is_privileged and not enforce else ""
+    # Annotate EVERY privileged block with the hard-floor note, not only when
+    # enforcement is disabled. Privileged-always-blocks is the semantics firing
+    # in both cases; omitting the note under the default (enforce=True) left a
+    # partner unable to tell the file would block even with the gate disabled
+    # (closes recall-04).
+    suffix = " (privileged hard-floor)" if is_privileged else ""
     return (
         f"sensitivity '{sens_effective}' exceeds export tier "
         f"'{export_tier}'{suffix}"
@@ -186,12 +283,13 @@ def audit_target(
     target: Path,
     *,
     stale_days: int,
-    strict: bool,
     fix: bool,
     add_defaults: bool,
     json_out: bool,
     export_tier: Optional[str] = None,
     enforce_sensitivity_export_gate: bool = True,
+    max_always_count: int = 8,
+    max_always_description_chars: int = 600,
 ) -> tuple[int, Optional[dict]]:
     """Audit one folder. Returns (violation_count, optional json blob)."""
     print()
@@ -211,6 +309,10 @@ def audit_target(
     type_counts = {"user": 0, "feedback": 0, "project": 0, "reference": 0, "other": 0}
     sens_counts = {"public": 0, "internal": 0, "restricted": 0, "privileged": 0, "missing": 0}
     missing_sens_files: list[str] = []
+    # v0.6.1 always-set budget accumulation: (fname, description) for every live
+    # memory carrying always: true. Checked against the configured budget after
+    # the per-file loop.
+    always_live: list[tuple[str, str]] = []
     file_count = 0
 
     # ---- MEMORY.md index checks ----
@@ -341,6 +443,24 @@ def audit_target(
             if not _file_has_apply(body):
                 health.append(f"{fname} ({ftype}): missing **How to apply:** line")
 
+        # v0.6.0 recall-field shape + v0.6.1 relative-date heuristic (WARN-only).
+        for w in _recall_field_warnings(fname, fm):
+            health.append(f"[v0.6 WARN] {w}")
+        rel = _relative_date_warning(fname, ftype, body)
+        if rel:
+            health.append(f"[v0.6 WARN] {rel}")
+
+        # v0.6.1 always-set budget: accumulate live always:true memories.
+        # Per spec §"Recall operation" post-condition 1, the always-set is
+        # always:true AND do_not_inject:false (a do_not_inject memory is never
+        # recall-injected, so it costs nothing per query). Exclude it.
+        if (
+            fm.get("always") is True
+            and fm.get("do_not_inject") is not True
+            and _is_live_status(fm.get("status", ""))
+        ):
+            always_live.append((fname, desc))
+
         # Staleness: prefer the .last_used.json ledger when present, fall back
         # to mtime. The ledger is written by the read-tracker hook in the
         # Claude Code adapter.
@@ -355,11 +475,36 @@ def audit_target(
             except OSError:
                 mtime = 0
             if mtime and mtime < stale_cutoff:
-                mtime_iso = datetime.fromtimestamp(mtime).date().isoformat()
+                # Display in UTC to match the UTC framing of stale_cutoff and the
+                # ledger-branch 'Z' timestamps (craft-03). Local-time
+                # fromtimestamp could show a date off by a day near midnight and
+                # disagreed with the ledger branch.
+                mtime_iso = datetime.fromtimestamp(mtime, timezone.utc).date().isoformat()
                 if ledger:
                     stale.append(f"{fname} (mtime {mtime_iso}; never read)")
                 else:
                     stale.append(f"{fname} (mtime {mtime_iso})")
+
+    # ---- v0.6.1 always-set budget (advisory WARN, never BLOCKER) ----
+    # The always-set is injected on every recall query, so it is the recurring
+    # token cost. Spec §"Recall operation" asks operators to keep it small and
+    # bounded. This is a WARN by design: existing repos may already exceed the
+    # budget and MUST NOT fail audit on upgrade (design-panel decision; same
+    # rationale as v0.3->v0.4 degraded mode).
+    always_count = len(always_live)
+    always_chars = sum(len(d) for _, d in always_live)
+    if always_count > max_always_count:
+        health.append(
+            f"[v0.6 WARN] always-set has {always_count} live memories "
+            f"(budget {max_always_count}); every always:true memory is injected "
+            "on every recall query. Consider do_not_inject or demoting some."
+        )
+    if always_chars > max_always_description_chars:
+        health.append(
+            f"[v0.6 WARN] always-set descriptions total {always_chars} chars "
+            f"(budget {max_always_description_chars}); this is the per-query "
+            "recall floor. Tighten descriptions or shrink the always-set."
+        )
 
     # ---- v0.4 multi-agent concurrency invariants ----
     # Tier 1 (HEAD-pure) is always run; Tier 2 (commit-log walk) is best-effort.
@@ -438,8 +583,20 @@ def audit_target(
                         inserted = True
                         continue
                     new_lines.append(line)
-                fpath.write_text("\n".join(new_lines), encoding="utf-8")
-                print(f"      wrote sensitivity: internal to {f}")
+                # Only rewrite + report success when the closing fence was
+                # actually found and the field inserted. If the insertion loop
+                # never matched its closing `---` (the two fence-detection paths
+                # are not guaranteed identical), report the anomaly instead of
+                # claiming a write that did not change the file (closes
+                # recall-03). This also avoids needless mtime churn on no-ops.
+                if inserted:
+                    fpath.write_text("\n".join(new_lines), encoding="utf-8")
+                    print(f"      wrote sensitivity: internal to {f}")
+                else:
+                    print(
+                        f"      SKIPPED {f}: could not locate the frontmatter "
+                        "closing fence; sensitivity field NOT added"
+                    )
         else:
             print("    kept as-is (absence treated as internal at runtime).")
         print()
@@ -523,6 +680,10 @@ def main(argv: list[str] | None = None) -> int:
         export_tier = None
     enforce_export = bool(audit_cfg.get("enforce_sensitivity_export_gate", True))
 
+    recall_cfg = cfg.get("recall", {})
+    max_always_count = int(recall_cfg.get("max_always_count", 8))
+    max_always_description_chars = int(recall_cfg.get("max_always_description_chars", 600))
+
     targets: list[Path] = [pp.expanduser().resolve() for pp in args.path] or _default_paths()
 
     total_violations = 0
@@ -532,12 +693,13 @@ def main(argv: list[str] | None = None) -> int:
         nv, blob = audit_target(
             t,
             stale_days=args.stale_days,
-            strict=args.strict,
             fix=args.fix,
             add_defaults=args.add_defaults,
             json_out=args.json_out,
             export_tier=export_tier,
             enforce_sensitivity_export_gate=enforce_export,
+            max_always_count=max_always_count,
+            max_always_description_chars=max_always_description_chars,
         )
         total_violations += nv
         if blob is not None:

@@ -35,6 +35,8 @@ from typing import Any, Optional
 
 from memforge.frontmatter import has_frontmatter, parse as _mf_parse  # noqa: E402
 from memforge import recall as _recall  # noqa: E402  (v0.6.0 recall index)
+from memforge.recall import FRONTMATTER_READ_BYTES  # noqa: E402
+from memforge.cli._concurrency_audit import _is_valid_slug  # noqa: E402
 
 try:
     import yaml  # type: ignore
@@ -172,16 +174,20 @@ def discover_index_files(folder_root: Path) -> list[MemoryFile]:
     for p in sorted(folder_root.glob("*.md")):
         if p.name == "MEMORY.md":
             continue
+        if p.is_symlink():
+            continue  # never ingest a symlinked file
         mf = load_memory_file(p, folder_root)
         if mf and mf.is_active_index:
             out.append(mf)
     for sub in sorted(folder_root.iterdir()):
         if not sub.is_dir():
             continue
-        if sub.name in ("archive", ".git"):
+        if sub.is_symlink():
+            continue  # never descend a symlinked directory
+        if sub.name in ("archive", ".git", ".memforge"):
             continue
         readme = sub / "README.md"
-        if not readme.exists():
+        if not readme.exists() or readme.is_symlink():
             continue
         mf = load_memory_file(readme, folder_root)
         if mf and mf.is_active_index:
@@ -298,6 +304,105 @@ _CLAIM_LIVE_STATUSES = {"active", "proposed", "gated"}
 _CLAIM_BEGIN = "# memforge:competing-claims:begin"
 _CLAIM_END = "# memforge:competing-claims:end"
 _CLAIM_RESERVED_YAML_CHARS = set(":#&*!|>'\"%@`")
+# Characters that, when they START a scalar, change how YAML parses it (block /
+# flow / complex-key / reserved indicators). A value beginning with any of these
+# must be quoted even if it contains no reserved char elsewhere. Superset of the
+# old `-[{` guard: adds `,` (flow-entry separator) and `?` (complex-key
+# indicator), the two adv-01 break cases, plus the remaining indicators for
+# completeness. `:` / `#` / etc. are also caught anywhere by the reserved set.
+_CLAIM_LEADING_INDICATORS = set("-?:,[]{}#&*!|>'\"%@`")
+
+# Map of C-style escapes PyYAML recognizes inside a double-quoted scalar. Any
+# OTHER control char is emitted as a \xXX hex escape. This keeps the canonical
+# competing-claims block one-field-per-line and byte-stable even when a hostile
+# filename or frontmatter scalar carries an interior newline or other control
+# character (BLOCKER claimblock-01 / MAJOR yaml-escape-newline-02).
+_DOUBLE_QUOTE_ESCAPES = {
+    "\\": "\\\\",
+    '"': '\\"',
+    "\n": "\\n",
+    "\r": "\\r",
+    "\t": "\\t",
+    "\x00": "\\0",
+}
+
+
+# Plain scalars that YAML 1.1 re-resolves to a non-string type (null / bool /
+# int / float). When such a value is emitted UNQUOTED, a reader's yaml.safe_load
+# parses it to None / True / 123 / 16.0 instead of the original string, so a
+# hostile owner/uid like `no` or `0x10` is misrepresented to owner-correlation
+# / snooze heuristics (closes adv-03). These member fields are semantically
+# strings, so any plain form that retypes is forced to a quoted scalar.
+_YAML_NULL_BOOL = {
+    "null", "~", "none",
+    "true", "false", "yes", "no", "on", "off",
+    "y", "n",
+}
+_YAML_INT_RE = re.compile(r"^[-+]?(0b[0-1_]+|0o?[0-7_]+|0x[0-9a-fA-F_]+|[0-9][0-9_]*|[1-9][0-9_]*(:[0-5]?[0-9])+)$")
+_YAML_FLOAT_RE = re.compile(
+    r"^[-+]?(\.[0-9]+|[0-9][0-9_]*(\.[0-9_]*)?([eE][-+]?[0-9]+)?|"
+    r"[0-9][0-9_]*(:[0-5]?[0-9])+\.[0-9_]*|\.(inf|Inf|INF)|\.(nan|NaN|NAN))$"
+)
+# YAML 1.1 timestamp: a bare ISO date (YYYY-MM-DD) or full datetime re-types to
+# datetime.date / datetime under yaml.safe_load. The datetime forms always carry
+# a ':' (caught as a reserved char), but the bare-date form has no reserved char,
+# no leading indicator, and no control char, so it would slip through unquoted.
+# Member fields like `updated`/`created` are normally bare dates, so this is the
+# common case, not an edge case.
+_YAML_TIMESTAMP_RE = re.compile(
+    r"^[0-9][0-9][0-9][0-9]-[0-9][0-9]?-[0-9][0-9]?"
+    r"([Tt ][0-9][0-9]?:[0-9][0-9](:[0-9][0-9](\.[0-9]*)?)?"
+    r"([ \t]*(Z|[-+][0-9][0-9]?(:[0-9][0-9])?))?)?$"
+)
+
+
+def _resolves_to_non_string(s: str) -> bool:
+    """True if the plain (unquoted) scalar `s` would parse as a YAML
+    null/bool/int/float/timestamp rather than a string under yaml.safe_load.
+
+    The member fields of the competing-claims block (owner, uid, updated,
+    first_line, file_path) are semantically strings; any plain form that
+    retypes must be force-quoted so a reader round-trips them as strings.
+    """
+    if s.lower() in _YAML_NULL_BOOL:
+        return True
+    if _YAML_INT_RE.match(s):
+        return True
+    if _YAML_FLOAT_RE.match(s):
+        return True
+    if _YAML_TIMESTAMP_RE.match(s):
+        return True
+    return False
+
+
+def _has_control_char(s: str) -> bool:
+    """True if `s` contains any C0/C1 control character (including newline,
+    carriage return, tab, NUL, DEL). These must never be emitted into the
+    one-field-per-line competing-claims block as bare/single-quoted scalars."""
+    for c in s:
+        o = ord(c)
+        if o < 0x20 or o == 0x7F or 0x80 <= o <= 0x9F:
+            return True
+    return False
+
+
+def _double_quote_yaml(s: str) -> str:
+    """Emit `s` as a YAML double-quoted scalar with all control characters
+    escaped (\\n, \\r, \\t, \\0, or \\xXX). Backslash and double-quote are
+    also escaped. The result is a single physical line that re-parses to the
+    original string under yaml.safe_load."""
+    out = ['"']
+    for c in s:
+        if c in _DOUBLE_QUOTE_ESCAPES:
+            out.append(_DOUBLE_QUOTE_ESCAPES[c])
+            continue
+        o = ord(c)
+        if o < 0x20 or o == 0x7F or 0x80 <= o <= 0x9F:
+            out.append("\\x{:02X}".format(o))
+            continue
+        out.append(c)
+    out.append('"')
+    return "".join(out)
 
 
 def _yaml_escape(value: Any) -> str:
@@ -305,6 +410,12 @@ def _yaml_escape(value: Any) -> str:
     single-quoted only when the string contains reserved YAML characters,
     starts with whitespace, ends with whitespace, or starts with a leading
     `-`/`[`/`{`. Otherwise plain. Dates and bools are stringified.
+
+    Any value containing a control character (interior newline, CR, tab, NUL,
+    etc.) is forced into a DOUBLE-quoted, escaped form so a hostile filename or
+    block/folded frontmatter scalar cannot break the one-field-per-line,
+    byte-stable competing-claims block (single-quote folding is NOT safe for
+    arbitrary interior newlines).
     """
     if value is None:
         return "''"
@@ -315,10 +426,19 @@ def _yaml_escape(value: Any) -> str:
     s = str(value)
     if s == "":
         return "''"
+    if _has_control_char(s):
+        return _double_quote_yaml(s)
+    # Leading YAML indicator characters that change how a plain scalar parses.
+    # `-[{` start a block/flow node; `,` is a flow-entry separator; `?` is a
+    # complex-key indicator; the rest are reserved/flow indicators. A value that
+    # STARTS with any of these (e.g. a hostile first_line `,foo` or `? key`)
+    # would make the one-field-per-line competing-claims block unparseable,
+    # blinding a conforming reader to the competing claim (closes adv-01).
     needs_quote = (
         s != s.strip()
-        or s[0] in "-[{"
+        or s[0] in _CLAIM_LEADING_INDICATORS
         or any(c in _CLAIM_RESERVED_YAML_CHARS for c in s)
+        or _resolves_to_non_string(s)
     )
     if needs_quote:
         return "'" + s.replace("'", "''") + "'"
@@ -356,7 +476,16 @@ def _read_snooze(folder_root: Path, topic: str) -> Optional[dict[str, Any]]:
     """Return parsed snooze record if the topic has an active snooze, else None."""
     if not _HAVE_YAML:
         return None
+    # `topic` is attacker-influenceable memory content. Refuse a non-slug topic
+    # (e.g. a traversal string) before interpolating it into a filesystem path,
+    # so a crafted decision_topic cannot read and disclose an out-of-folder
+    # .yaml into the generated MEMORY.md.
+    if not _is_valid_slug(topic):
+        return None
+    snoozes_dir = (folder_root / ".memforge" / "snoozes").resolve()
     snooze_path = folder_root / ".memforge" / "snoozes" / f"{topic}.yaml"
+    if snooze_path.resolve().parent != snoozes_dir:
+        return None
     if not snooze_path.is_file():
         return None
     try:
@@ -376,6 +505,37 @@ def _read_snooze(folder_root: Path, topic: str) -> Optional[dict[str, Any]]:
     return record
 
 
+def _walk_decision_candidates(folder_root: Path):
+    """Yield sorted non-archive .md files under folder_root WITHOUT descending
+    symlinked directories.
+
+    Mirrors recall._iter_memory_files: os.walk(followlinks=False) so a
+    symlinked DIRECTORY placed under the memory root (by mistake or by an
+    attacker who can write into the store) is never descended, and symlinked
+    files are skipped. The prior `rglob("*.md")` followed directory symlinks on
+    Python 3.10-3.12 (the non-following behavior only landed in 3.13), so an
+    out-of-root file under a symlinked dir could be ingested and have its BODY
+    content serialized into the committed MEMORY.md competing-claims block
+    (closes idxgen-01). Reserved subtrees (archive/, .memforge/, .git/) are
+    pruned in place, and the global sort restores the deterministic order the
+    old rglob walk produced.
+    """
+    folder_root = Path(folder_root)
+    collected: list[Path] = []
+    for root, dirs, files in os.walk(folder_root, followlinks=False):
+        # Prune reserved subtrees in place (top-down walk).
+        dirs[:] = [d for d in dirs if d not in ("archive", ".memforge", ".git")]
+        root_path = Path(root)
+        for fn in files:
+            if not fn.endswith(".md") or fn == "MEMORY.md":
+                continue
+            p = root_path / fn
+            if p.is_symlink():
+                continue  # never ingest a symlinked file
+            collected.append(p)
+    return sorted(collected)
+
+
 def _collect_decision_groups(folder_root: Path) -> dict[str, list[dict[str, Any]]]:
     """Walk all .md files under folder_root (excluding MEMORY.md and archive/),
     parse frontmatter, group memories by decision_topic. Returns
@@ -383,13 +543,12 @@ def _collect_decision_groups(folder_root: Path) -> dict[str, list[dict[str, Any]
     Only live members (status in {active, proposed, gated}) are included.
     """
     groups: dict[str, list[dict[str, Any]]] = {}
-    for path in sorted(folder_root.rglob("*.md")):
-        if path.name == "MEMORY.md":
-            continue
-        if "archive" in path.parts:
-            continue
+    for path in _walk_decision_candidates(folder_root):
         try:
-            text = path.read_text(encoding="utf-8")
+            # Cap the read at the frontmatter head: a large non-memory file
+            # mistakenly named *.md must not be loaded whole into memory.
+            with path.open("r", encoding="utf-8", errors="ignore") as fh:
+                text = fh.read(FRONTMATTER_READ_BYTES)
         except OSError:
             continue
         if not has_frontmatter(text):
@@ -399,6 +558,11 @@ def _collect_decision_groups(folder_root: Path) -> dict[str, list[dict[str, Any]
             continue
         topic = fm.get("decision_topic")
         if not topic or not isinstance(topic, str):
+            continue
+        # Skip groups whose topic is not a valid slug rather than letting a
+        # traversal string reach a snooze-path interpolation downstream. The
+        # concurrency audit surfaces these as BLOCKERs separately.
+        if not _is_valid_slug(topic):
             continue
         status = fm.get("status")
         if status not in _CLAIM_LIVE_STATUSES:
@@ -428,19 +592,9 @@ def render_competing_claims_block(folder_root: Path) -> str:
             continue  # nothing to surface
         if len(members) < 2 and snooze is not None:
             continue  # snoozed but no live conflict; orphan-snooze handled by audit
-        members_sorted = sorted(
-            members,
-            key=lambda m: (m.get("updated", "") or ""),
-            reverse=True,
-        )
-        # Tie-break by uid ascending.
-        members_sorted = sorted(
-            members_sorted,
-            key=lambda m: (
-                "" if (m.get("updated") or "") else "zz",  # keep dated-first ordering
-            ),
-        )
-        # Two-key sort: updated DESC, uid ASC. Use a tuple key with reverse on first.
+        # Stable two-key sort: uid ASC first, then updated DESC. Because the
+        # second sort is stable, the final order is updated DESC with uid ASC as
+        # the tie-break.
         members_sorted = sorted(
             members,
             key=lambda m: (m.get("uid", "") or ""),
@@ -535,17 +689,11 @@ def _bullet(mf: MemoryFile) -> str:
 
 
 def default_paths() -> list[Path]:
-    out: list[Path] = []
-    home = Path.home()
-    user = os.environ.get("USER", "")
-    if user:
-        per_cwd = home / ".claude" / "projects" / f"{user}-claude-projects" / "memory"
-        if per_cwd.exists():
-            out.append(per_cwd)
-    glob = home / ".claude" / "global-memory"
-    if glob.exists():
-        out.append(glob)
-    return out
+    # Centralized in memforge.paths (env override -> grandfathered .claude layout
+    # if present -> ~/.memforge). Preserve the .exists() filter so we only return
+    # folders that actually exist on this host.
+    from memforge.paths import default_memory_paths
+    return [p for p in default_memory_paths() if p.exists()]
 
 
 def process(

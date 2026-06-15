@@ -66,6 +66,21 @@ def test_escape_bool_lowercase():
     assert _yaml_escape(False) == "false"
 
 
+def test_escape_date_typed_string_round_trips_as_str():
+    # A bare ISO date (the normal form of `updated`/`created`) must be quoted so
+    # a reader's yaml.safe_load does NOT retype it to datetime.date. These member
+    # fields are semantically strings.
+    import yaml
+
+    for value in ("2026-05-09", "2026-1-1", "2026-12-31T23:59:59Z", "2026-05-09 10:00:00"):
+        esc = _yaml_escape(value)
+        parsed = yaml.safe_load(f"k: {esc}")["k"]
+        assert isinstance(parsed, str), f"{value!r} retyped to {type(parsed).__name__}"
+        assert parsed == value
+    # a non-date string stays unquoted (no over-quoting)
+    assert _yaml_escape("owner-name") == "owner-name"
+
+
 # ---------- _truncate_first_line ----------
 
 
@@ -247,3 +262,100 @@ def test_canonical_key_order(tmp_path: Path):
         pos = first_block.find(k)
         assert pos > last_pos, f"key {k} out of order"
         last_pos = pos
+
+
+# ---------- control-char / newline escaping (BLOCKER claimblock-01 +
+#            MAJOR yaml-escape-newline-02) ----------
+
+import yaml  # noqa: E402
+
+
+def _reparse_block(block: str) -> list:
+    """Strip the BEGIN/END comment markers and yaml.safe_load the body.
+    Returns the parsed list-of-mappings. Raises if the block is unparseable."""
+    inner_lines = []
+    for line in block.splitlines():
+        if line.strip() in (
+            "# memforge:competing-claims:begin",
+            "# memforge:competing-claims:end",
+        ):
+            continue
+        inner_lines.append(line)
+    return yaml.safe_load("\n".join(inner_lines))
+
+
+def test_yaml_escape_forces_double_quote_on_newline():
+    """A value with an interior newline must emit a single-line double-quoted
+    scalar with the newline escaped as \\n, not a bare multi-line value."""
+    out = _yaml_escape("ev\nil.md")
+    assert "\n" not in out, "escaped value must be a single physical line"
+    assert out == '"ev\\nil.md"'
+    # And it must round-trip back to the original under yaml.safe_load.
+    assert yaml.safe_load(out) == "ev\nil.md"
+
+
+def test_yaml_escape_handles_cr_tab_nul():
+    for raw in ("a\rb", "a\tb", "a\x00b", "a\x1bb"):
+        out = _yaml_escape(raw)
+        assert "\n" not in out and "\r" not in out
+        assert yaml.safe_load(out) == raw
+
+
+def test_block_reparses_with_newline_filename(tmp_path: Path):
+    """BLOCKER claimblock-01: a hostile filename containing a newline must NOT
+    corrupt the whole competing-claims block. The full block must still
+    yaml.safe_load into a well-formed list, and the legit member survives."""
+    # Legit competing member.
+    _write(tmp_path, "good_a",
+           "uid: mem-a\nstatus: active\n"
+           "owner: mike\nupdated: 2026-05-08\n"
+           "decision_topic: t1\n")
+    # Hostile file whose NAME contains a literal newline, same topic so it joins
+    # the group as a second live member.
+    hostile_name = "ev\nil"
+    hostile_text = (
+        "---\n"
+        "name: hostile\n"
+        "description: fixture\n"
+        "type: feedback\n"
+        "uid: mem-b\nstatus: proposed\nowner: mike\n"
+        "updated: 2026-05-09\ndecision_topic: t1\n"
+        "---\n\nBody.\n"
+    )
+    (tmp_path / f"{hostile_name}.md").write_text(hostile_text, encoding="utf-8")
+
+    out = render_competing_claims_block(tmp_path)
+    # The whole block must re-parse cleanly (no ScannerError).
+    parsed = _reparse_block(out)
+    assert isinstance(parsed, list) and len(parsed) == 1
+    group = parsed[0]
+    assert group["decision_topic"] == "t1"
+    member_uids = {m["uid"] for m in group["members"]}
+    assert {"mem-a", "mem-b"} <= member_uids
+    # The newline-bearing file_path round-trips intact for the hostile member.
+    fps = [m["file_path"] for m in group["members"]]
+    assert any("\n" in fp for fp in fps), "newline must survive inside the scalar"
+
+
+def test_block_reparses_with_multiline_owner(tmp_path: Path):
+    """MAJOR yaml-escape-newline-02: a multiline `owner` (YAML block scalar in
+    hostile frontmatter) must not break the one-field-per-line block."""
+    _write(tmp_path, "a",
+           "uid: mem-a\nstatus: active\n"
+           "owner: mike\nupdated: 2026-05-08\n"
+           "decision_topic: t1\n")
+    # owner as a YAML block scalar -> parses to a string containing a newline.
+    _write(tmp_path, "b",
+           "uid: mem-b\nstatus: proposed\n"
+           "owner: |\n  line one\n  line two\n"
+           "updated: 2026-05-09\n"
+           "decision_topic: t1\n")
+    out = render_competing_claims_block(tmp_path)
+    parsed = _reparse_block(out)
+    assert isinstance(parsed, list) and len(parsed) == 1
+    owners = {m["uid"]: m["owner"] for m in parsed[0]["members"]}
+    assert "\n" in owners["mem-b"], "multiline owner must round-trip with its newline"
+    # The raw block must keep one field per physical line: each member's uid
+    # line (`    - uid: ...`) appears once, so the count equals the member count.
+    uid_lines = [ln for ln in out.splitlines() if ln.lstrip().startswith("- uid:")]
+    assert len(uid_lines) == 2

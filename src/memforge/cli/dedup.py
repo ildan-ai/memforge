@@ -12,6 +12,11 @@ Operators MUST NOT place PII, credentials, or other sensitive data in
 description fields. memory-dedup warns on descriptions > 50 characters
 (default) and refuses to ship descriptions at all in --redact-descriptions
 mode.
+
+Scope: TOP-LEVEL ONLY. collect_catalog walks only top-level *.md files and does
+NOT recurse into rollup subfolders, matching memory-cluster-suggest (and unlike
+memory-query / memory-lint, which recurse). Near-duplicates that live in a
+topic subfolder are out of dedup's scope (dedup-recursion-01).
 """
 
 from __future__ import annotations
@@ -28,7 +33,21 @@ from typing import Optional
 
 from memforge.frontmatter import parse  # noqa: E402
 
-DEFAULT_PATH = Path.home() / ".claude" / "global-memory"
+
+def _default_path() -> Path:
+    """Default dedup target: the global-memory folder from the centralized,
+    IDE/OS-neutral resolver, falling back to the per-cwd folder, then the
+    resolver's first entry. dedup scans one folder, so pick the global one."""
+    from memforge.paths import default_memory_paths
+
+    paths = default_memory_paths()
+    for p in paths:
+        if p.name == "global-memory":
+            return p
+    return paths[0] if paths else Path.home() / ".memforge" / "global-memory"
+
+
+DEFAULT_PATH = _default_path()
 
 # Dispatchers we know route to a local-only model. Anything else, in
 # --local-only mode, is rejected with a clear error. Operators bring
@@ -36,22 +55,36 @@ DEFAULT_PATH = Path.home() / ".claude" / "global-memory"
 # CLIs (ollama, llama.cpp, lm-studio) and a small allowlist of local-
 # model aliases. To add your own local-dispatcher pattern, set the
 # MEMORY_DEDUP_DISPATCHER environment variable or pass --dispatcher.
-LOCAL_DISPATCHER_PATTERNS = [
-    re.compile(r"\bollama\b"),
-    re.compile(r"\bllama\.cpp\b"),
-    re.compile(r"\blm-studio\b|\blms\b"),
-    re.compile(r"--model\s+(gemma2|qwen2|deepseek-coder|llama3|phi3|mistral|local-)"),
-]
+#
+# Dispatcher local/cloud classification lives in the shared _llm_dispatch
+# module (also used by memory-lint) and is executable-allowlist based, not a
+# substring heuristic, so a cloud command that merely mentions a local model
+# name cannot bypass the local-only gate. Re-exported here for back-compat.
+from memforge.cli._llm_dispatch import is_local_dispatcher  # noqa: E402,F401
+from memforge.recall import _access_labels, _access_ok, _sensitivity_ok  # noqa: E402
+
+# Cloud-egress sensitivity ceiling (dedup-sensitivity-02). Mirrors lint's
+# CLOUD_SENSITIVITY_CEILING and recall's default surfacing posture: only
+# memories at or below `internal` may have their description shipped to a CLOUD
+# dispatcher. A restricted/privileged memory, or one with a restricting `access`
+# label, has its description HARD-redacted regardless of --no-redact-descriptions
+# so a single restricted memory in a mostly-public folder cannot leak. SPEC
+# §"Expected content sensitivity": restricted/privileged content is out-of-bounds
+# for cloud export.
+CLOUD_SENSITIVITY_CEILING = "internal"
 
 
-def is_local_dispatcher(cmd: str) -> bool:
-    """Heuristic: does the dispatcher command target a local model?
-
-    Conservative: only patterns we recognize as local pass. Cloud-tier
-    aliases explicitly do NOT pass; the operator must opt in via
-    --allow-cloud-dispatcher.
-    """
-    return any(p.search(cmd) for p in LOCAL_DISPATCHER_PATTERNS)
+def cloud_egress_eligible(fm: dict) -> Optional[str]:
+    """Return None when this memory's description may be shipped to a CLOUD
+    dispatcher, or a machine-readable skip reason when it must not. Reuses
+    recall._sensitivity_ok / _access_ok so dedup's egress filter is identical to
+    recall and lint (no parallel heuristic)."""
+    sens = str(fm.get("sensitivity") or "internal").lower()
+    if not _sensitivity_ok(sens, CLOUD_SENSITIVITY_CEILING):
+        return "sensitivity_above_ceiling"
+    if not _access_ok(_access_labels(fm.get("access")), None):
+        return "access_restricted"
+    return None
 
 
 def _which(name: str) -> Optional[str]:
@@ -75,7 +108,12 @@ def default_dispatcher() -> str:
     return "no-local-dispatcher-found"
 
 
-def collect_catalog(folder: Path, redact_descriptions: bool, warn_threshold: int) -> tuple[list[Path], list[str], list[str]]:
+def collect_catalog(
+    folder: Path,
+    redact_descriptions: bool,
+    warn_threshold: int,
+    cloud_dispatch: bool = False,
+) -> tuple[list[Path], list[str], list[str]]:
     """Walk top-level .md files, extract name/type/description.
 
     Returns (file_paths, catalog_lines, warnings). When redact_descriptions
@@ -83,6 +121,16 @@ def collect_catalog(folder: Path, redact_descriptions: bool, warn_threshold: int
     construction. Warnings list flags any description longer than
     warn_threshold characters so the operator sees them on stderr before
     the dispatch.
+
+    Cloud-egress containment (dedup-sensitivity-02): when cloud_dispatch is True,
+    a memory whose `sensitivity` exceeds the ceiling OR which carries a
+    restricting `access` label has its description HARD-redacted regardless of
+    redact_descriptions, so the documented `--no-redact-descriptions
+    --allow-cloud-dispatcher` opt-in pair still cannot exfiltrate a restricted
+    memory's description. Each excluded file is named in the warnings list. Name
+    and type are still shipped (they are not the sensitive payload here; the
+    description body is); only the description is contained. The egress filter
+    mirrors recall._sensitivity_ok / _access_ok exactly.
     """
     files: list[Path] = []
     lines: list[str] = []
@@ -105,7 +153,17 @@ def collect_catalog(folder: Path, redact_descriptions: bool, warn_threshold: int
         if len(desc) > warn_threshold:
             warnings.append(f"  {f.name}: description is {len(desc)} chars (>{warn_threshold}); review for sensitive content")
 
-        if redact_descriptions:
+        # Cloud-egress sensitivity/access containment runs BEFORE the redaction
+        # flag, so it cannot be overridden by --no-redact-descriptions.
+        egress_skip = cloud_egress_eligible(fm) if cloud_dispatch else None
+        if egress_skip:
+            desc_to_ship = f"[redacted: {egress_skip}; not cloud-eligible]"
+            warnings.append(
+                f"  {f.name}: description withheld from cloud dispatch "
+                f"({egress_skip}); sensitivity/access label is above the "
+                f"cloud-egress ceiling"
+            )
+        elif redact_descriptions:
             desc_to_ship = "[redacted — pass --no-redact-descriptions to include]"
         else:
             desc_to_ship = desc
@@ -151,7 +209,13 @@ content. See SPEC.md §sensitivity-and-redaction.
 """,
     )
     parser.add_argument("--path", type=Path, default=DEFAULT_PATH,
-                        help="Memory folder to scan (default: ~/.claude/global-memory)")
+                        help="Memory folder to scan (default: the global-memory "
+                             "folder). Scope is TOP-LEVEL ONLY by design: dedup "
+                             "scans only top-level *.md and does NOT recurse into "
+                             "rollup subfolders (auth/, billing/, infra/, etc.). "
+                             "This differs from memory-query / memory-lint, which "
+                             "recurse. Near-duplicates inside a subfolder are out "
+                             "of scope.")
     parser.add_argument("--dispatcher", default=None,
                         help="Command that reads prompt on stdin, prints response on stdout")
     parser.add_argument("--allow-cloud-dispatcher", action="store_true",
@@ -187,10 +251,17 @@ content. See SPEC.md §sensitivity-and-redaction.
 
     redact = not args.no_redact_descriptions
 
+    # A cloud dispatch is one that left the local-only gate: the operator passed
+    # --allow-cloud-dispatcher AND the dispatcher is not a recognized local
+    # runner. Only then does the per-memory sensitivity/access egress filter
+    # apply (a local model never leaves the box). (dedup-sensitivity-02)
+    cloud_dispatch = args.allow_cloud_dispatcher and not is_local_dispatcher(dispatcher)
+
     files, catalog_lines, warnings = collect_catalog(
         target,
         redact_descriptions=redact,
         warn_threshold=args.description_warn_threshold,
+        cloud_dispatch=cloud_dispatch,
     )
     if not files:
         print(f"No memory files found in {target}")
@@ -212,6 +283,12 @@ content. See SPEC.md §sensitivity-and-redaction.
     catalog = "\n".join(catalog_lines)
     prompt = PROMPT_TEMPLATE.format(n=len(files), catalog=catalog)
 
+    # shell=True executes the OPERATOR-supplied dispatcher string verbatim
+    # (dedup-shell-injection-06). The prompt (which may carry hostile memory
+    # descriptions) is passed on STDIN, never interpolated into the command, so
+    # crafted memory content cannot inject shell. The dispatcher string itself
+    # comes from --dispatcher / MEMORY_DEDUP_DISPATCHER / probed PATH, all
+    # operator-controlled and trusted as such; treat env/flag values as trusted.
     try:
         proc = subprocess.run(
             dispatcher,

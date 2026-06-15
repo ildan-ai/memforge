@@ -25,6 +25,7 @@
 from __future__ import annotations
 
 import argparse
+import contextlib
 import getpass
 import hashlib
 import json
@@ -39,7 +40,75 @@ from typing import Any, Optional
 
 
 LOG_FILENAME = ".memforge-audit-log.jsonl"
+LOCK_FILENAME = ".memforge-audit-log.lock"
 SCHEMA = "memforge-audit-log/v1"
+
+
+@contextlib.contextmanager
+def _append_lock(folder: Path):
+    """Exclusive advisory lock around the audit-log read-modify-append window.
+
+    append_record reads the tail (to derive seq + prev_chain), computes the new
+    record, then opens the log "a" and writes. Without a lock, two agents
+    appending simultaneously both read the same tail, both compute
+    seq = last_seq + 1, and both write -- forking the hash chain into two
+    records with identical seq and prev_chain_sha256 (closes recall-02). This
+    serializes the critical section on a per-folder `.lock` sidecar.
+
+    fcntl.flock on POSIX; msvcrt.locking on Windows. If neither is available
+    (or the lock cannot be taken), the manager degrades to a no-op so the
+    append still proceeds -- the lock is a concurrency safeguard, not a
+    correctness gate (verify_chain still detects any resulting fork).
+    """
+    folder.mkdir(parents=True, exist_ok=True)
+    lock_path = folder / LOCK_FILENAME
+    lock_file = None
+    locked = False
+    try:
+        lock_file = lock_path.open("a+")
+        try:
+            import fcntl
+
+            fcntl.flock(lock_file.fileno(), fcntl.LOCK_EX)
+            locked = True
+        except ImportError:  # pragma: no cover - non-POSIX
+            try:
+                import msvcrt
+
+                lock_file.seek(0)
+                msvcrt.locking(lock_file.fileno(), msvcrt.LK_LOCK, 1)
+                locked = True
+            except Exception:  # pragma: no cover - best-effort on Windows
+                locked = False
+        except OSError:  # pragma: no cover - lock unsupported on this FS
+            locked = False
+        yield
+    finally:
+        if lock_file is not None:
+            if locked:
+                with contextlib.suppress(Exception):
+                    try:
+                        import fcntl
+
+                        fcntl.flock(lock_file.fileno(), fcntl.LOCK_UN)
+                    except ImportError:  # pragma: no cover - non-POSIX
+                        import msvcrt
+
+                        lock_file.seek(0)
+                        msvcrt.locking(lock_file.fileno(), msvcrt.LK_UNLCK, 1)
+            with contextlib.suppress(Exception):
+                lock_file.close()
+
+
+class AuditLogError(Exception):
+    """Raised when the audit log cannot be safely appended to.
+
+    The hash chain is tamper-evident only if every append links to the true
+    last record. When the final log line is corrupt, torn, or schema-
+    incomplete, we MUST refuse to append rather than silently re-anchor a new
+    chain (seq=1, empty prev) on top of an existing log (closes auditlog-01,
+    auditlog-02).
+    """
 
 
 def file_sha256(path: Path) -> Optional[str]:
@@ -138,6 +207,27 @@ def tail_record(folder: Path) -> Optional[dict]:
             return None
 
 
+def _log_has_content(log_path: Path) -> bool:
+    """True if the log file exists and holds at least one non-whitespace byte.
+
+    Used to distinguish a genuinely empty/missing log (safe to anchor a fresh
+    chain at seq=1) from a non-empty log whose tail could not be read (must
+    fail closed rather than silently re-anchor).
+    """
+    if not log_path.exists():
+        return False
+    try:
+        with log_path.open("rb") as f:
+            for chunk in iter(lambda: f.read(65536), b""):
+                if chunk.strip():
+                    return True
+    except OSError:
+        # Cannot read the file at all: treat as content-present and fail closed
+        # upstream rather than risk re-anchoring over an unreadable log.
+        return True
+    return False
+
+
 def append_record(
     folder: Path,
     op: str,
@@ -148,9 +238,50 @@ def append_record(
     meta: Optional[dict],
 ) -> dict:
     log_path = folder / LOG_FILENAME
+    with _append_lock(folder):
+        return _append_record_locked(folder, log_path, op, file, before_sha256,
+                                     after_sha256, operator, meta)
+
+
+def _append_record_locked(
+    folder: Path,
+    log_path: Path,
+    op: str,
+    file: Optional[Path],
+    before_sha256: Optional[str],
+    after_sha256: Optional[str],
+    operator: Optional[str],
+    meta: Optional[dict],
+) -> dict:
     last = tail_record(folder)
-    seq = (last["seq"] + 1) if last else 1
-    prev_chain = last["chain_sha256"] if last else ""
+    if last is None:
+        # tail_record returns None for BOTH an empty/missing log AND an
+        # unreadable (corrupt/torn) final line. Only the former is safe to
+        # anchor at seq=1; the latter must fail closed so we never re-anchor a
+        # new chain on top of an existing log (auditlog-01).
+        if _log_has_content(log_path):
+            raise AuditLogError(
+                f"refusing to append: the last record in {log_path} is "
+                "unreadable (corrupt or torn final line). The hash chain cannot "
+                "be extended safely. Inspect/repair the tail before appending."
+            )
+        seq = 1
+        prev_chain = ""
+    else:
+        # Schema-incomplete-but-parseable final line: defensive .get() (every
+        # other reader in this module uses .get()). A missing seq/chain_sha256
+        # is the same fail-closed case as a corrupt tail (auditlog-02).
+        last_seq = last.get("seq")
+        last_chain = last.get("chain_sha256")
+        if not isinstance(last_seq, int) or not isinstance(last_chain, str) or not last_chain:
+            raise AuditLogError(
+                f"refusing to append: the last record in {log_path} is missing "
+                "or has a malformed 'seq'/'chain_sha256' field. The hash chain "
+                "cannot be extended safely. Inspect/repair the tail before "
+                "appending."
+            )
+        seq = last_seq + 1
+        prev_chain = last_chain
 
     record = {
         "schema": SCHEMA,
@@ -232,15 +363,19 @@ def cmd_append(args) -> int:
             sys.stderr.write(f"error: invalid --meta JSON: {e}\n")
             return 2
 
-    rec = append_record(
-        folder,
-        op=args.op,
-        file=file_path,
-        before_sha256=before,
-        after_sha256=after,
-        operator=args.operator,
-        meta=meta,
-    )
+    try:
+        rec = append_record(
+            folder,
+            op=args.op,
+            file=file_path,
+            before_sha256=before,
+            after_sha256=after,
+            operator=args.operator,
+            meta=meta,
+        )
+    except AuditLogError as e:
+        sys.stderr.write(f"error: {e}\n")
+        return 1
     print(f"WROTE seq={rec['seq']} chain={rec['chain_sha256'][:16]}...")
     return 0
 
@@ -299,6 +434,22 @@ def cmd_export(args) -> int:
     return 0
 
 
+def _product_version() -> str:
+    """Single-source the product version for the CEF device-version field.
+
+    A SIEM keys on the CEF device-version; a hardcoded literal mislabels every
+    exported event and never tracks version bumps (closes auditdeep-05). Source
+    from the package __version__ (itself single-sourced from importlib
+    metadata), with a literal fallback for an uninstalled source tree.
+    """
+    try:
+        from memforge import __version__
+
+        return str(__version__)
+    except Exception:  # pragma: no cover - defensive
+        return "0.0.0"
+
+
 def _format_cef(rec: dict) -> str:
     ts = rec.get("ts", "")
     operator = rec.get("operator", "-")
@@ -307,24 +458,18 @@ def _format_cef(rec: dict) -> str:
     seq = rec.get("seq", 0)
     chain = rec.get("chain_sha256", "")
     return (
-        f"CEF:0|ILDAN|MemForge|0.3.0|{op}|memforge-audit|3|"
+        f"CEF:0|ILDAN|MemForge|{_product_version()}|{op}|memforge-audit|3|"
         f"rt={ts} suser={operator} fname={file} cs1={chain} "
         f"cs1Label=chainHash externalId={seq}"
     )
 
 
 def default_paths() -> list[Path]:
-    out: list[Path] = []
-    home = Path.home()
-    user = os.environ.get("USER", "")
-    if user:
-        per_cwd = home / ".claude" / "projects" / f"{user}-claude-projects" / "memory"
-        if per_cwd.exists():
-            out.append(per_cwd)
-    glob = home / ".claude" / "global-memory"
-    if glob.exists():
-        out.append(glob)
-    return out
+    """Default memory folders via the centralized, IDE/OS-neutral resolver
+    (existence-filtered)."""
+    from memforge.paths import default_memory_paths
+
+    return [p for p in default_memory_paths() if p.exists()]
 
 
 def main() -> int:

@@ -3,7 +3,15 @@ name: Release to PyPI
 on:
   push:
     tags:
-      - 'v*'
+      # Release tags only (v<digit>...). Publish is gated by FOUR in-repo
+      # controls: this tag filter; the `test` job (pytest + version-consistency
+      # run against the exact tag commit, since ci.yml never sees a tag ref);
+      # the "Verify pyproject version matches tag" step (a mismatched tag fails
+      # before build); and the `pypi` deployment environment on the publish job
+      # (configure required-reviewer protection rules on the environment in
+      # GitHub settings so a tag push alone cannot publish). Trusted publishing
+      # (OIDC) means no long-lived token is stored.
+      - 'v[0-9]*'
 
 permissions:
   contents: read
@@ -13,8 +21,44 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
+  test:
+    name: Test gate (pytest + version consistency)
+    runs-on: ubuntu-latest
+    # A tag ref does NOT trigger ci.yml (it runs only on push/PR to main), so
+    # the tag commit that actually publishes has never been tested by CI. This
+    # job re-runs the test suite and the version-consistency assertion against
+    # the exact tag commit, and build/publish `needs:` it. Do not remove: a
+    # green CI run on main earlier is not a guarantee the tag commit is sound.
+    steps:
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10  # v6.0.3
+      - uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405  # v6.2.0
+        with:
+          python-version: "3.11"
+      - name: Install package + dev deps
+        run: |
+          python -m pip install --upgrade pip
+          pip install -e '.[dev,dlp]'
+      - name: Run pytest
+        run: pytest -q
+      - name: Assert __version__, installed metadata, and CHANGELOG agree
+        shell: bash
+        run: |
+          meta=$(python -c "from importlib.metadata import version; print(version('ildan-memforge'))")
+          attr=$(python -c "import memforge; print(memforge.__version__)")
+          echo "metadata=$meta  __version__=$attr"
+          if [ "$meta" != "$attr" ]; then
+            echo "::error::memforge.__version__ ($attr) != installed metadata ($meta)"
+            exit 1
+          fi
+          if ! grep -qE "^## \[$meta\]" CHANGELOG.md; then
+            echo "::error::CHANGELOG.md has no '## [$meta]' heading for the shipping version"
+            exit 1
+          fi
+          echo "OK: version $meta consistent across metadata, __version__, and CHANGELOG"
+
   build:
     name: Build sdist + wheel
+    needs: test
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10  # v6.0.3
@@ -67,6 +111,13 @@ jobs:
         with:
           name: dist
           path: dist/
+      # skip-existing makes an idempotent re-run of the SAME good build safe
+      # (re-running this workflow on an already-published version is a no-op
+      # rather than a hard error). It is NOT a re-tag escape hatch: PyPI forbids
+      # overwriting a published filename, so if a defect is found AFTER publish,
+      # the fix MUST ship as a NEW patch version (e.g. 0.6.2), never the same
+      # version re-tagged. Re-tagging the same version after a content change
+      # would skip silently here and leave the broken first upload live.
       - uses: pypa/gh-action-pypi-publish@cef221092ed1bacb1cc03d23a2d87d1d172e277b  # v1.14.0
         with:
           skip-existing: true
