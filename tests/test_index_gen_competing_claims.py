@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import sys
 from pathlib import Path
 
 import pytest
@@ -301,6 +302,13 @@ def test_yaml_escape_handles_cr_tab_nul():
         assert yaml.safe_load(out) == raw
 
 
+@pytest.mark.skipif(
+    sys.platform == "win32",
+    reason="A newline in a filename is a valid POSIX path but is rejected by "
+    "Windows at the filesystem layer (OSError 22), so the hostile-filename "
+    "fixture cannot be created there. The newline-escaping logic itself is "
+    "covered platform-independently by test_yaml_escape_forces_double_quote_on_newline.",
+)
 def test_block_reparses_with_newline_filename(tmp_path: Path):
     """BLOCKER claimblock-01: a hostile filename containing a newline must NOT
     corrupt the whole competing-claims block. The full block must still
