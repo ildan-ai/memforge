@@ -65,6 +65,21 @@ This file tracks MemForge's defensive-publication artifacts: the citable archiva
   - Commit-level (the v0.6.1 tagged commit): `swh:1:rev:1ed9248d59819e00964886ad0286f574e15d825d`.
   - Snapshot-level: `swh:1:snp:c290470c870e72a515042a9937e5318d0c1202d9`.
 
+### v0.7.0
+
+- **Zenodo DOI:** [10.5281/zenodo.20695178](https://doi.org/10.5281/zenodo.20695178) (new version under the same concept DOI 10.5281/zenodo.20113963 as v0.5.0 + v0.5.3 + v0.5.6 + v0.6.1).
+- **Minted:** 2026-06-14.
+- **Resource type:** Software.
+- **License:** Apache-2.0.
+- **Bundle contents:** SPEC.md (spec_version 0.6.1); VERSION; taxonomy.yaml; known-limitations.md (living-doc snapshot at v0.7.0); CHANGELOG.md (full history through v0.7.0); LICENSE; README.md; full examples/ tree (commit-msg hook bash + PowerShell, auto-commit watcher bash + PowerShell, WebSocket scaffold, examples/recall/ surface).
+- **Bundle SHA-256:** `5217e6197944e288cf1fd228d2534a74e0e0104a51493f03fda4f1db8de1f824`
+- **PyPI artifacts:** wheel sha256 `e06c68183083faa7e23c14303ce2eb9e91de74b3b4ca57622a80bafc522659a2`; sdist sha256 `089e4cbb3abeb0578d1a30567c67450439c7ff048bd0b2b73f9a7160749009bb`.
+- **Maintainer note:** anchors the v0.7.0 package release (memory-lint quality CLI plus a security and correctness hardening pass). spec/VERSION is 0.6.1 in this bundle; the spec line moves on its own SemVer track (the additive lint section landed at 0.6.1). The v0.6.1 Zenodo record at DOI 10.5281/zenodo.20580544 remains the historical anchor for the v0.6 spec line.
+- **Software Heritage SWHIDs:** minted 2026-06-14 via save-code-now (request 2359659; ingestion succeeded, visit_status=full).
+  - Release-level (the v0.7.0 tag): `swh:1:rel:2bffd6724e08a1d80c368f4e6c3ecf3b4e701168`.
+  - Commit-level (the v0.7.0 tagged commit): `swh:1:rev:f09906d03241e56b8a7506b4f30a3747cb088514`.
+  - Snapshot-level: `swh:1:snp:f37220e4468588dba8edf32ab89b1876ca289272`.
+
 ## Channel 2 — Operator-brand timestamped disclosure
 
 ### v0.4.0
@@ -95,6 +110,7 @@ This file tracks MemForge's defensive-publication artifacts: the citable archiva
 | 0.5.6   | v0.5.6 | 2026-05-11          | Docs + examples patch: cross-platform commit-msg hook + auto-commit watcher (bash + PowerShell) + WebSocket scaffold (config example + Python relay-probe) |
 | 0.6.0   | v0.6.0 | 2026-06-07          | Minor spec bump: query-triggered recall (triggers/always/do_not_inject frontmatter + Recall operation spec contract); memory-recall reader + memory-index-gen --with-recall-index |
 | 0.6.1   | v0.6.1 | 2026-06-07          | Docs + packaging patch: PyPI trove classifiers (pyversions badge fix); README Status / CLI-count / tool-table corrections; DOI switched to concept DOI (no spec change) |
+| 0.7.0   | v0.7.0 | 2026-06-14          | Minor: memory-lint recall-readiness + token-cost quality CLI (20th console script) + security/correctness hardening (path-traversal containment, recall/lint/dedup RBAC, cryptographic-attribution trust root, broadened DLP); spec 0.6.1 lint section; signed tag + CycloneDX SBOM + pip-audit supply-chain gate |
 
 The continuous-prior-art commitment: every spec-bumping commit is tagged with semver; every tag has a corresponding GitHub release; release notes name the substantive additions. Each commit is timestamped + indexed by GitHub + walkable by examiner prior-art search tools.
 
