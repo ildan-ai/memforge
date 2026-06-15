@@ -10,7 +10,7 @@ The version number tracked here is the **package / tooling** version. The on-dis
 
 The Contributor License Agreement infrastructure is counsel-blocked; external pull requests are paused until the CLA flow lands.
 
-## [0.7.0] - unreleased
+## [0.7.0] - 2026-06-14
 
 **Minor: new `memory-lint` quality CLI + a broad security/correctness hardening pass. Package 0.7.0 ships the spec-0.6.1 surface; the spec track is on its own SemVer line.** All new frontmatter and config keys are optional, so existing folders remain conformant.
 
