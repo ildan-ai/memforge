@@ -102,9 +102,14 @@ class CommitDebouncer:
         # `memory: filesystem write` commit (mirrors resolve.py's scoped commit;
         # watch-01). A committed .gitignore in the memory folder remains the
         # belt-and-suspenders guard for anything under these pathspecs.
-        subprocess.call(
-            ["git", "-C", repo, "add", "-A", "--", "*.md", ".memforge"]
-        )
+        # Only pass the .memforge pathspec when it exists: git treats an
+        # unmatched pathspec as a hard error for the WHOLE `git add`, which would
+        # otherwise drop the *.md change too (and commit nothing) in a memory
+        # folder that has no .memforge/ dir yet.
+        pathspecs = ["*.md"]
+        if (self.repo / ".memforge").exists():
+            pathspecs.append(".memforge")
+        subprocess.call(["git", "-C", repo, "add", "-A", "--", *pathspecs])
         msg = f"memory: filesystem write ({now_utc()})"
         rc = subprocess.call(["git", "-C", repo, "commit", "-q", "-m", msg])
         if rc == 0 and not self.quiet:
