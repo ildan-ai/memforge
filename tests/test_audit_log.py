@@ -145,6 +145,99 @@ def test_verify_detects_dropped_record(tmp_path: Path, audit_log_module):
     assert errors
 
 
+# ---------- auditlog-01 / auditlog-02: fail-closed on unreadable/incomplete tail ----------
+
+
+def test_append_fails_closed_on_corrupt_tail(tmp_path: Path, audit_log_module):
+    """Regression for auditlog-01.
+
+    A torn/corrupt final line makes tail_record return None. The OLD code then
+    re-anchored a fresh chain (seq=1, empty prev) on top of an existing
+    multi-record log, silently severing the tamper-evident chain. The append
+    must now REFUSE (raise) rather than re-anchor.
+    """
+    audit_log_module.append_record(tmp_path, op="write", file=None, before_sha256=None,
+                                   after_sha256=None, operator="test", meta=None)
+    audit_log_module.append_record(tmp_path, op="edit", file=None, before_sha256=None,
+                                   after_sha256=None, operator="test", meta=None)
+    log_path = tmp_path / audit_log_module.LOG_FILENAME
+    with log_path.open("ab") as f:
+        f.write(b"{partial_garbage_no_newline")
+
+    import pytest
+    with pytest.raises(audit_log_module.AuditLogError):
+        audit_log_module.append_record(tmp_path, op="move", file=None, before_sha256=None,
+                                       after_sha256=None, operator="test", meta=None)
+
+
+def test_append_anchors_fresh_chain_on_empty_log(tmp_path: Path, audit_log_module):
+    """A genuinely empty/missing log is still safe to anchor at seq=1
+    (the fail-closed change must not break the legitimate first-append path)."""
+    rec = audit_log_module.append_record(tmp_path, op="write", file=None, before_sha256=None,
+                                         after_sha256=None, operator="test", meta=None)
+    assert rec["seq"] == 1
+    assert rec["prev_chain_sha256"] == ""
+
+
+def test_append_anchors_fresh_chain_on_whitespace_only_log(tmp_path: Path, audit_log_module):
+    """A log file containing only blank lines is effectively empty: anchor
+    rather than fail closed."""
+    log_path = tmp_path / audit_log_module.LOG_FILENAME
+    log_path.write_text("\n\n", encoding="utf-8")
+    rec = audit_log_module.append_record(tmp_path, op="write", file=None, before_sha256=None,
+                                         after_sha256=None, operator="test", meta=None)
+    assert rec["seq"] == 1
+
+
+def test_append_fails_closed_on_schema_incomplete_tail(tmp_path: Path, audit_log_module):
+    """Regression for auditlog-02.
+
+    A final line that is valid JSON but lacks seq/chain_sha256 (hand-edited or
+    foreign writer) must NOT crash with KeyError and must NOT re-anchor; it is
+    the same fail-closed case as a corrupt tail.
+    """
+    log_path = tmp_path / audit_log_module.LOG_FILENAME
+    log_path.write_text('{"op":"write","ts":"x"}\n', encoding="utf-8")
+
+    import pytest
+    with pytest.raises(audit_log_module.AuditLogError):
+        audit_log_module.append_record(tmp_path, op="edit", file=None, before_sha256=None,
+                                       after_sha256=None, operator="test", meta=None)
+
+
+def test_cmd_append_returns_nonzero_on_corrupt_tail(tmp_path: Path, audit_log_module):
+    """The CLI append path surfaces the fail-closed error as a nonzero exit,
+    not an uncaught traceback."""
+    audit_log_module.append_record(tmp_path, op="write", file=None, before_sha256=None,
+                                   after_sha256=None, operator="test", meta=None)
+    log_path = tmp_path / audit_log_module.LOG_FILENAME
+    with log_path.open("ab") as f:
+        f.write(b"{torn")
+
+    class _Args:
+        path = str(tmp_path)
+        file = None
+        before_sha256 = None
+        after_sha256 = None
+        compute_before = False
+        compute_after = False
+        operator = "test"
+        meta = None
+        op = "edit"
+
+    rc = audit_log_module.cmd_append(_Args())
+    assert rc == 1
+
+
+def test_cef_version_tracks_package_not_hardcoded(audit_log_module):
+    """Regression for auditdeep-05: the CEF device-version must be the live
+    package version, not a hardcoded 0.3.0."""
+    from memforge import __version__
+    cef = audit_log_module._format_cef({"op": "write", "seq": 1, "ts": "t", "operator": "o"})
+    assert f"|MemForge|{__version__}|" in cef
+    assert "|0.3.0|" not in cef
+
+
 def test_append_increments_seq_and_chains_prev(tmp_path: Path, audit_log_module):
     r1 = audit_log_module.append_record(tmp_path, op="write", file=None, before_sha256=None,
                                         after_sha256=None, operator="test", meta=None)

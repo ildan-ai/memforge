@@ -222,3 +222,42 @@ def test_apply_change_skips_unparseable_yaml(tmp_path: Path):
     f.write_text(original, encoding="utf-8")
     apply_change(f, {"uid": "mem-2026-05-08-x", "tier": "index"})
     assert f.read_text(encoding="utf-8") == original
+
+
+# ---------- cmd_run summary count (MINOR backfill-01) ----------
+
+
+def test_cmd_run_summary_matches_planned_count(tmp_path: Path, capsys, monkeypatch):
+    """The final summary 'would change' count is tracked from the single
+    plan_change pass, not recomputed by re-invoking plan_change three more
+    times per file. Regression for lifecycle/backfill-01 (redundant I/O +
+    latent None-deref). We assert the printed count matches the number of
+    files that need additions and that plan_change is not called again after
+    the planning loop."""
+    from memforge.cli import frontmatter_backfill as fb
+
+    folder = tmp_path / "memory"
+    folder.mkdir()
+    # Two minimal-frontmatter files that will need additions (no uid/tier/etc).
+    for n in ("a", "b"):
+        (folder / f"{n}.md").write_text(
+            f"---\nname: {n}\ndescription: d\n---\n\nBody.\n", encoding="utf-8"
+        )
+
+    # Count plan_change invocations; wrap the real function.
+    calls = {"n": 0}
+    real_plan = fb.plan_change
+
+    def counting_plan(path, root):
+        calls["n"] += 1
+        return real_plan(path, root)
+
+    monkeypatch.setattr(fb, "plan_change", counting_plan)
+
+    rc = fb.cmd_run([folder], apply=False, limit=0)
+    assert rc == 0
+    out = capsys.readouterr().out
+    # Both files need additions; summary reports 2.
+    assert "would change: 2" in out
+    # plan_change called exactly once per file (the planning loop), NOT 4x.
+    assert calls["n"] == 2, f"plan_change invoked {calls['n']} times (expected 2)"

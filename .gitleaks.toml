@@ -11,8 +11,12 @@
 useDefault = true
 
 [allowlist]
-description = "Allowlist for the DLP scanner source files: pattern regexes look like the secrets they detect."
+description = "Allowlist for DLP/secret-scanner source + their test fixtures: the pattern regexes and the test inputs look like the secrets they detect, but no real secret is present."
 paths = [
     '''src/memforge/cli/dlp_scan\.py''',
+    '''src/memforge/cli/lint\.py''',
     '''tools/memory-dlp-scan''',
+    '''tests/test_dlp_scan_coverage\.py''',
+    '''tests/test_lint\.py''',
+    '''tests/test_agents_md_gen\.py''',
 ]

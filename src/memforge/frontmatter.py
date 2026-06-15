@@ -43,14 +43,42 @@ def _stringify_dates(value: Any) -> Any:
 
 
 _OPEN = "---\n"
-_CLOSE_PATTERN = "\n---"
+
+
+def _close_fence_index(text: str) -> int:
+    """Return the index of the `\\n` that begins the closing fence line, or -1.
+
+    The close fence is `---` ALONE on its own line (SPEC §12-13), so we require
+    a `\\n---` followed by either a newline or end-of-file. A bare `\\n---`
+    substring (e.g. `\\n--- trailing text` or a 4-dash `\\n----`) is NOT a fence
+    and must not split the block, otherwise trailing text leaks into the body
+    (closes frontmatter-01).
+    """
+    start = len(_OPEN)
+    n = len(text)
+    while True:
+        idx = text.find("\n---", start)
+        if idx == -1:
+            return -1
+        after = idx + 4  # position just past "\n---"
+        if after == n or text[after] == "\n":
+            return idx
+        start = idx + 1
 
 
 def has_frontmatter(text: str) -> bool:
-    """True iff text starts with `---\\n` and contains a closing `\\n---`."""
+    """True iff text starts with `---\\n` and has a closing `---` on its own
+    line (`\\n---` followed by a newline or end-of-file).
+
+    Line endings are LF-normalized first so a CRLF-terminated file
+    (`\\r\\n---\\r\\n`) is recognized. The package's read paths open in text mode
+    (universal-newline translation), but a caller handing parse() a string from
+    a non-normalizing source (bytes decoded directly) would otherwise get a
+    silent no-parse (closes frontmatter-01)."""
+    text = text.replace("\r\n", "\n").replace("\r", "\n")
     if not text.startswith(_OPEN):
         return False
-    return text.find(_CLOSE_PATTERN, len(_OPEN)) != -1
+    return _close_fence_index(text) != -1
 
 
 def parse(text: str) -> tuple[dict[str, Any], str]:
@@ -58,14 +86,19 @@ def parse(text: str) -> tuple[dict[str, Any], str]:
 
     Returns (frontmatter_dict, body_str). When no frontmatter is present,
     returns ({}, text). YAML parsing uses safe_load (no arbitrary types).
+
+    Line endings are LF-normalized before splitting so a CRLF-terminated file
+    parses correctly (frontmatter-01); the returned body is therefore
+    LF-normalized, matching the package's text-mode read paths.
     """
     if not has_frontmatter(text):
         return {}, text
 
-    end = text.find(_CLOSE_PATTERN, len(_OPEN))
+    text = text.replace("\r\n", "\n").replace("\r", "\n")
+    end = _close_fence_index(text)
     block = text[len(_OPEN):end]
 
-    after = end + len(_CLOSE_PATTERN)
+    after = end + 4  # past "\n---"
     if after < len(text) and text[after] == "\n":
         after += 1
     body = text[after:]
@@ -84,9 +117,12 @@ def parse(text: str) -> tuple[dict[str, Any], str]:
 def render(frontmatter: dict[str, Any], body: str) -> str:
     """Serialize a frontmatter dict + body back to a memory file string.
 
-    YAML emitted with sort_keys=False, allow_unicode=True. List values
-    render in flow style (`[a, b, c]`) for compactness; multiline strings
-    use block style.
+    YAML emitted with sort_keys=False, allow_unicode=True, and
+    default_flow_style=False so the top-level mapping is ALWAYS block style
+    (one key per line), matching the spec (§frontmatter, block style) and every
+    hand-authored memory file. With the PyYAML default (None), a scalar-only
+    mapping auto-collapses to an inline flow line (`{name: x, type: feedback}`),
+    diverging from the on-disk contract (frontmatter-render-01).
     """
     if not frontmatter:
         return body
@@ -94,7 +130,7 @@ def render(frontmatter: dict[str, Any], body: str) -> str:
         frontmatter,
         sort_keys=False,
         allow_unicode=True,
-        default_flow_style=None,
+        default_flow_style=False,
         width=10_000,
     )
     return f"---\n{yaml_text}---\n{body}"

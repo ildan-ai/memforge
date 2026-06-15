@@ -36,7 +36,6 @@ import stat
 import subprocess
 import sys
 from pathlib import Path
-from typing import Optional
 
 IS_WINDOWS = sys.platform == "win32"
 
@@ -77,8 +76,47 @@ def restrict_dir_to_owner(path: Path, *, mode: int = 0o700) -> None:
         os.chmod(path, mode)
 
 
-def secure_read_text(path: Path, *, file_mode: int = 0o600, encoding: str = "utf-8") -> str:
-    """Open `path`, verify owner restriction ON THE FILE DESCRIPTOR, read text.
+def _posix_verify_parent_dir(path: Path, *, parent_mode: int) -> None:
+    """Verify `path`'s PARENT directory is restricted to the current owner (POSIX).
+
+    sec-01: the spec (integrity invariant 21 + §"Agent session attestation
+    content scope" / §"Sender / receiver") mandates "file mode 0600, parent
+    0700; adapters MUST verify modes + ownership at startup; reject on
+    mismatch / fail-closed". The fd-level read checks only the FILE; an
+    attestation / sender-sequence file that is correctly 0600 but lives in a
+    parent dir relaxed to 0750/0770/0777 (group-writable or world-traversable)
+    would otherwise pass the read-side verification, defeating the parent-0700
+    requirement and re-opening the same-host swap/observation surface the
+    parent-mode check exists to close. We stat the parent directory and reject
+    on mode or ownership mismatch (mirroring verify_owner_restricted / the
+    Windows branch which already checks `path.parent`).
+    """
+    parent = path.parent
+    try:
+        st = parent.stat()
+    except OSError as exc:
+        raise SecurityError(
+            f"secure read could not stat parent dir {parent}: {exc}. Fail-closed."
+        ) from exc
+    actual_mode = stat.S_IMODE(st.st_mode)
+    if actual_mode != parent_mode:
+        raise SecurityError(
+            f"{parent} (parent of {path.name}) mode is {oct(actual_mode)}, "
+            f"expected {oct(parent_mode)}. Fail-closed; parent dir is more "
+            f"permissive than the spec's owner-only 0700 requirement. "
+            f"Run `chmod {oct(parent_mode)[2:]} {parent}`."
+        )
+    if hasattr(os, "geteuid") and st.st_uid != os.geteuid():
+        raise SecurityError(
+            f"{parent} (parent of {path.name}) uid={st.st_uid} != effective "
+            f"uid={os.geteuid()}. Fail-closed; parent-dir ownership mismatch."
+        )
+
+
+def secure_read_text(
+    path: Path, *, file_mode: int = 0o600, parent_mode: int = 0o700, encoding: str = "utf-8"
+) -> str:
+    """Open `path`, verify owner restriction ON THE FILE DESCRIPTOR + PARENT, read text.
 
     Closes the TOCTOU window between `verify_owner_restricted(path)` and a
     subsequent `open(path, "r")`: a same-uid attacker could swap the file
@@ -88,11 +126,14 @@ def secure_read_text(path: Path, *, file_mode: int = 0o600, encoding: str = "utf
     1. POSIX: opens with `O_RDONLY | O_NOFOLLOW` (refuses if path is a
        symlink) + `os.fstat(fd)` checks mode + owner. The fd is bound to
        the file inode at open-time; subsequent path-level swaps do not
-       affect the read.
+       affect the read. It ALSO verifies the parent directory is mode
+       `parent_mode` (0700) + owned by the effective uid (sec-01): the
+       fd-level file check alone does not close the relaxed-parent-dir
+       surface the spec's parent-0700 requirement exists to close.
     2. Windows: opens normally + calls `verify_owner_restricted(path)` on
-       the path (Windows ACLs are not bound to a single inode the same
-       way; the path-level check is the closest equivalent + native
-       Windows lacks `O_NOFOLLOW`).
+       the path (which already checks `path.parent`'s ACL). Windows ACLs are
+       not bound to a single inode the same way; the path-level check is the
+       closest equivalent + native Windows lacks `O_NOFOLLOW`.
 
     Raises `SecurityError` on any deviation.
     """
@@ -101,12 +142,14 @@ def secure_read_text(path: Path, *, file_mode: int = 0o600, encoding: str = "utf
     if IS_WINDOWS:
         # Windows: path-level verification is what we have; the symlink-
         # swap surface is much smaller on NTFS because symlinks require
-        # admin or developer-mode privileges by default.
+        # admin or developer-mode privileges by default. verify_owner_restricted
+        # already checks both the file ACL and the parent-dir ACL.
         verify_owner_restricted(path)
         with open(path, "r", encoding=encoding) as f:
             return f.read()
 
-    # POSIX path: open with O_NOFOLLOW, verify fd, read.
+    # POSIX path: verify the parent dir, then open with O_NOFOLLOW, verify fd, read.
+    _posix_verify_parent_dir(path, parent_mode=parent_mode)
     flags = os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0)
     try:
         fd = os.open(str(path), flags)
@@ -139,14 +182,18 @@ def secure_read_text(path: Path, *, file_mode: int = 0o600, encoding: str = "utf
         raise
 
 
-def secure_read_bytes(path: Path, *, file_mode: int = 0o600) -> bytes:
-    """Same contract as `secure_read_text` but returns bytes (for binary content)."""
+def secure_read_bytes(path: Path, *, file_mode: int = 0o600, parent_mode: int = 0o700) -> bytes:
+    """Same contract as `secure_read_text` but returns bytes (for binary content).
+
+    Includes the same sec-01 POSIX parent-dir 0700 + ownership verification.
+    """
     if not path.exists():
         raise SecurityError(f"secure file missing: {path}")
     if IS_WINDOWS:
         verify_owner_restricted(path)
         with open(path, "rb") as f:
             return f.read()
+    _posix_verify_parent_dir(path, parent_mode=parent_mode)
     flags = os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0)
     try:
         fd = os.open(str(path), flags)
@@ -292,34 +339,16 @@ def _windows_restrict(path: Path) -> None:
     )
 
 
-def _windows_current_user_sid() -> str:
-    """Get current user's SID via `whoami /user /fo csv /nh`. Cached per-process.
-
-    `whoami` is a builtin Windows binary in `%SystemRoot%\\System32`. The
-    `/fo csv /nh` flags produce machine-parseable CSV with no header.
-    Output shape: `"DOMAIN\\user","S-1-5-21-..."`.
-    """
-    global __CURRENT_USER_SID_CACHE
-    if __CURRENT_USER_SID_CACHE is not None:
-        return __CURRENT_USER_SID_CACHE
-    proc = subprocess.run(
-        ["whoami", "/user", "/fo", "csv", "/nh"],
-        check=True,
-        capture_output=True,
-        text=True,
-    )
-    # Output: "DOMAIN\user","S-1-5-21-..."
-    parts = [p.strip().strip('"') for p in proc.stdout.strip().split(",")]
-    sid = next((p for p in parts if p.startswith("S-1-")), None)
-    if sid is None:
-        raise SecurityError(
-            f"could not resolve current user SID via whoami. Got: {proc.stdout!r}"
-        )
-    __CURRENT_USER_SID_CACHE = sid
-    return sid
-
-
-__CURRENT_USER_SID_CACHE: Optional[str] = None
+# sec-07: `_windows_current_user_sid()` + its `__CURRENT_USER_SID_CACHE`
+# module-global were removed. They were dead code on the verification path:
+# `_windows_verify` deliberately does NOT require the current user's SID to be
+# literally listed in the ACL (see the comment block at the end of
+# `_windows_verify`), so the resolver was never called in the shipped flow.
+# A defined-but-unused SID resolver next to the verification logic is a
+# maintainability trap (invites a future maintainer to assume a current-user-
+# presence check is enforced when it is not). The two existing tests that reset
+# `sec.__CURRENT_USER_SID_CACHE = None` tolerate the attribute's absence via
+# setattr; no production code references it.
 
 
 # SDDL ACE parser. Each ACE has shape (type;flags;rights;objectGUID;
@@ -339,7 +368,13 @@ _SDDL_ALIAS_TO_SID = {
     "NU": "S-1-5-2",        # NETWORK
     "BA": "S-1-5-32-544",   # BUILTIN\Administrators (not in forbidden list, but parseable)
     "SY": "S-1-5-18",       # LOCAL SYSTEM (not in forbidden list)
-    "LA": "S-1-5-21-...-500",  # local Administrator (template; not used)
+    # sec-06: the "LA" (local Administrator) entry was removed. Its value was a
+    # literal placeholder template `S-1-5-21-...-500` containing `...`, which is
+    # NOT a real SID. An icacls /save ACE using the LA alias would have resolved
+    # to that fabricated string, which (because it starts with `S-1-`) is treated
+    # as a real SID and silently passes the forbidden-SID denylist instead of
+    # surfacing as UNKNOWN-SDDL-TRUSTEE. Dropping it lets an LA trustee fall
+    # through to the conservative UNKNOWN-SDDL-TRUSTEE branch in _sddl_to_sids.
 }
 
 _ACE_RE = re.compile(

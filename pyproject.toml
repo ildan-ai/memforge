@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "ildan-memforge"
-version = "0.6.1"
+version = "0.7.0"
 description = "MemForge: portable, agent-neutral persistent memory for coding agents (ILDAN)."
 readme = "README.md"
 license = { text = "Apache-2.0" }
@@ -24,8 +24,11 @@ classifiers = [
     "Topic :: Software Development :: Libraries",
 ]
 dependencies = [
-    "PyYAML>=6.0",
-    "watchdog>=4.0",
+    # Upper bounds pin the partner install to the major lines CI exercises, so a
+    # future major release cannot break a clean `pip install` outside the tested
+    # API surface. Raise the ceiling when CI validates the next major.
+    "PyYAML>=6.0,<7",
+    "watchdog>=4.0,<7",
 ]
 
 [project.optional-dependencies]
@@ -52,6 +55,7 @@ memory-dedup = "memforge.cli.dedup:main"
 memory-dlp-scan = "memforge.cli.dlp_scan:main"
 memory-frontmatter-backfill = "memforge.cli.frontmatter_backfill:main"
 memory-index-gen = "memforge.cli.index_gen:main"
+memory-lint = "memforge.cli.lint:main"
 memory-link-rewriter = "memforge.cli.link_rewriter:main"
 memory-preamble-extract = "memforge.cli.preamble_extract:main"
 memory-query = "memforge.cli.query:main"

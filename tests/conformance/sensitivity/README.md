@@ -30,7 +30,7 @@ Run the conformance suite against your secure-mode adapter to confirm it
 honors the spec's sensitivity rules:
 
 ```bash
-pytest tests/conformance/sensitivity/ -v
+pytest tests/test_conformance_sensitivity.py -v
 ```
 
 If your adapter targets a non-secure-mode profile you MAY skip

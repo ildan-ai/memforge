@@ -9,7 +9,19 @@ from memforge.paths import default_memory_paths, ARCHIVE_DIRNAME
 from memforge.discovery import walk_memory_files, is_memory_file
 from memforge.models import Memory, FolderIndex, Link
 
-__version__ = "0.6.0"
+# Single-source the version from installed package metadata so __version__,
+# the PyPI artifact, and `pip show` can never drift. The literal fallback is
+# only used when running from an uninstalled source tree (e.g. PYTHONPATH=src
+# in CI) and is kept in lockstep with pyproject at release time.
+try:  # pragma: no cover - trivial metadata lookup
+    from importlib.metadata import PackageNotFoundError, version as _pkg_version
+
+    try:
+        __version__ = _pkg_version("ildan-memforge")
+    except PackageNotFoundError:
+        __version__ = "0.7.0"
+except ImportError:  # pragma: no cover - importlib.metadata always present on 3.10+
+    __version__ = "0.7.0"
 
 __all__ = [
     "parse",

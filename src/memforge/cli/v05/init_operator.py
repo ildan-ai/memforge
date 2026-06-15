@@ -7,6 +7,7 @@ procedure for multi-operator deployments".
 from __future__ import annotations
 
 import argparse
+import re
 import sys
 
 from memforge import crypto
@@ -16,6 +17,9 @@ from memforge.identity import (
     generate_uuidv7,
     save_operator_identity,
 )
+
+
+_FULL_FPR_RE = re.compile(r"^[0-9A-F]{40}$")
 
 
 def register(subparsers: argparse._SubParsersAction) -> None:
@@ -63,16 +67,34 @@ def cmd(args: argparse.Namespace) -> int:
             print(f"key generation failed: {exc}", file=sys.stderr)
             return 1
     elif args.gpg_fingerprint:
-        fingerprint = args.gpg_fingerprint.replace(" ", "").upper()
-        # Sanity check that the key is present in the local keyring.
-        matched = [k for k in crypto.gpg_list_secret_keys() if k["fingerprint"].endswith(fingerprint[-16:])]
+        supplied = args.gpg_fingerprint.replace(" ", "").upper()
+        # initop-04: require a full 40-char hex primary fingerprint. The old
+        # 16-char-suffix match accepted a short id (or a typo in the high bytes)
+        # and then PERSISTED the unvalidated user string, which silently broke
+        # every later signing call that used it as a signer identity. Require an
+        # exact, full-length match and store the keyring's CANONICAL value.
+        if not _FULL_FPR_RE.match(supplied):
+            print(
+                f"fingerprint {args.gpg_fingerprint!r} is not a 40-character hex primary "
+                "fingerprint. Pass the full fingerprint (`gpg --fingerprint <id>`), not a "
+                "short key id.",
+                file=sys.stderr,
+            )
+            return 2
+        matched = [
+            k
+            for k in crypto.gpg_list_secret_keys()
+            if (k.get("fingerprint") or "").upper() == supplied
+        ]
         if not matched:
             print(
-                f"fingerprint {fingerprint} not found in local gpg secret keyring. "
+                f"fingerprint {supplied} not found in local gpg secret keyring. "
                 "Import it first (`gpg --import`) or use --gen-key.",
                 file=sys.stderr,
             )
             return 1
+        # Store the keyring's canonical fingerprint, not the user-typed string.
+        fingerprint = matched[0]["fingerprint"]
     else:
         print(
             "either --gpg-fingerprint or --gen-key required. Run `memforge init-operator --help`.",
@@ -94,7 +116,12 @@ def cmd(args: argparse.Namespace) -> int:
     print(f"GPG fingerprint: {fingerprint}")
     print(f"identity file:   {path}  (mode 0600)")
     print()
+    # initop-nextsteps-01: init-store MUST come before recovery-init.
+    # recovery-init loads (and anchors into) an already-signed operator-registry
+    # and fails with "Run `memforge init-store` first" if none exists; it never
+    # creates the registry. Printing recovery-init first inverted the working
+    # flow and dead-locked a partner on the very first onboarding command.
     print("Next steps:")
-    print("  1. Run `memforge recovery-init` to install the recovery secret.")
-    print("  2. From your memory-root, run `memforge init-store` to bootstrap an operator-registry.")
+    print("  1. From your memory-root, run `memforge init-store` to bootstrap a signed operator-registry.")
+    print("  2. From the same memory-root, run `memforge recovery-init` to install + anchor the recovery secret.")
     return 0

@@ -121,3 +121,25 @@ def check_backup_acknowledged() -> None:
             "Run `memforge recovery-backup-confirm` after backing up "
             f"{RECOVERY_SECRET_PATH} to offline media."
         )
+
+
+def assert_recovery_preconditions(registry: dict, *, operator_uuid: str) -> None:
+    """THE startup gate: fail-closed unless BOTH recovery preconditions hold.
+
+    recovery-startup-01: SPEC.md §"Cross-cutting fail-closed posture" item 5 +
+    invariant 21 require adapters to REFUSE to load v0.5+ memories until BOTH:
+      (a) the on-disk recovery-secret SHA256 matches the registry anchor
+          (`verify_recovery_secret_integrity`), AND
+      (b) the backup-procedure acknowledgment is on file
+          (`check_backup_acknowledged`).
+
+    Previously recovery.py shipped these as two separate primitives with no
+    composed seam, pushing MUST-enforcement onto every adapter author (the exact
+    unverified-by-default trap `walk_revocation_set_verified` was refactored to
+    close). This is the single safe-by-default seam an adapter / reference load
+    path should call so the MUST is enforced in ONE place rather than re-derived
+    (and possibly half-forgotten) by every caller. Raises `RecoveryError`
+    (fail-closed) if either precondition fails.
+    """
+    verify_recovery_secret_integrity(registry, operator_uuid=operator_uuid)
+    check_backup_acknowledged()

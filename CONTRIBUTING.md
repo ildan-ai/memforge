@@ -4,7 +4,7 @@ Thanks for considering a contribution. This project is early; the scope is narro
 
 ## External PRs are paused
 
-> **External pull requests are currently paused** pending the Contributor License Agreement (CLA) infrastructure. The CLA template is counsel-blocked. The CLA flow will land in a v0.3.x patch release once counsel clears the template.
+> **External pull requests are currently paused** pending the Contributor License Agreement (CLA) infrastructure. The CLA template is counsel-blocked. The CLA flow will land in a future release once counsel clears the template; until then external PRs stay paused (the project is pre-1.0). Watch the repo or the GitHub release feed for the announcement.
 >
 > **In the meantime:**
 > - **Issues are open.** File bug reports and feature requests via the templates in `.github/ISSUE_TEMPLATE/`.
@@ -27,8 +27,8 @@ A Developer Certificate of Origin alone does not grant the relicense rights or t
 
 For internal-team commits today, and for external PRs once the CLA flow is live, every change must:
 
-- Run `tools/memory-audit --strict` against the test fixtures and pass.
-- Run `pytest` and pass (the test suite is being added in v0.3.x; see CHANGELOG `## [Unreleased]`).
+- Run `memory-audit --strict` (the installed console script; after `pip install -e .`) against the test fixtures and pass.
+- Run `pytest` and pass. The full test suite ships with the package (unit + conformance fixtures under `tests/`); keep it green and add coverage for any new behavior.
 - Add or update a CHANGELOG entry under `## [Unreleased]`.
 - If `spec/SPEC.md` or `spec/taxonomy.yaml` changes, bump `spec/VERSION` accordingly (SemVer track).
 - Keep the format-vs-loading distinction clean: anything that couples to a single agent (Claude Code, Cursor, Aider, Codex, GitHub Copilot Chat, etc.) belongs in `adapters/<agent>/`, not in `spec/` or `tools/`.

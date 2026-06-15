@@ -14,7 +14,6 @@ from __future__ import annotations
 
 import argparse
 import json
-import os
 import re
 import sys
 from dataclasses import dataclass, field
@@ -31,6 +30,7 @@ class Hit:
     folder: Path
     rel: str
     fm: dict = field(default_factory=dict)
+    body: str = ""
 
 
 def parse_frontmatter(text: str) -> dict:
@@ -52,10 +52,11 @@ def discover(folder: Path) -> list[Hit]:
             text = path.read_text(encoding="utf-8")
         except (OSError, UnicodeDecodeError):
             continue
-        fm = parse_frontmatter(text)
+        fm, body = _mf_parse(text)
         if not fm:
             continue
-        out.append(Hit(path=path, folder=folder, rel=path.relative_to(folder).as_posix(), fm=fm))
+        out.append(Hit(path=path, folder=folder,
+                       rel=path.relative_to(folder).as_posix(), fm=fm, body=body))
     return out
 
 
@@ -129,16 +130,30 @@ def matches(hit: Hit, args) -> bool:
         if u < cutoff:
             return False
     if args.text:
-        try:
-            text = hit.path.read_text(encoding="utf-8")
-        except (OSError, UnicodeDecodeError):
-            return False
-        if args.text.lower() not in text.lower():
+        # Match against selected field(s). Default scope is name + description +
+        # body, because the distinctive recall terms live in name/description
+        # (per the lint scoring model + SPEC §recall); searching only the body
+        # silently misses a memory whose term lives only in metadata, e.g.
+        # `--text cognito` against a name "Cognito auth rule" (query-text-01).
+        # `--in` narrows the scope; the original body-only behavior is
+        # `--in body`. Specific metadata fields are matched (not raw YAML) so the
+        # old `--text active` vs `status: active` collision worry does not return.
+        needle = args.text.lower()
+        scope = args.text_in or "name,description,body"
+        fields = {s.strip() for s in scope.split(",") if s.strip()}
+        haystacks: list[str] = []
+        if "name" in fields:
+            haystacks.append(str(fm.get("name", "")))
+        if "description" in fields:
+            haystacks.append(str(fm.get("description", "")))
+        if "body" in fields:
+            haystacks.append(hit.body)
+        if not any(needle in h.lower() for h in haystacks):
             return False
     return True
 
 
-def emit_markdown(hits: list[Hit]) -> str:
+def emit_markdown(hits: list[Hit], matched_topic: Optional[str] = None) -> str:
     lines: list[str] = []
     if not hits:
         return "(no matches)\n"
@@ -147,13 +162,21 @@ def emit_markdown(hits: list[Hit]) -> str:
     for h in hits:
         name = h.fm.get("name", h.path.stem)
         desc = h.fm.get("description", "")
-        topic = ""
         tags = h.fm.get("tags", [])
+        topic_values: list[str] = []
         if isinstance(tags, list):
             for t in tags:
                 if isinstance(t, str) and t.startswith("topic:"):
-                    topic = t.split(":", 1)[1]
-                    break
+                    topic_values.append(t.split(":", 1)[1])
+        # When the query filtered on --topic, label with the MATCHED topic so a
+        # multi-topic memory (e.g. topic:aws + topic:security matched via
+        # --topic security) is not mislabeled with whichever topic happened to
+        # come first. Otherwise join all topic tags rather than showing only the
+        # first (query-tag-substring-01).
+        if matched_topic and matched_topic in topic_values:
+            topic = matched_topic
+        else:
+            topic = ", ".join(topic_values)
         suffix = f" — *topic:{topic}*" if topic else ""
         if desc:
             lines.append(f"- [{name}]({h.rel}): {desc}{suffix}")
@@ -181,17 +204,11 @@ def emit_count(hits: list[Hit]) -> str:
 
 
 def default_paths() -> list[Path]:
-    out: list[Path] = []
-    home = Path.home()
-    user = os.environ.get("USER", "")
-    if user:
-        per_cwd = home / ".claude" / "projects" / f"{user}-claude-projects" / "memory"
-        if per_cwd.exists():
-            out.append(per_cwd)
-    glob = home / ".claude" / "global-memory"
-    if glob.exists():
-        out.append(glob)
-    return out
+    """Default memory folders via the centralized, IDE/OS-neutral resolver
+    (existence-filtered)."""
+    from memforge.paths import default_memory_paths
+
+    return [p for p in default_memory_paths() if p.exists()]
 
 
 def main() -> int:
@@ -212,7 +229,16 @@ def main() -> int:
     p.add_argument("--last-reviewed-after", help="last_reviewed after date (YYYY-MM-DD)")
     p.add_argument("--updated-within-days", type=int, help="Updated within N days")
     p.add_argument("--last-d", type=int, dest="last_d", help="Shorthand for updated within N days")
-    p.add_argument("--text", help="Substring match anywhere in file (case-insensitive)")
+    p.add_argument("--text", help="Case-insensitive substring match. Default scope "
+                                   "is name + description + body (the distinctive "
+                                   "recall terms live in name/description). Narrow "
+                                   "with --in.")
+    p.add_argument("--in", dest="text_in",
+                   help="Comma-separated --text scope: any of name,description,body "
+                        "(default: name,description,body). Use --in body for the "
+                        "prior body-only behavior. Specific metadata fields are "
+                        "matched, not raw YAML, so --text active does not hit "
+                        "status: active.")
     p.add_argument("--format", choices=("markdown", "json", "count"), default="markdown")
     p.add_argument("--limit", type=int, default=0, help="Cap result count (0 = no cap)")
     args = p.parse_args()
@@ -240,7 +266,7 @@ def main() -> int:
     elif args.format == "count":
         sys.stdout.write(emit_count(all_hits))
     else:
-        sys.stdout.write(emit_markdown(all_hits))
+        sys.stdout.write(emit_markdown(all_hits, matched_topic=args.topic))
     return 0
 
 

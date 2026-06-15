@@ -520,6 +520,85 @@ def test_registry_verify_signing_key_rejects_in_cooldown():
         reg_mod.verify_signing_key_acceptable(reg, "FPR-B")
 
 
+def test_registry_verify_signing_key_rejects_superseded_key():
+    """cooldown-active-01: a superseded KEY is not acceptable as a signing key.
+
+    Membership + cool-down alone is insufficient: a key rotated/removed out of
+    active status (no cool-down) must still be rejected by the natural seam an
+    adapter calls before honoring a write signature.
+    """
+    from memforge import registry as reg_mod
+    reg = {
+        "operators": [
+            {
+                "operator_uuid": "op-1",
+                "status": "active",
+                "public_keys": [
+                    {"key_id": "FPR-OLD", "status": "superseded"},
+                    {"key_id": "FPR-NEW", "status": "active"},
+                ],
+            }
+        ]
+    }
+    # Active key passes; superseded key is rejected even with no cool-down set.
+    reg_mod.verify_signing_key_acceptable(reg, "FPR-NEW")
+    with pytest.raises(reg_mod.RegistryError, match=r"not active"):
+        reg_mod.verify_signing_key_acceptable(reg, "FPR-OLD")
+
+
+def test_registry_verify_signing_key_rejects_superseded_operator():
+    """cooldown-active-01: a key under a superseded OPERATOR is rejected."""
+    from memforge import registry as reg_mod
+    reg = {
+        "operators": [
+            {
+                "operator_uuid": "op-1",
+                "status": "superseded",
+                "public_keys": [{"key_id": "FPR-A", "status": "active"}],
+            }
+        ]
+    }
+    with pytest.raises(reg_mod.RegistryError, match=r"not active"):
+        reg_mod.verify_signing_key_acceptable(reg, "FPR-A")
+
+
+def test_revoke_signer_active_at_authoring_time():
+    """revoke-signer-01: a superseded key validates a revocation it signed WHILE
+    active, but NOT a revocation authored after it was superseded.
+    """
+    from memforge import revocation as rev_mod
+
+    signer_op = {
+        "operator_uuid": "op-1",
+        "public_keys": [
+            {
+                "key_id": "OLD",
+                "status": "superseded",
+                "chain_index": 0,
+                "introduced_at": "2020-01-01T00:00:00Z",
+            },
+            {
+                "key_id": "NEW",
+                "status": "active",
+                "chain_index": 1,
+                "introduced_at": "2021-06-01T00:00:00Z",
+            },
+        ],
+    }
+    old_key = signer_op["public_keys"][0]
+    new_key = signer_op["public_keys"][1]
+
+    # Currently-active key is always acceptable.
+    assert rev_mod._key_was_active_at(new_key, signer_op, "2021-06-02T00:00:00Z")
+
+    # OLD key: a revocation authored BEFORE supersession (2021-06-01) is honored.
+    assert rev_mod._key_was_active_at(old_key, signer_op, "2021-01-01T00:00:00Z")
+    # OLD key: a revocation authored AFTER supersession is rejected (the attack).
+    assert not rev_mod._key_was_active_at(old_key, signer_op, "2021-12-01T00:00:00Z")
+    # Fail closed on an unparseable author-date for a superseded key.
+    assert not rev_mod._key_was_active_at(old_key, signer_op, "")
+
+
 def test_registry_cooldown_floor_enforced():
     """v0.5.3: cool-down hours below 1h floor raises."""
     from memforge import registry as reg_mod
@@ -611,6 +690,206 @@ def test_secure_read_text_rejects_relaxed_mode(tmp_path):
         secure_read_text(target)
 
 
+def test_secure_read_text_rejects_relaxed_parent_dir(tmp_path):
+    """sec-01 (regression): secure_read_text fails closed when the PARENT dir is
+    more permissive than 0700, even when the file itself is correctly 0600.
+
+    Root cause of the regression: the POSIX read path verified only the FILE fd
+    mode/uid and never the parent directory, so an attestation / sender-sequence
+    file that was 0600 inside a 0750/0770/0777 parent passed verification --
+    defeating the spec's parent-0700 fail-closed requirement (the Windows branch
+    already checked the parent). The fix adds a POSIX parent-dir 0700 + uid check.
+    """
+    from memforge._security import (
+        IS_WINDOWS,
+        SecurityError,
+        restrict_dir_to_owner,
+        restrict_file_to_owner,
+        secure_read_text,
+    )
+
+    if IS_WINDOWS:
+        pytest.skip("POSIX parent-mode check; Windows uses ACLs (parent already checked)")
+    parent = tmp_path / "sub"
+    target = parent / "secret.yaml"
+    restrict_dir_to_owner(parent)  # 0700
+    target.write_text("data: ok\n", encoding="utf-8")
+    restrict_file_to_owner(target)  # 0600
+    # Sanity: with a correct 0700 parent + 0600 file, the read succeeds.
+    assert secure_read_text(target) == "data: ok\n"
+    # Relax ONLY the parent to group/world-traversable; file stays 0600.
+    parent.chmod(0o755)
+    with pytest.raises(SecurityError, match=r"parent of|0o700|more permissive"):
+        secure_read_text(target)
+
+
+def test_secure_read_bytes_rejects_relaxed_parent_dir(tmp_path):
+    """sec-01 (regression): same POSIX parent-dir 0700 check for secure_read_bytes."""
+    from memforge._security import (
+        IS_WINDOWS,
+        SecurityError,
+        restrict_dir_to_owner,
+        restrict_file_to_owner,
+        secure_read_bytes,
+    )
+
+    if IS_WINDOWS:
+        pytest.skip("POSIX parent-mode check")
+    parent = tmp_path / "sub"
+    target = parent / "secret.bin"
+    restrict_dir_to_owner(parent)
+    target.write_bytes(b"\x00\x01")
+    restrict_file_to_owner(target)
+    assert secure_read_bytes(target) == b"\x00\x01"
+    parent.chmod(0o777)
+    with pytest.raises(SecurityError):
+        secure_read_bytes(target)
+
+
+def test_gpg_check_algo_allowlist_rejects_unknown_family():
+    """algo-01: the gate is an allowlist (spec rule 1), not denylist-only.
+
+    A non-denylisted, non-RSA, non-Ed25519 label (gpg-ed448, gpg-custom) must be
+    REJECTED rather than passing silently as unvalidated metadata.
+    """
+    for bad in ("gpg-ed448", "gpg-custom", "ed448", "gpg-secp256k1"):
+        with pytest.raises(crypto.CryptoError, match=r"allowlist|accepted-algo"):
+            crypto.gpg_check_algo_accepted(bad)
+    # Allowlisted labels still pass (including spec-floor RSA-3072).
+    crypto.gpg_check_algo_accepted("gpg-ed25519")
+    crypto.gpg_check_algo_accepted("gpg-rsa3072")
+    crypto.gpg_check_algo_accepted("gpg-rsa4096")
+
+
+def test_canonical_envelope_rejects_nfc_key_collision():
+    """nfc-01 / sec-05: two distinct keys that normalize to the same NFC form must
+    fail closed (CryptoError) rather than silently collapsing (last-write-wins),
+    which would change what gets signed vs what the operator believes they signed.
+    """
+    # Precomposed "Å" (U+00C5) vs decomposed "A" + combining ring (U+030A).
+    precomposed = "Åfield"
+    decomposed = "Åfield"
+    assert precomposed != decomposed
+    with pytest.raises(crypto.CryptoError, match=r"key collision|collapse|NFC"):
+        crypto.canonical_envelope({precomposed: 1, decomposed: 2})
+    # A nested mapping collision is also caught.
+    with pytest.raises(crypto.CryptoError):
+        crypto.canonical_envelope({"outer": {precomposed: 1, decomposed: 2}})
+
+
+def test_key_is_in_cooldown_rejects_unparseable_timestamp():
+    """registry-03: cool-down comparator parses timestamps; fails closed on garbage."""
+    from memforge import registry as reg_mod
+
+    reg = {
+        "operators": [
+            {
+                "operator_uuid": "op-1",
+                "public_keys": [
+                    {"key_id": "K", "status": "active", "rotation_cooldown_expires_at": "future"},
+                ],
+            }
+        ]
+    }
+    with pytest.raises(reg_mod.RegistryError, match=r"unparseable"):
+        reg_mod.key_is_in_cooldown(reg, "K")
+
+
+def test_key_is_in_cooldown_timezone_form_insensitive():
+    """registry-03: a +00:00-form at_time is compared correctly against a Z-form
+    expiry (raw lexicographic compare would mis-sort '+' below 'Z').
+    """
+    from datetime import datetime, timedelta, timezone
+    from memforge import registry as reg_mod
+
+    expiry_z = (datetime.now(timezone.utc) + timedelta(hours=12)).replace(microsecond=0).isoformat().replace("+00:00", "Z")
+    reg = {
+        "operators": [
+            {"operator_uuid": "op-1", "public_keys": [
+                {"key_id": "K", "status": "active", "rotation_cooldown_expires_at": expiry_z}]},
+        ]
+    }
+    # +00:00 form now, well before the expiry -> still in cool-down (True).
+    now_offset = datetime.now(timezone.utc).replace(microsecond=0).isoformat()  # ...+00:00
+    assert "+00:00" in now_offset
+    assert reg_mod.key_is_in_cooldown(reg, "K", at_time=now_offset) is True
+
+
+def test_key_is_in_cooldown_rederives_from_commit_author_date():
+    """registry-02: when commit_author_date is supplied, the window is re-derived
+    from author-date + rotation_cooldown_hours (spec anchor), not the build-time-
+    frozen rotation_cooldown_expires_at.
+    """
+    from memforge import registry as reg_mod
+
+    # Stored expiry is in the far past (as if built long before commit), but the
+    # commit author-date is recent and the duration is 24h, so re-derivation
+    # places us INSIDE the window.
+    reg = {
+        "operators": [
+            {"operator_uuid": "op-1", "public_keys": [
+                {
+                    "key_id": "K",
+                    "status": "active",
+                    "rotation_cooldown_hours": 24,
+                    "rotation_cooldown_expires_at": "2000-01-01T00:00:00Z",
+                }
+            ]},
+        ]
+    }
+    # at_time just after author-date; author-date + 24h is well in the future.
+    assert reg_mod.key_is_in_cooldown(
+        reg, "K", at_time="2026-06-14T12:30:00Z", commit_author_date="2026-06-14T12:00:00Z"
+    ) is True
+    # at_time past author-date + 24h -> out of window.
+    assert reg_mod.key_is_in_cooldown(
+        reg, "K", at_time="2026-06-16T12:00:01Z", commit_author_date="2026-06-14T12:00:00Z"
+    ) is False
+
+
+def test_is_key_revoked_at_timezone_form_insensitive():
+    """registry-03: is_key_revoked_at parses both operands; +00:00 vs Z compares right."""
+    rev_set = {"K": {"revoked_at": "2026-06-14T12:00:00Z"}}
+    # signing_time in +00:00 form, AFTER revoked_at -> revoked (True).
+    assert revocation.is_key_revoked_at(rev_set, "K", "2026-06-14T12:00:01+00:00") is True
+    # signing_time BEFORE revoked_at -> not revoked yet.
+    assert revocation.is_key_revoked_at(rev_set, "K", "2026-06-14T11:59:59+00:00") is False
+    # Unparseable signing_time -> fail closed (treat as revoked).
+    assert revocation.is_key_revoked_at(rev_set, "K", "garbage") is True
+
+
+def test_check_not_expired_timezone_form_insensitive():
+    """registry-03: check_not_expired parses operands; +00:00 within window passes."""
+    record = {
+        "issued_at": "2026-06-14T12:00:00Z",
+        "expires_at": "2026-06-15T12:00:00Z",
+    }
+    # signing_time in +00:00 form inside the window -> no raise.
+    agent_session.check_not_expired(record, signing_time_iso="2026-06-14T18:00:00+00:00")
+    # Before issued -> raise.
+    with pytest.raises(agent_session.AttestationError):
+        agent_session.check_not_expired(record, signing_time_iso="2026-06-14T11:00:00Z")
+    # Unparseable -> fail closed.
+    with pytest.raises(agent_session.AttestationError, match=r"unparseable"):
+        agent_session.check_not_expired(record, signing_time_iso="not-a-time")
+
+
+def test_should_publish_checkpoint_fails_closed_on_malformed_timestamp():
+    """sender-seq-02: a malformed last-checkpoint timestamp fails closed (raise),
+    instead of silently returning True (which masked tampering of signed state).
+    """
+    data = {
+        "current_sequence": 5,
+        "checkpoints": [{"sequence": 4, "timestamp": "not-an-iso-timestamp"}],
+    }
+    with pytest.raises(identity.IdentityError, match=r"corrupt or tampered|not parseable"):
+        sender_sequence.should_publish_checkpoint(data)
+    # Missing timestamp key also fails closed.
+    data2 = {"current_sequence": 5, "checkpoints": [{"sequence": 4}]}
+    with pytest.raises(identity.IdentityError):
+        sender_sequence.should_publish_checkpoint(data2)
+
+
 def test_record_seen_nonce_gcs_expired(tmp_path, monkeypatch):
     """v0.5.2: record_seen_nonce GCs expired entries on every call."""
     from datetime import datetime, timedelta, timezone
@@ -627,6 +906,31 @@ def test_record_seen_nonce_gcs_expired(tmp_path, monkeypatch):
     agent_session.record_seen_nonce(memory_root, op_uuid, "fresh-nonce", expires_at=fresh_expires)
     assert agent_session.is_nonce_seen(memory_root, op_uuid, "fresh-nonce")
     assert not agent_session.is_nonce_seen(memory_root, op_uuid, "stale-nonce"), "expired nonce should have been GC'd"
+
+
+def test_claim_nonce_atomic_check_and_record(tmp_path):
+    """nonce-replay-01: claim_nonce is the atomic check-AND-record replay defense.
+
+    The first claim of a nonce returns True (admit); a second claim of the SAME
+    nonce returns False (reject the replay). The check and the record happen
+    under one lock, closing the TOCTOU gap that the lock-free is_nonce_seen read
+    left open in a check-then-record-across-the-lock-gap caller.
+    """
+    from datetime import datetime, timedelta, timezone
+
+    from memforge import agent_session
+
+    op_uuid = identity.generate_uuidv7()
+    expires = (datetime.now(timezone.utc) + timedelta(hours=1)).isoformat().replace("+00:00", "Z")
+
+    # First claim succeeds (newly recorded).
+    assert agent_session.claim_nonce(tmp_path, op_uuid, "n1", expires_at=expires) is True
+    # The nonce is now recorded.
+    assert agent_session.is_nonce_seen(tmp_path, op_uuid, "n1")
+    # A second claim of the same nonce is rejected as a replay.
+    assert agent_session.claim_nonce(tmp_path, op_uuid, "n1", expires_at=expires) is False
+    # A different nonce still claims fine.
+    assert agent_session.claim_nonce(tmp_path, op_uuid, "n2", expires_at=expires) is True
 
 
 # ---------- end-to-end happy path (requires gpg + writable HOME) ----------
@@ -731,3 +1035,512 @@ def test_e2e_attest_agent_round_trip(monkeypatch):
     agent_session.check_scope(loaded, write_path=memory_root / "memory.md", operation="write")
     with pytest.raises(agent_session.AttestationError):
         agent_session.check_scope(loaded, write_path=Path("/etc/passwd"), operation="write")
+
+
+# ---------- crypto trust-anchor hardening (pure-Python, no gpg) ----------
+
+
+def test_gpg_check_algo_rejects_rsa_2048_labels():
+    """crypto-03: numeric RSA floor catches every label a weak RSA key surfaces under."""
+    # Both the bare GnuPG-algo-number label and the hyphenless rsa label.
+    for bad in ("gpg-algo1", "gpg-rsa2048", "rsa-2048", "RSA2048", "gpg-rsa1024"):
+        with pytest.raises(crypto.CryptoError):
+            crypto.gpg_check_algo_accepted(bad)
+
+
+def test_gpg_check_algo_accepts_strong_rsa_and_ed25519():
+    """crypto-03: 3072+ RSA and Ed25519 pass the floor."""
+    crypto.gpg_check_algo_accepted("gpg-rsa3072")
+    crypto.gpg_check_algo_accepted("gpg-rsa4096")
+    crypto.gpg_check_algo_accepted("gpg-ed25519")
+
+
+def test_opreg_resolve_algo_uses_public_keyring_not_default(monkeypatch):
+    """opreg-algo-01: operator-registry _resolve_algo resolves the REAL algo of an
+    imported PUBLIC key (not in the secret keyring) instead of hardcoding
+    gpg-ed25519, and fails closed when the algo cannot be classified.
+    """
+    from memforge import crypto
+    from memforge.cli.v05 import operator_registry as opreg
+
+    # Public RSA-4096 operator-B key: absent from secret keyring, resolvable via
+    # the public keyring. Must record gpg-rsa4096, NOT a default gpg-ed25519.
+    monkeypatch.setattr(crypto, "gpg_list_secret_keys", lambda: [])
+    monkeypatch.setattr(crypto, "gpg_resolve_public_algo", lambda *a, **k: "gpg-rsa4096")
+    assert opreg._resolve_algo("B" * 40) == "gpg-rsa4096"
+
+    # Unclassifiable key -> fail closed (no default-stamp).
+    monkeypatch.setattr(crypto, "gpg_resolve_public_algo", lambda *a, **k: None)
+    with pytest.raises(opreg._FingerprintError, match=r"could not classify"):
+        opreg._resolve_algo("C" * 40)
+
+
+def test_resolve_signer_algo_fails_closed_when_unresolvable(monkeypatch):
+    """agent-algo-fallback-01: _resolve_signer_algo raises AttestationError when
+    the key cannot be resolved to a concrete algo (no silent gpg-ed25519 stamp).
+    """
+    from memforge import agent_session, crypto
+
+    monkeypatch.setattr(crypto, "gpg_list_secret_keys", lambda: [])
+    monkeypatch.setattr(crypto, "gpg_resolve_public_algo", lambda *a, **k: None)
+    with pytest.raises(agent_session.AttestationError, match=r"could not resolve"):
+        agent_session._resolve_signer_algo("F" * 40)
+
+
+def test_resolve_signer_algo_uses_public_keyring_fallback(monkeypatch):
+    """agent-algo-fallback-01: a key absent from the SECRET keyring but resolvable
+    in the public keyring records its REAL algo, not a default.
+    """
+    from memforge import agent_session, crypto
+
+    monkeypatch.setattr(crypto, "gpg_list_secret_keys", lambda: [])
+    monkeypatch.setattr(crypto, "gpg_resolve_public_algo", lambda *a, **k: "gpg-rsa4096")
+    assert agent_session._resolve_signer_algo("A" * 40) == "gpg-rsa4096"
+
+
+def test_rotate_next_chain_index_absent_operator_returns_zero():
+    """rotate-chainidx-01: absent operator -> 0 (mirrors add_rotated_key's
+    max(..., default=-1)+1), so the uid suffix never disagrees with the stamped
+    chain_index.
+    """
+    from memforge.cli.v05 import rotate_key
+    reg = {"operators": [{"operator_uuid": "op-1", "public_keys": [{"chain_index": 0}]}]}
+    # Present operator with one chain-0 key -> next index 1.
+    assert rotate_key._next_chain_index(reg, "op-1") == 1
+    # Absent operator -> 0 (was 1).
+    assert rotate_key._next_chain_index(reg, "op-missing") == 0
+
+
+def test_assert_recovery_preconditions_composes_both_checks(monkeypatch):
+    """recovery-startup-01: the composed gate fails closed unless BOTH the
+    secret-integrity check AND the backup-ack check pass.
+    """
+    from memforge import recovery as rec_mod
+
+    calls = []
+
+    def _ok_integrity(registry, *, operator_uuid):
+        calls.append("integrity")
+
+    def _ok_ack():
+        calls.append("ack")
+
+    monkeypatch.setattr(rec_mod, "verify_recovery_secret_integrity", _ok_integrity)
+    monkeypatch.setattr(rec_mod, "check_backup_acknowledged", _ok_ack)
+    rec_mod.assert_recovery_preconditions({"operators": []}, operator_uuid="op-1")
+    assert calls == ["integrity", "ack"]
+
+    # If integrity fails, the gate raises and never reaches the ack check.
+    def _bad_integrity(registry, *, operator_uuid):
+        raise rec_mod.RecoveryError("tampered")
+
+    monkeypatch.setattr(rec_mod, "verify_recovery_secret_integrity", _bad_integrity)
+    with pytest.raises(rec_mod.RecoveryError, match=r"tampered"):
+        rec_mod.assert_recovery_preconditions({"operators": []}, operator_uuid="op-1")
+
+
+def test_gpg_check_algo_allow_path_is_anchored():
+    """crypto-01: the RSA ALLOW path is anchored; a label that merely CONTAINS an
+    rsa<N>=3072 substring must NOT pass (the old re.search let it through).
+    """
+    for smuggled in (
+        "malicious-rsa4096",
+        "rsa99999garbage",
+        "x-rsa4096-y",
+        "gpg-rsa4096-backdoor",
+        "rsa4096 ; rm -rf",
+    ):
+        with pytest.raises(crypto.CryptoError):
+            crypto.gpg_check_algo_accepted(smuggled)
+    # The canonical forms still pass.
+    crypto.gpg_check_algo_accepted("gpg-rsa4096")
+    crypto.gpg_check_algo_accepted("rsa4096")
+
+
+def test_gpg_check_algo_rejects_oversized_label_below_floor_substring():
+    """crypto-01: a sub-floor RSA size that is a substring of an allowed label
+    (e.g. embedded) is rejected rather than accepted via a >=3072 substring.
+    """
+    with pytest.raises(crypto.CryptoError):
+        crypto.gpg_check_algo_accepted("gpg-rsa2048-but-mentions-rsa4096")
+
+
+def test_gpg_verify_detached_requires_fingerprint_pin():
+    """crypto-04: verification with no identity pin fails closed (no GOODSIG-only accept)."""
+    # Empty / falsy expected_fingerprint must return False without touching gpg.
+    assert crypto.gpg_verify_detached(b"data", signature_b64="", expected_fingerprint="") is False
+    assert crypto.gpg_verify_detached(b"data", signature_b64="", expected_fingerprint=None) is False
+
+
+def test_normalize_fpr_exact_match_semantics():
+    """crypto-01 / verify-02: exact full-fingerprint equality, no substring acceptance."""
+    full = "DEADBEEF1234567890ABCDEF1234567890ABCDEF"
+    short = "1234567890ABCDEF"  # a substring of `full`
+    # The new comparator normalizes (strip spaces, upper) but does NOT do
+    # substring/startswith: a short id is NOT equal to a full fingerprint.
+    assert crypto._normalize_fpr(full) == crypto._normalize_fpr(full.lower())
+    assert crypto._normalize_fpr("DEAD BEEF 1234") == "DEADBEEF1234"
+    assert crypto._normalize_fpr(short) != crypto._normalize_fpr(full)
+
+
+def test_mint_agent_session_id_suffix_len_envelope():
+    """id-02: suffix_len knob honored + bounded to the validated 8-16 envelope."""
+    sid8 = identity.mint_agent_session_id("cc", suffix_len=8)
+    sid16 = identity.mint_agent_session_id("cc", suffix_len=16)
+    identity.validate_agent_session_id(sid8)
+    identity.validate_agent_session_id(sid16)
+    assert len(sid8.rsplit("-", 1)[1]) == 8
+    assert len(sid16.rsplit("-", 1)[1]) == 16
+    for bad in (7, 17, 0):
+        with pytest.raises(identity.IdentityError):
+            identity.mint_agent_session_id("cc", suffix_len=bad)
+
+
+def test_registry_read_rotation_cooldown_hours_from_config(tmp_path):
+    """registry-02: cool-down hours read from .memforge/config.yaml; default when absent."""
+    from memforge import registry as reg_mod
+
+    # No config -> default.
+    assert reg_mod.read_rotation_cooldown_hours(tmp_path) == float(reg_mod.DEFAULT_ROTATION_COOLDOWN_HOURS)
+    # Configured value honored.
+    cfg = tmp_path / reg_mod.REGISTRY_DIRNAME / "config.yaml"
+    cfg.parent.mkdir(parents=True, exist_ok=True)
+    cfg.write_text("identity:\n  rotation_cooldown_hours: 72\n", encoding="utf-8")
+    assert reg_mod.read_rotation_cooldown_hours(tmp_path) == 72.0
+    # Malformed value falls back to default rather than crashing.
+    cfg.write_text("identity:\n  rotation_cooldown_hours: not-a-number\n", encoding="utf-8")
+    assert reg_mod.read_rotation_cooldown_hours(tmp_path) == float(reg_mod.DEFAULT_ROTATION_COOLDOWN_HOURS)
+
+
+def test_add_rotated_key_uses_configured_cooldown(tmp_path):
+    """registry-02: add_rotated_key stamps the configured cool-down duration + expiry."""
+    from datetime import datetime, timezone
+    from memforge import registry as reg_mod
+
+    cfg = tmp_path / reg_mod.REGISTRY_DIRNAME / "config.yaml"
+    cfg.parent.mkdir(parents=True, exist_ok=True)
+    cfg.write_text("identity:\n  rotation_cooldown_hours: 48\n", encoding="utf-8")
+    reg = {
+        "operators": [
+            {
+                "operator_uuid": "op-1",
+                "status": "active",
+                "public_keys": [
+                    {"key_id": "OLD", "algo": "gpg-ed25519", "chain_index": 0, "status": "active"}
+                ],
+            }
+        ]
+    }
+    reg = reg_mod.add_rotated_key(
+        reg,
+        operator_uuid="op-1",
+        new_key_id="NEW",
+        new_algo="gpg-ed25519",
+        new_public_material_b64="",
+        cross_signature_by_old="",
+        cross_signature_by_new="",
+        memory_root=tmp_path,
+    )
+    new_key = reg["operators"][0]["public_keys"][1]
+    assert new_key["rotation_cooldown_hours"] == 48.0
+    # Expiry is in the future (sanity: well past the 24h default).
+    expiry = new_key["rotation_cooldown_expires_at"]
+    now = datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
+    assert expiry > now
+    assert reg_mod.key_is_in_cooldown(reg, "NEW") is True
+
+
+# ---------- BLOCKER closures (require gpg) ----------
+
+
+def _seed_registry_for(memory_root, op_uuid, fpr, name="MemForge Test"):
+    pub_b64 = crypto.gpg_export_public_key(fpr)
+    return registry.init_registry(
+        operator_uuid=op_uuid,
+        operator_name=name,
+        key_id=fpr,
+        algo="gpg-ed25519",
+        public_material_b64=pub_b64,
+    )
+
+
+@pytestmark_gpg
+def test_registry_loads_after_rotation_signed_by_new_key(monkeypatch):
+    """BLOCKER registry-01: a registry signed by the NEW key during a two-active-key
+    cool-down still load-verifies, because the signature block records
+    signing_key_id and the loader resolves the exact signing key.
+    """
+    sandbox = _short_sandbox()
+    monkeypatch.setenv("GNUPGHOME", str(sandbox / "gpg"))
+    (sandbox / "gpg").mkdir(mode=0o700)
+    old_fpr = crypto.gpg_gen_key_batch(name_real="MemForge Test", name_email="old@memforge.test")
+    new_fpr = crypto.gpg_gen_key_batch(name_real="MemForge Test", name_email="new@memforge.test")
+    op_uuid = identity.generate_uuidv7()
+    memory_root = sandbox / "store"
+    memory_root.mkdir()
+
+    reg = _seed_registry_for(memory_root, op_uuid, old_fpr)
+    # Rotate: append the new key (both old + new now active = cool-down state).
+    reg = registry.add_rotated_key(
+        reg,
+        operator_uuid=op_uuid,
+        new_key_id=new_fpr,
+        new_algo="gpg-ed25519",
+        new_public_material_b64=crypto.gpg_export_public_key(new_fpr),
+        cross_signature_by_old="",
+        cross_signature_by_new="",
+    )
+    active = [k for k in reg["operators"][0]["public_keys"] if k.get("status", "active") == "active"]
+    assert len(active) == 2, "rotation cool-down should leave two active keys"
+
+    # Sign the registry with the NEW key (simulates operator-registry add /
+    # recovery-init during the cool-down, which sign with identity.key_fingerprint
+    # = the new key). Pre-fix this bricked the store: the loader pinned the
+    # first-active (old) key as the expected verifier.
+    registry.sign_and_save(reg, memory_root, signer_uuid=op_uuid, signer_fingerprint=new_fpr)
+    assert reg["registry_signature"]["signing_key_id"] == new_fpr
+
+    loaded = registry.load_registry(memory_root, verify_signature=True)
+    assert loaded["operators"][0]["operator_uuid"] == op_uuid
+
+
+@pytestmark_gpg
+def test_sign_and_save_refuses_superseded_signer_key(monkeypatch):
+    """registry-01 (regression): sign_and_save MUST fail closed BEFORE writing if
+    the resolved signer key entry is 'superseded'.
+
+    Root cause: remove_operator supersedes the operator AND its keys; the CLI
+    then signed with that now-superseded key (sign_and_save matched by key_id
+    only, not status), and the next load_registry failed closed forever (bricked
+    store). The fix makes sign_and_save mirror the loader's superseded-key check
+    before producing the signature / writing.
+    """
+    sandbox = _short_sandbox()
+    monkeypatch.setenv("GNUPGHOME", str(sandbox / "gpg"))
+    (sandbox / "gpg").mkdir(mode=0o700)
+    fpr = crypto.gpg_gen_key_batch(name_real="Brick", name_email="brick@memforge.test")
+    op_uuid = identity.generate_uuidv7()
+    memory_root = sandbox / "store"
+    memory_root.mkdir()
+    reg = _seed_registry_for(memory_root, op_uuid, fpr)
+    # Supersede the operator + its key (what remove_operator does).
+    registry.remove_operator(reg, operator_uuid=op_uuid)
+    with pytest.raises(registry.RegistryError, match=r"superseded"):
+        registry.sign_and_save(reg, memory_root, signer_uuid=op_uuid, signer_fingerprint=fpr)
+    # The bricking write never happened: the registry file is absent (or, if a
+    # prior good copy existed, unchanged). Here it was never written.
+    assert not registry.registry_path(memory_root).exists()
+
+
+@pytestmark_gpg
+def test_registry_backward_compat_loads_without_signing_key_id(monkeypatch):
+    """registry-01 back-compat: a registry written before signing_key_id existed
+    (single active key) still loads via the first-active fallback.
+    """
+    sandbox = _short_sandbox()
+    monkeypatch.setenv("GNUPGHOME", str(sandbox / "gpg"))
+    (sandbox / "gpg").mkdir(mode=0o700)
+    fpr = crypto.gpg_gen_key_batch(name_real="MemForge Test", name_email="bc@memforge.test")
+    op_uuid = identity.generate_uuidv7()
+    memory_root = sandbox / "store"
+    memory_root.mkdir()
+    reg = _seed_registry_for(memory_root, op_uuid, fpr)
+    registry.sign_and_save(reg, memory_root, signer_uuid=op_uuid, signer_fingerprint=fpr)
+
+    # Simulate a legacy registry: strip signing_key_id from the persisted file.
+    path = registry.registry_path(memory_root)
+    import yaml as _yaml
+    with open(path, "r", encoding="utf-8") as f:
+        data = _yaml.safe_load(f)
+    data["registry_signature"].pop("signing_key_id", None)
+    with open(path, "w", encoding="utf-8") as f:
+        _yaml.safe_dump(data, f, sort_keys=False)
+
+    loaded = registry.load_registry(memory_root, verify_signature=True)
+    assert loaded["operators"][0]["operator_uuid"] == op_uuid
+
+
+@pytestmark_gpg
+def test_verify_rejects_ambient_keyring_only_signature(monkeypatch):
+    """BLOCKER verify-01: a signature that would verify only because an unrelated
+    key sits in the ambient keyring is REJECTED, because the trust root is the
+    REGISTERED public_material, not the ambient keyring.
+
+    Construction: registry declares operator A's key + material, but the
+    registry is actually signed by key B (an unrelated key that lives in the
+    ambient keyring). Pre-fix, gpg would VALIDSIG against B from the ambient
+    keyring and the only guard was a fingerprint string check. With the
+    ephemeral-keyring trust root, B's signature cannot validate against A's
+    imported material, so load fails closed.
+    """
+    sandbox = _short_sandbox()
+    monkeypatch.setenv("GNUPGHOME", str(sandbox / "gpg"))
+    (sandbox / "gpg").mkdir(mode=0o700)
+    fpr_a = crypto.gpg_gen_key_batch(name_real="Operator A", name_email="a@memforge.test")
+    fpr_b = crypto.gpg_gen_key_batch(name_real="Unrelated B", name_email="b@memforge.test")
+    op_uuid = identity.generate_uuidv7()
+    memory_root = sandbox / "store"
+    memory_root.mkdir()
+
+    # Registry declares A's key + A's material, but we sign with B and hand-set
+    # the signature block to claim A's fingerprint as the signer.
+    reg = _seed_registry_for(memory_root, op_uuid, fpr_a, name="Operator A")
+    payload = registry._canonical_for_signature(reg)
+    sig_by_b = crypto.gpg_sign_detached(payload, fingerprint=fpr_b)
+    reg["registry_signature"] = {
+        "algo": "gpg-ed25519",
+        "signing_uuid": op_uuid,
+        "signing_key_id": fpr_a,  # claims A signed...
+        "signing_time": identity.now_iso(),
+        "value": sig_by_b,        # ...but B actually signed
+    }
+    path = registry.registry_path(memory_root)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    import yaml as _yaml
+    with open(path, "w", encoding="utf-8") as f:
+        _yaml.safe_dump(reg, f, sort_keys=False)
+
+    # B is in the ambient keyring (we just generated it), so the OLD code would
+    # have accepted. The hardened loader imports A's material into an ephemeral
+    # keyring and B's signature does not validate against A's key.
+    with pytest.raises(registry.RegistryError, match=r"did not verify"):
+        registry.load_registry(memory_root, verify_signature=True)
+
+
+@pytestmark_gpg
+def test_verify_material_binding_mismatch_rejected(monkeypatch):
+    """verify-01 binding: if the registered material does not resolve to the
+    registered fingerprint, verification fails closed (material/fingerprint
+    disagreement is rejected even before signature validation).
+    """
+    sandbox = _short_sandbox()
+    monkeypatch.setenv("GNUPGHOME", str(sandbox / "gpg"))
+    (sandbox / "gpg").mkdir(mode=0o700)
+    fpr_a = crypto.gpg_gen_key_batch(name_real="Operator A", name_email="a2@memforge.test")
+    fpr_b = crypto.gpg_gen_key_batch(name_real="Operator B", name_email="b2@memforge.test")
+    data = b"trust-anchor binding payload"
+    sig_by_a = crypto.gpg_sign_detached(data, fingerprint=fpr_a)
+    # Pin to A's fingerprint but hand over B's material: binding assertion fails.
+    assert crypto.gpg_verify_detached(
+        data,
+        signature_b64=sig_by_a,
+        expected_fingerprint=fpr_a,
+        registered_public_material_b64=crypto.gpg_export_public_key(fpr_b),
+    ) is False
+    # Sanity: correct material + correct signer verifies True.
+    assert crypto.gpg_verify_detached(
+        data,
+        signature_b64=sig_by_a,
+        expected_fingerprint=fpr_a,
+        registered_public_material_b64=crypto.gpg_export_public_key(fpr_a),
+    ) is True
+
+
+@pytestmark_gpg
+def test_verify_exact_fingerprint_pin_rejects_different_key(monkeypatch):
+    """crypto-01 / verify-02: a valid signature from key A is rejected when the
+    pin is key B, under exact full-fingerprint comparison (no substring accept).
+    """
+    sandbox = _short_sandbox()
+    monkeypatch.setenv("GNUPGHOME", str(sandbox / "gpg"))
+    (sandbox / "gpg").mkdir(mode=0o700)
+    fpr_a = crypto.gpg_gen_key_batch(name_real="Key A", name_email="ka@memforge.test")
+    fpr_b = crypto.gpg_gen_key_batch(name_real="Key B", name_email="kb@memforge.test")
+    data = b"exact pin payload"
+    sig_by_a = crypto.gpg_sign_detached(data, fingerprint=fpr_a)
+    # Correct pin (A) verifies; wrong pin (B) is rejected.
+    assert crypto.gpg_verify_detached(data, signature_b64=sig_by_a, expected_fingerprint=fpr_a) is True
+    assert crypto.gpg_verify_detached(data, signature_b64=sig_by_a, expected_fingerprint=fpr_b) is False
+    # A short suffix of A's fingerprint must NOT validate (no substring accept).
+    assert crypto.gpg_verify_detached(data, signature_b64=sig_by_a, expected_fingerprint=fpr_a[-16:]) is False
+
+
+def _gen_rsa4096_with_signing_subkey(name_email: str) -> str:
+    """Generate an RSA-4096 key with a SEPARATE signing subkey; return PRIMARY fpr.
+
+    This is the common GnuPG default shape for RSA keys (primary is cert-only,
+    a signing subkey actually signs). `gpg_list_secret_keys` records only the
+    PRIMARY fpr, so this is exactly the verify-01 case: VALIDSIG's first field
+    is the SUBKEY fpr but the registry pins the PRIMARY.
+    """
+    import subprocess as sp
+
+    gpg = crypto._gpg_bin()
+    # Primary: RSA-4096 cert-only key.
+    sp.run(
+        [gpg, "--batch", "--passphrase", "", "--pinentry-mode", "loopback",
+         "--quick-gen-key", f"verify01 <{name_email}>", "rsa4096", "cert", "0"],
+        check=True, capture_output=True,
+    )
+    # Resolve the primary fingerprint for this uid from the secret keyring.
+    primary = None
+    for k in crypto.gpg_list_secret_keys():
+        if name_email in (k.get("uid") or ""):
+            primary = k["fingerprint"]
+            break
+    assert primary, "could not resolve primary fingerprint for the RSA-4096 key"
+    # Add an RSA-4096 SIGNING subkey to that primary.
+    sp.run(
+        [gpg, "--batch", "--passphrase", "", "--pinentry-mode", "loopback",
+         "--quick-add-key", primary, "rsa4096", "sign", "0"],
+        check=True, capture_output=True,
+    )
+    return primary
+
+
+@pytestmark_gpg
+def test_verify_rsa4096_signing_subkey_against_primary_pin(monkeypatch):
+    """verify-01 (regression): an RSA-4096 key with a separate signing SUBKEY
+    verifies when pinned on the PRIMARY fingerprint (which is what
+    gpg_list_secret_keys / the registry stores).
+
+    Root cause of the regression: gpg_verify_detached pinned on the FIRST
+    VALIDSIG field (the signing-subkey fpr), but the registry stores the PRIMARY
+    fpr, so every RSA-4096-with-signing-subkey key (the GnuPG default, a
+    first-class spec algo) failed verification. The fix accepts an exact match on
+    EITHER the VALIDSIG signing-key (first) fpr OR the primary-key (last) fpr.
+    """
+    sandbox = _short_sandbox()
+    monkeypatch.setenv("GNUPGHOME", str(sandbox / "gpg"))
+    (sandbox / "gpg").mkdir(mode=0o700)
+    primary_fpr = _gen_rsa4096_with_signing_subkey("rsa4096sub@memforge.test")
+    data = b"rsa-4096 signing-subkey payload"
+    # Sign with the PRIMARY identity (gpg routes to the signing subkey).
+    sig = crypto.gpg_sign_detached(data, fingerprint=primary_fpr)
+    # Verify pinned on the PRIMARY fpr (the registry's expected_fingerprint).
+    assert crypto.gpg_verify_detached(
+        data, signature_b64=sig, expected_fingerprint=primary_fpr
+    ) is True
+    # A wrong primary pin still fails closed.
+    other = crypto.gpg_gen_key_batch(name_real="Other", name_email="other-rsa@memforge.test")
+    assert crypto.gpg_verify_detached(
+        data, signature_b64=sig, expected_fingerprint=other
+    ) is False
+
+
+@pytestmark_gpg
+def test_gpg_gen_key_batch_returns_full_40char_fingerprint(monkeypatch):
+    """sec-02 (regression): gen-key NEVER returns a short (<40) key-id; the
+    returned value is always a canonical 40-char hex fingerprint (a short pin
+    would silently fail-close every later verification of that key).
+    """
+    sandbox = _short_sandbox()
+    monkeypatch.setenv("GNUPGHOME", str(sandbox / "gpg"))
+    (sandbox / "gpg").mkdir(mode=0o700)
+    fpr = crypto.gpg_gen_key_batch(name_real="Sec02", name_email="sec02@memforge.test")
+    assert len(fpr) == 40
+    assert all(c in "0123456789ABCDEF" for c in fpr.upper())
+    # And it round-trips through verification as a real pin.
+    data = b"sec02 payload"
+    sig = crypto.gpg_sign_detached(data, fingerprint=fpr)
+    assert crypto.gpg_verify_detached(data, signature_b64=sig, expected_fingerprint=fpr) is True
+
+
+@pytestmark_gpg
+def test_gpg_gen_key_batch_warns_unprotected(monkeypatch, recwarn):
+    """keygen-01: empty-passphrase keygen emits the persistent UnprotectedKeyWarning."""
+    sandbox = _short_sandbox()
+    monkeypatch.setenv("GNUPGHOME", str(sandbox / "gpg"))
+    (sandbox / "gpg").mkdir(mode=0o700)
+    crypto.gpg_gen_key_batch(name_real="Warn Key", name_email="warn@memforge.test")
+    assert any(issubclass(w.category, crypto.UnprotectedKeyWarning) for w in recwarn.list)

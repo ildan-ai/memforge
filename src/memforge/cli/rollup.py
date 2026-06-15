@@ -22,7 +22,6 @@ from __future__ import annotations
 
 import argparse
 import json
-import os
 import shutil
 import subprocess
 import sys
@@ -30,27 +29,32 @@ from datetime import date, datetime, timezone
 from pathlib import Path
 from typing import Optional
 
+from memforge.cli._concurrency_audit import _is_valid_slug
+from memforge.frontmatter import render as _render_frontmatter
+
 
 HISTORY_DIRNAME = ".memforge-rollup-history"
 
 
-README_TEMPLATE = """\
----
-name: {title}
-description: Rollup of {n} memories on topic '{topic}'.
-type: project
-sensitivity: internal
-uid: mem-{ymd}-rollup-{slug}
-tier: index
-tags: [topic:{topic}]
-owner: operator
-created: {ymd}
-updated: {ymd}
-last_reviewed: {ymd}
-status: active
-pinned: false
----
+def _has_control_char(s: str) -> bool:
+    """True if `s` carries a C0/C1 control char (newline, CR, tab, NUL, etc.).
+    Secondary cleanliness guard for slug/topic/title before they reach the
+    rendered README frontmatter (built via frontmatter.render) and body."""
+    for c in s:
+        o = ord(c)
+        if o < 0x20 or o == 0x7F or 0x80 <= o <= 0x9F:
+            return True
+    return False
 
+
+# Body-only template. The YAML frontmatter is now built as a dict and emitted
+# via memforge.frontmatter.render() (PyYAML safe_dump) rather than str.format
+# into a hand-written YAML block, so an attacker-shaped --topic/--title (e.g.
+# `evil] injected: true [` or `x'y`) is quoted/escaped by the YAML emitter and
+# cannot corrupt or inject structure into the frontmatter (closes adv-02). The
+# operator-supplied title/topic still flow into the markdown BODY below, where
+# they are plain prose with no YAML significance.
+README_BODY_TEMPLATE = """\
 # {title}
 
 Rollup parent for {topic}-tagged memories. Detail files in this folder are
@@ -87,6 +91,17 @@ def today_ymd() -> str:
     return date.today().isoformat()
 
 
+def _within(folder: Path, candidate: Path) -> bool:
+    """True if `candidate` resolves to a path inside `folder`. Used to refuse
+    attacker-chosen paths read from the auto-committed history JSON (a hostile
+    contributor controls that file's contents)."""
+    try:
+        candidate.resolve().relative_to(folder.resolve())
+        return True
+    except ValueError:
+        return False
+
+
 def find_link_rewriter() -> Optional[Path]:
     """Locate the memory-link-rewriter script. Tries the sibling path
     first (when invoked from a checkout), then $PATH (when installed)."""
@@ -101,7 +116,35 @@ def cmd_create(folder: Path, slug: str, files: list[Path], topic: Optional[str],
     if not folder.exists():
         sys.stderr.write(f"error: folder not found: {folder}\n")
         return 2
+    # --slug becomes both a directory name (folder / slug) and is interpolated
+    # into the generated README frontmatter, so it must pass the canonical slug
+    # pipeline before any path interpolation. Without this a traversal slug
+    # (e.g. ../evil) escapes the memory folder (matches resolve.py:311).
+    if not _is_valid_slug(slug):
+        sys.stderr.write(
+            f"error: slug '{slug}' fails the slug pipeline "
+            f"(must be lowercase ASCII, hyphen-separated, <=64 bytes, "
+            f"regex `^[a-z0-9]+(-[a-z0-9]+)*$`, not a reserved name)\n"
+        )
+        return 2
+    # --topic / --title flow into the README. Structural YAML safety is provided
+    # by rendering the frontmatter via frontmatter.render() (PyYAML safe_dump,
+    # see README_BODY_TEMPLATE note / adv-02). This control-char guard is a
+    # secondary cleanliness check: it rejects C0/C1 control characters
+    # (newlines, NUL, etc.) so a crafted value cannot smuggle a multi-line or
+    # control-char scalar into the rendered block or the markdown body.
+    if topic is not None and _has_control_char(topic):
+        sys.stderr.write("error: --topic contains a control character\n")
+        return 2
+    if title is not None and _has_control_char(title):
+        sys.stderr.write("error: --title contains a control character\n")
+        return 2
     target_dir = folder / slug
+    # Containment assert: even with a valid slug, confirm the target resolves
+    # inside the folder before any mkdir / move.
+    if not _within(folder, target_dir):
+        sys.stderr.write(f"error: rollup target escapes the memory folder: {target_dir}\n")
+        return 2
     if target_dir.exists():
         sys.stderr.write(f"error: rollup folder already exists: {target_dir}\n")
         return 2
@@ -126,14 +169,34 @@ def cmd_create(folder: Path, slug: str, files: list[Path], topic: Optional[str],
     final_topic = topic or slug
     final_title = title or f"{slug.replace('-', ' ').title()} rollup"
     file_list_md = "\n".join(f"- `{f.name}`" for f in abs_files)
-    readme_content = README_TEMPLATE.format(
+    ymd = today_ymd()
+    # Build frontmatter as a dict; render() (PyYAML safe_dump) quotes/escapes
+    # any YAML-significant characters in the attacker-influenceable title/topic
+    # so the generated block is always well-formed (closes adv-02).
+    readme_frontmatter = {
+        "name": final_title,
+        "description": f"Rollup of {len(abs_files)} memories on topic '{final_topic}'.",
+        "type": "project",
+        "sensitivity": "internal",
+        "uid": f"mem-{ymd}-rollup-{slug}",
+        "tier": "index",
+        "tags": [f"topic:{final_topic}"],
+        "owner": "operator",
+        "created": ymd,
+        "updated": ymd,
+        "last_reviewed": ymd,
+        "status": "active",
+        "pinned": False,
+    }
+    readme_body = README_BODY_TEMPLATE.format(
         title=final_title,
         topic=final_topic,
         slug=slug,
         n=len(abs_files),
-        ymd=today_ymd(),
+        ymd=ymd,
         file_list=file_list_md,
     )
+    readme_content = _render_frontmatter(readme_frontmatter, readme_body)
 
     history_dir = folder / HISTORY_DIRNAME
     ts = now_ts()
@@ -181,9 +244,17 @@ def cmd_create(folder: Path, slug: str, files: list[Path], topic: Optional[str],
         moved = list(pairs)
     else:
         moved = []
-        for src, dst in pairs:
-            shutil.move(str(src), str(dst))
-            moved.append((src, dst))
+        try:
+            for src, dst in pairs:
+                shutil.move(str(src), str(dst))
+                moved.append((src, dst))
+        except OSError as exc:
+            # Roll back the files already moved and remove the empty target dir,
+            # mirroring the rename-batch failure handling, so a partial move
+            # never leaves an orphaned half-rollup with no undo record.
+            sys.stderr.write(f"error: rollup move failed: {exc}; rolling back\n")
+            _abort_partial(target_dir, moved)
+            return 2
 
     readme_path = target_dir / "README.md"
     readme_path.write_text(readme_content, encoding="utf-8")
@@ -207,6 +278,20 @@ def _abort_partial(target_dir: Path, moved: list[tuple[Path, Path]]) -> None:
 
 
 def cmd_undo(folder: Path, slug: str, dry_run: bool) -> int:
+    # --slug is glob-interpolated into the history scan and used as `folder /
+    # slug` for the target dir; validate it through the canonical slug pipeline
+    # before any path interpolation (matches cmd_create / resolve.py:311).
+    if not _is_valid_slug(slug):
+        sys.stderr.write(
+            f"error: slug '{slug}' fails the slug pipeline "
+            f"(must be lowercase ASCII, hyphen-separated, <=64 bytes, "
+            f"regex `^[a-z0-9]+(-[a-z0-9]+)*$`, not a reserved name)\n"
+        )
+        return 2
+    target_dir = folder / slug
+    if not _within(folder, target_dir):
+        sys.stderr.write(f"error: rollup target escapes the memory folder: {target_dir}\n")
+        return 2
     history_dir = folder / HISTORY_DIRNAME
     if not history_dir.exists():
         sys.stderr.write(f"error: no rollup history at {history_dir}\n")
@@ -227,6 +312,24 @@ def cmd_undo(folder: Path, slug: str, dry_run: bool) -> int:
 
     moves: list[dict] = record.get("moved", [])
     target_dir = folder / slug
+
+    # The history JSON lives inside the auto-committed memory folder, so a
+    # hostile contributor controls its contents. Treat every path it names as
+    # untrusted: refuse the whole undo if any from/to/readme path escapes the
+    # memory folder, rather than feeding it to shutil.move / unlink.
+    readme = Path(record.get("readme", target_dir / "README.md"))
+    untrusted_paths = [readme]
+    for m in moves:
+        untrusted_paths.append(Path(m.get("from", "")))
+        untrusted_paths.append(Path(m.get("to", "")))
+    for cand in untrusted_paths:
+        if not _within(folder, cand):
+            sys.stderr.write(
+                f"error: history record references a path outside the memory "
+                f"folder ({cand}); refusing undo (possible tampered history)\n"
+            )
+            return 2
+
     print(f"=== rollup undo: slug='{slug}' ({len(moves)} files) ===")
     print(f"  history record: {record_path}")
     print(f"  rollup folder:  {target_dir}")
@@ -239,11 +342,13 @@ def cmd_undo(folder: Path, slug: str, dry_run: bool) -> int:
         return 0
 
     rewriter = find_link_rewriter()
+    skipped = 0
     for m in moves:
         dst = Path(m["from"])
         src = Path(m["to"])
         if not src.exists():
             sys.stderr.write(f"warning: source {src} missing; skipping\n")
+            skipped += 1
             continue
         if rewriter is not None:
             rc = subprocess.call(
@@ -251,11 +356,26 @@ def cmd_undo(folder: Path, slug: str, dry_run: bool) -> int:
             )
             if rc != 0:
                 sys.stderr.write(f"warning: link-rewriter rename failed for {src} (rc={rc}); leaving in place\n")
+                skipped += 1
                 continue
         else:
             shutil.move(str(src), str(dst))
 
-    readme = Path(record.get("readme", target_dir / "README.md"))
+    # If any move-back was skipped, the rollup is only partially disassembled.
+    # Do NOT consume the history record (leave the `create` record in place) and
+    # do NOT remove the README / target dir, so the operator can fix the cause
+    # and re-run undo against the still-actionable record. Consuming the record
+    # on a partial undo left a half-disassembled rollup with no `create` record
+    # to retry against (closes rollup-undo-01).
+    if skipped:
+        sys.stderr.write(
+            f"error: {skipped} of {len(moves)} file(s) could not be moved back; "
+            f"rollup '{slug}' is only partially undone. Leaving the history "
+            f"record {record_path.name} in place and keeping README/target dir "
+            "so you can resolve the cause and re-run undo.\n"
+        )
+        return 2
+
     if readme.exists():
         readme.unlink()
     if target_dir.exists() and not any(target_dir.iterdir()):
@@ -320,9 +440,10 @@ def main() -> int:
     if args.path:
         folder = Path(args.path).resolve()
     else:
-        home = Path.home()
-        user = os.environ.get("USER", "")
-        folder = home / ".claude" / "projects" / f"{user}-claude-projects" / "memory"
+        # Default to the first (per-cwd) memory folder via the centralized
+        # resolver (env override -> grandfathered .claude layout -> ~/.memforge).
+        from memforge.paths import default_memory_paths
+        folder = default_memory_paths()[0]
 
     if args.op == "create":
         files = [Path(f) for f in args.files]

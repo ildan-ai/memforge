@@ -191,19 +191,35 @@ def save_operator_identity(
     return target
 
 
-def mint_agent_session_id(adapter_prefix: str, *, now: Optional[datetime] = None) -> str:
+AGENT_SESSION_SUFFIX_MIN = 8
+AGENT_SESSION_SUFFIX_MAX = 16
+AGENT_SESSION_SUFFIX_DEFAULT = 12
+
+
+def mint_agent_session_id(
+    adapter_prefix: str, *, now: Optional[datetime] = None, suffix_len: int = AGENT_SESSION_SUFFIX_DEFAULT
+) -> str:
     """Mint a v0.5.1-conformant agent-session-id.
 
     Format: `<adapter_prefix>-YYYY-MM-DD-<8-16 lowercase base32 chars>`.
     `adapter_prefix` is the operator-facing adapter name (`cc`, `cursor`,
     `aider`, etc.); lowercased + stripped of non-alphanumerics here.
+
+    `suffix_len` (default 12) controls the random-suffix length and is asserted
+    to stay inside the validated 8-16 envelope (AGENT_SESSION_ID_RE), so the
+    minter cannot drift outside what `validate_agent_session_id` accepts.
     """
+    if not (AGENT_SESSION_SUFFIX_MIN <= suffix_len <= AGENT_SESSION_SUFFIX_MAX):
+        raise IdentityError(
+            f"suffix_len {suffix_len} outside the validated envelope "
+            f"[{AGENT_SESSION_SUFFIX_MIN}, {AGENT_SESSION_SUFFIX_MAX}]"
+        )
     safe_prefix = re.sub(r"[^a-z0-9]+", "", adapter_prefix.lower())
     if not safe_prefix:
         raise IdentityError("adapter_prefix must contain at least one alphanumeric character")
     date_str = (now or datetime.now(timezone.utc)).strftime("%Y-%m-%d")
     alphabet = "abcdefghijklmnopqrstuvwxyz234567"
-    suffix = "".join(secrets.choice(alphabet) for _ in range(12))
+    suffix = "".join(secrets.choice(alphabet) for _ in range(suffix_len))
     candidate = f"{safe_prefix}-{date_str}-{suffix}"
     if not AGENT_SESSION_ID_RE.match(candidate):
         raise IdentityError(f"minted agent-session-id failed format check: {candidate}")

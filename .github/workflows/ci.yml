@@ -39,7 +39,9 @@ jobs:
     steps:
       - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10  # v6.0.3
       - name: Install markdownlint-cli
-        run: npm install -g markdownlint-cli@0.48.0
+        # Pinned version; --ignore-scripts blocks install-time lifecycle scripts
+        # from transitive deps (hostile-contributor supply-chain hardening).
+        run: npm install -g --ignore-scripts markdownlint-cli@0.48.0
       - name: Lint markdown
         # grandfather noisy style rules on pre-existing docs; strict on new content comes later.
         # MD024 disabled because Keep a Changelog format mandates duplicate
@@ -66,6 +68,35 @@ jobs:
             exit 1
           fi
           echo "OK: spec version $version referenced in SPEC.md"
+
+  package-version-check:
+    name: Package version consistency
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10  # v6.0.3
+      - uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405  # v6.2.0
+        with:
+          python-version: "3.11"
+      - name: Install package
+        run: pip install -e .
+      - name: Assert __version__, installed metadata, and CHANGELOG agree
+        shell: bash
+        run: |
+          # The installed wheel metadata is the source of truth; __version__ is
+          # single-sourced from it. Guard against a CHANGELOG that never names
+          # the shipping version. Catches the version-drift class (ci-02).
+          meta=$(python -c "from importlib.metadata import version; print(version('ildan-memforge'))")
+          attr=$(python -c "import memforge; print(memforge.__version__)")
+          echo "metadata=$meta  __version__=$attr"
+          if [ "$meta" != "$attr" ]; then
+            echo "::error::memforge.__version__ ($attr) != installed metadata ($meta)"
+            exit 1
+          fi
+          if ! grep -qE "^## \[$meta\]" CHANGELOG.md; then
+            echo "::error::CHANGELOG.md has no '## [$meta]' heading for the shipping version"
+            exit 1
+          fi
+          echo "OK: version $meta consistent across metadata, __version__, and CHANGELOG"
 
   secrets-scan:
     name: Secrets scan (gitleaks MIT binary)

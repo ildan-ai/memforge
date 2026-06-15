@@ -29,7 +29,7 @@ def test_per_group_status_rewritten():
         # memforge:competing-claims:end
         ```
         """)
-    new_text, count = migrate_text(text)
+    new_text, count, _ = migrate_text(text)
     assert count == 1
     # Per-group `status:` rewritten
     assert "  state: competing" in new_text
@@ -55,7 +55,7 @@ def test_per_member_status_not_rewritten():
         # memforge:competing-claims:end
         ```
         """)
-    new_text, count = migrate_text(text)
+    new_text, count, _ = migrate_text(text)
     assert count == 0  # nothing to rewrite (already canonical)
     assert "      status: proposed" in new_text
     assert "      status: gated" in new_text
@@ -71,8 +71,8 @@ def test_idempotent():
               status: active
         # memforge:competing-claims:end
         """)
-    once, c1 = migrate_text(text)
-    twice, c2 = migrate_text(once)
+    once, c1, _ = migrate_text(text)
+    twice, c2, _ = migrate_text(once)
     assert c1 == 1
     assert c2 == 0  # second run is a no-op
     assert once == twice
@@ -80,7 +80,7 @@ def test_idempotent():
 
 def test_no_block_no_op():
     text = "# Just a normal MEMORY.md\n\n- [pointer](file.md) — hook\n"
-    new_text, count = migrate_text(text)
+    new_text, count, _ = migrate_text(text)
     assert count == 0
     assert new_text == text
 
@@ -99,7 +99,7 @@ def test_outside_block_status_not_touched():
 
           status: this-is-also-not-in-the-block
         """)
-    new_text, count = migrate_text(text)
+    new_text, count, _ = migrate_text(text)
     assert count == 0
     assert new_text.count("status: this-is-not-in-the-block") == 1
     assert new_text.count("status: this-is-also-not-in-the-block") == 1
@@ -121,7 +121,7 @@ def test_two_groups_both_rewritten():
               status: proposed
         # memforge:competing-claims:end
         """)
-    new_text, count = migrate_text(text)
+    new_text, count, _ = migrate_text(text)
     assert count == 2
     assert "  state: competing" in new_text
     assert "  state: snoozed" in new_text
@@ -134,7 +134,7 @@ def test_two_groups_both_rewritten():
 
 def test_preserves_line_endings_unix():
     text = "# memforge:competing-claims:begin\n- decision_topic: foo\n  status: competing\n# memforge:competing-claims:end\n"
-    new_text, count = migrate_text(text)
+    new_text, count, _ = migrate_text(text)
     assert count == 1
     assert "\r" not in new_text
     assert new_text.endswith("\n")
@@ -171,3 +171,43 @@ def test_file_migration_dry_run_no_write(tmp_path: Path):
     count = migrate_file(p, dry_run=True)
     assert count == 1
     assert p.read_text(encoding="utf-8") == original  # unchanged
+
+
+# ---------- migrate-01: warn on unexpected-indent per-group status ----------
+
+
+def test_warns_on_four_space_status_in_fence():
+    """A `status:` at 4-space indent inside the fence is neither the canonical
+    2-space per-group line nor a member-depth (>=6) field, so it is NOT
+    rewritten but IS surfaced as a warning instead of silently skipped."""
+    text = dedent("""\
+        # memforge:competing-claims:begin
+        -   decision_topic: foo
+            status: competing
+            members:
+              - uid: mem-a
+                status: active
+        # memforge:competing-claims:end
+        """)
+    new_text, count, warnings = migrate_text(text)
+    # 4-space status is not the canonical shape: left unrewritten.
+    assert count == 0
+    assert "    status: competing" in new_text
+    # But the operator is warned so the manual block is not reported as clean.
+    assert any("unexpected indent" in w for w in warnings)
+
+
+def test_no_warning_for_member_depth_status():
+    """A member-level `status:` at 6-space indent must not trigger a warning."""
+    text = dedent("""\
+        # memforge:competing-claims:begin
+        - decision_topic: foo
+          state: competing
+          members:
+            - uid: mem-a
+              status: active
+        # memforge:competing-claims:end
+        """)
+    _new_text, count, warnings = migrate_text(text)
+    assert count == 0
+    assert warnings == []

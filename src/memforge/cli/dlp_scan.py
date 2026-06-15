@@ -12,17 +12,24 @@
 #   --paths <files>        Scan specific files (default: stdin file list)
 #   --staged                Scan files staged for commit (uses git diff --cached)
 #   --memory-folders        Scan default memory folders recursively
-#   --strict                Exit 1 on any finding
+#   --strict                Exit 1 on any BLOCKER finding (credentials, private
+#                           keys, SSN, etc.). MAJOR findings (ARNs, JWTs,
+#                           generic password assignments) do NOT trip --strict.
+#   --strict-major          Exit 1 on any BLOCKER OR MAJOR finding. Use this in a
+#                           CI/pre-commit gate that must block on MAJOR-severity
+#                           hits too (dlp-strict-exit: header now matches the
+#                           BLOCKER-only --strict behavior; --strict-major is the
+#                           any-finding gate).
 #
-# Pure-Python, no external deps. Default-on regex patterns. Customize via
-# --rules <yaml> if needed (future).
+# Pure-Python, no external deps. Default-on regex patterns. Pattern
+# customization currently requires editing PATTERNS in this module; there is no
+# --rules loader yet (dlp-01: header claim corrected to match the CLI).
 
 from __future__ import annotations
 
 import argparse
 import json
 import math
-import os
 import re
 import shutil
 import subprocess
@@ -74,19 +81,44 @@ PATTERNS: list[Pattern] = [
         "BLOCKER",
         "restricted",
     ),
+    # General PEM private-key BODY (RSA|DSA|EC|PGP|ENCRYPTED|OPENSSH), so the
+    # multiline body of a non-OPENSSH key is detected and redacted as a block,
+    # not only its single-line BEGIN header (dlp-multiline-01). The `_body`
+    # suffix routes it through the multiline pass below.
+    Pattern(
+        "private_key_pem_body",
+        re.compile(
+            r"-----BEGIN ((RSA|DSA|EC|PGP|ENCRYPTED) )?PRIVATE KEY-----"
+            r"[\s\S]{100,}?"
+            r"-----END ((RSA|DSA|EC|PGP|ENCRYPTED) )?PRIVATE KEY-----"
+        ),
+        "BLOCKER",
+        "restricted",
+    ),
     Pattern("jwt_token", re.compile(r"\beyJ[A-Za-z0-9_\-]{10,}\.[A-Za-z0-9_\-]{10,}\.[A-Za-z0-9_\-]{10,}\b"), "MAJOR", "restricted"),
     Pattern("ssn_us", re.compile(r"\b(?!000|666|9\d{2})\d{3}-(?!00)\d{2}-(?!0000)\d{4}\b"), "BLOCKER", "restricted"),
     Pattern("credit_card_visa_mc", re.compile(r"\b(?:4\d{3}|5[1-5]\d{2})[\s\-]?\d{4}[\s\-]?\d{4}[\s\-]?\d{4}\b"), "BLOCKER", "restricted"),
     Pattern("docusign_api_account", re.compile(r"\bdocusign[A-Za-z0-9._-]{0,30}[:=]\s*['\"]?[A-Za-z0-9_\-]{16,}"), "MAJOR", "restricted"),
     Pattern("stripe_secret_key", re.compile(r"\b(sk_live|rk_live)_[A-Za-z0-9]{24,}\b"), "BLOCKER", "restricted"),
     Pattern("twilio_auth_token", re.compile(r"\bSK[a-f0-9]{32}\b"), "MAJOR", "restricted"),
-    Pattern("generic_password_assignment", re.compile(r"(?i)(password|passwd|pwd|secret|api[_\-]?key|token)\s*[:=]\s*['\"][^'\"]{8,}['\"]"), "MAJOR", "restricted"),
+    # Unquoted form accepted in addition to quoted: a hand-typed
+    # `password=hunter2supersecret` (no quotes) is the case a human author
+    # actually produces, exactly where DLP should be strongest (dlp-unquoted-
+    # cred-01). The value run stops at whitespace/quote so it stays one token.
+    Pattern("generic_password_assignment", re.compile(r"(?i)(password|passwd|pwd|secret|api[_\-]?key|token)\s*[:=]\s*['\"]?[^\s'\"]{8,}['\"]?"), "MAJOR", "restricted"),
+    # Space-OR-dash separated SSN: prose commonly writes "123 45 6789".
+    # ssn_us (dash-only) stays unchanged; this adds the space variant without
+    # weakening it (dlp-unquoted-cred-01).
+    Pattern("ssn_us_spaced", re.compile(r"\b(?!000|666|9\d{2})\d{3}\s(?!00)\d{2}\s(?!0000)\d{4}\b"), "BLOCKER", "restricted"),
 ]
 
 
 PATTERN_TIER_BY_NAME: dict[str, str] = {p.name: p.implied_tier for p in PATTERNS}
 # high_entropy_near_keyword is generated dynamically (not in PATTERNS); tier internal.
 PATTERN_TIER_BY_NAME["high_entropy_near_keyword"] = "internal"
+# aws_secret_access_key_bare is generated dynamically in scan_text (entropy-gated
+# bare 40-char secret); secret-class, so restricted like the other AWS patterns.
+PATTERN_TIER_BY_NAME["aws_secret_access_key_bare"] = "restricted"
 
 
 @dataclass
@@ -102,6 +134,47 @@ _SECRET_KEYWORD_RE = re.compile(
     r"(?i)\b(password|passwd|pwd|secret|api[_\-]?key|token|auth|credential|bearer)\b"
 )
 _HIGH_ENTROPY_TOKEN_RE = re.compile(r"[A-Za-z0-9+/=_\-\.]{20,}")
+
+# Bare secret access key: a long high-entropy token with NO co-located keyword
+# or assignment (e.g. authored as
+# "aws backup creds: AKIA...EXAMPLE / wJalr...KEY" across two lines, so the
+# secret line stands alone). The keyword-adjacent aws_secret_access_key pattern
+# misses it entirely.
+#
+# dlp-bare-secret-03: the bare rule was previously FIXED-length-40 base64 only,
+# so a 64-char hex token (Mailgun / SendGrid-legacy / Square / generic HMAC keys)
+# or a >40-char base64 token on its own line evaded the commit-blocking gate.
+# Two generalized, entropy-gated bare rules now close that window:
+#
+#   BASE64 ({40,}, 0-2 '=' padding): floor 4.2. A real base64 secret runs ~4.6+
+#   bits; a 40-char hex git anchor (~3.95) and a long CamelCase identifier
+#   (~4.16) sit below 4.2 and are NOT flagged. The negative lookbehind/lookahead
+#   bound the token AFTER optional padding so a padded key cannot evade (dlp-01).
+#
+#   HEX ({40,}): floor 3.5 (a 16-symbol hex alphabet tops out near 4.0 bits, so
+#   4.2 would never fire on hex). Entropy alone cannot separate a 64-char hex
+#   SECRET from a 64-char hex git commit hash (both ~3.8). MemForge legitimately
+#   stores git commit/anchor hashes in memory bodies, ALWAYS keyword-adjacent
+#   ("Commit `<hash>`", "anchor tag <hash>"), so the hex rule SKIPS a token whose
+#   line carries a git-anchor context keyword (commit/anchor/sha/hash/revision/
+#   blob/tree). A standalone 64-hex API token on its own line (no such context)
+#   still fires. This is the precision lever entropy cannot provide.
+#
+# Keyword-adjacent and PEM/AKIA/provider-prefixed secrets remain caught by their
+# own unconditional PATTERNS.
+_BARE_SECRET_BASE64_RE = re.compile(
+    r"(?<![A-Za-z0-9/+=])[A-Za-z0-9/+]{40,}={0,2}(?![A-Za-z0-9/+=])"
+)
+_BARE_SECRET_HEX_RE = re.compile(r"(?<![0-9a-fA-F])[0-9a-fA-F]{40,}(?![0-9a-fA-F])")
+_BARE_SECRET_BASE64_ENTROPY = 4.2
+_BARE_SECRET_HEX_ENTROPY = 3.5
+# Git-object context: a bare hex run on a line mentioning any of these is a
+# commit/anchor hash, not a credential. Skips the hex rule (not the base64 rule;
+# base64 git anchors do not exist).
+_GIT_HEX_CONTEXT_RE = re.compile(
+    r"(?i)\b(commit|anchor|sha[0-9]*|hash|revision|rev|blob|tree|checksum|digest|"
+    r"object[\s_-]?id|git)\b"
+)
 
 
 def shannon_entropy(s: str) -> float:
@@ -134,6 +207,38 @@ def scan_text(text: str, file: Path, entropy_threshold: float = 4.5) -> list[Fin
                     )
                 )
 
+        # Bare secret access key (no keyword, no assignment): {40,} base64 OR
+        # {40,} hex, entropy-gated so prose runs / git anchors do not false-
+        # positive (dlp-aws-secret-01, dlp-bare-secret-03). The hex rule is
+        # additionally suppressed on a line carrying git-object context (commit/
+        # anchor/sha/...), where a long hex run is a commit hash, not a secret.
+        line_is_git_context = bool(_GIT_HEX_CONTEXT_RE.search(line))
+        _bare_rules = [
+            (_BARE_SECRET_BASE64_RE, _BARE_SECRET_BASE64_ENTROPY, False),
+            (_BARE_SECRET_HEX_RE, _BARE_SECRET_HEX_ENTROPY, True),
+        ]
+        for rx, floor, is_hex in _bare_rules:
+            if is_hex and line_is_git_context:
+                continue
+            for m in rx.finditer(line):
+                token = m.group(0)
+                if shannon_entropy(token) < floor:
+                    continue
+                key = (line_no, "aws_secret_access_key_bare", m.start(), m.end())
+                if key in seen:
+                    continue
+                seen.add(key)
+                excerpt = _redact(line.strip(), m.start(), m.end())
+                out.append(
+                    Finding(
+                        file=file,
+                        line_no=line_no,
+                        pattern="aws_secret_access_key_bare",
+                        severity="BLOCKER",
+                        excerpt=excerpt,
+                    )
+                )
+
         # Entropy: flag tokens that are 20+ chars AND have entropy > threshold
         # AND co-occur with a secret-keyword on the same line. Catches base64-
         # wrapped tokens, custom-scheme keys, anything the regex set misses.
@@ -157,7 +262,9 @@ def scan_text(text: str, file: Path, entropy_threshold: float = 4.5) -> list[Fin
                     )
                 )
 
-    multiline_patterns = [pat for pat in PATTERNS if pat.name == "ssh_private_key_body"]
+    # Any pattern whose name ends in `_body` is a multiline (PEM-style) body
+    # scan run over the whole text, not line-by-line (dlp-multiline-01).
+    multiline_patterns = [pat for pat in PATTERNS if pat.name.endswith("_body")]
     for pat in multiline_patterns:
         for m in pat.regex.finditer(text):
             line_no = text.count("\n", 0, m.start()) + 1
@@ -186,6 +293,15 @@ def run_detect_secrets(files: list[Path]) -> list[Finding]:
     if not files:
         return []
     if shutil.which("detect-secrets") is None:
+        # rel-03: surface reduced coverage rather than returning [] silently. A
+        # green DLP scan that quietly ran only the regex/entropy floor (skipping
+        # the split-key/base64-obfuscation cases detect-secrets is here to catch)
+        # is a false sense of safety on a partner box where the console script is
+        # not on PATH.
+        sys.stderr.write(
+            "warn: detect-secrets not on PATH; deep DLP layer skipped, "
+            "regex/entropy floor only (install the 'dlp' extra to enable)\n"
+        )
         return []
     try:
         proc = subprocess.run(
@@ -196,18 +312,44 @@ def run_detect_secrets(files: list[Path]) -> list[Finding]:
         )
     except (subprocess.TimeoutExpired, OSError):
         return []
+    # A nonzero return WITH stdout still proceeds to parse (detect-secrets exits
+    # nonzero in some scan modes). Guard the parse and normalize emitted paths so
+    # a partial/legacy-format report cannot emit findings with a path form that
+    # disagrees with the caller-supplied (possibly absolute) paths (dlp-
+    # detectsecrets-01); path-mismatched findings slow pre-commit triage.
     if proc.returncode != 0 and not proc.stdout:
         return []
     try:
         report = json.loads(proc.stdout or "{}")
     except json.JSONDecodeError:
         return []
+
+    # Map every plausible string form (absolute, as-passed, resolved, name) of
+    # each scanned file back to the caller's canonical Path, so a finding keyed
+    # on a repo-relative name is reported with the same path form as the regex
+    # findings for that file.
+    canon_by_str: dict[str, Path] = {}
+    for f in files:
+        for key in {str(f), f.as_posix(), f.name}:
+            canon_by_str.setdefault(key, f)
+        try:
+            canon_by_str.setdefault(str(f.resolve()), f)
+        except OSError:
+            pass
+
     out: list[Finding] = []
     for fname, items in (report.get("results") or {}).items():
-        path = Path(fname)
+        # Normalize the detect-secrets path against the scanned set; fall back to
+        # the verbatim path only when no scanned file matches.
+        path = canon_by_str.get(fname) or canon_by_str.get(Path(fname).name) or Path(fname)
         for item in items:
             line_no = int(item.get("line_number", 0) or 0)
             kind = str(item.get("type", "detect-secrets-finding"))
+            # NOTE (dlp-detectsecrets-01): detect-secrets findings are emitted as
+            # BLOCKER by design (a pre-commit gate treats any flagged secret as
+            # blocking). detect-secrets plugin confidence is not mapped to a
+            # lower severity; operators who find the heuristic too aggressive can
+            # pass --no-detect-secrets to drop the supplementary scan entirely.
             out.append(
                 Finding(
                     file=path,
@@ -300,7 +442,14 @@ def _cross_check_enabled(cli_disabled: bool, config_enabled: bool) -> bool:
 
 def _privileged_floor_engaged(findings: list[Finding]) -> bool:
     """Return True if any finding implies privileged tier — cross-check
-    cannot be disabled in that case (spec hard floor)."""
+    cannot be disabled in that case (spec hard floor).
+
+    NOTE (dlp-config-floor-01): this floor is intentionally DORMANT today. No
+    entry in PATTERNS implies `privileged` (all are `restricted` or
+    `internal`), matching SPEC §"Label / content cross-check" which reserves
+    the privileged backstop "for future privileged-tier markers". It cannot
+    fire until a privileged-class pattern exists; it is not active enforcement.
+    """
     from memforge.cli._config import tier_rank
 
     privileged_rank = tier_rank("privileged")
@@ -333,13 +482,10 @@ def staged_files() -> list[Path]:
 
 
 def memory_folder_files() -> list[Path]:
+    from memforge.paths import default_memory_paths
+
     out: list[Path] = []
-    home = Path.home()
-    user = os.environ.get("USER", "")
-    folders: list[Path] = []
-    if user:
-        folders.append(home / ".claude" / "projects" / f"{user}-claude-projects" / "memory")
-    folders.append(home / ".claude" / "global-memory")
+    folders: list[Path] = list(default_memory_paths())
     skip = {"archive", ".git", "__pycache__"}
     for folder in folders:
         if not folder.exists():
@@ -384,7 +530,11 @@ def main() -> int:
     p.add_argument("--no-detect-secrets", action="store_true",
                    help="Skip detect-secrets supplementary scan even when installed")
     p.add_argument("--no-entropy", action="store_true",
-                   help="Skip Shannon-entropy heuristic")
+                   help="Disable ONLY the generic high-entropy-near-keyword "
+                        "heuristic. The bare-secret entropy gate (base64/hex "
+                        "credential shapes) stays ON: it is high-precision and "
+                        "is the credential-shape backstop on the commit gate "
+                        "(dlp-entropy-noentropy-bypass-01).")
     p.add_argument("--entropy-threshold", type=float, default=4.5,
                    help="Bits-per-char entropy threshold for high-entropy heuristic (default 4.5)")
     p.add_argument("--no-sensitivity-cross-check", action="store_true",

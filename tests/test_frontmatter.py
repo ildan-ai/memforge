@@ -156,6 +156,28 @@ def test_render_round_trip_preserves_simple_fields():
     assert body2 == body
 
 
+def test_render_scalar_only_mapping_is_block_style():
+    """frontmatter-render-01/02: a list-less (scalar-only) frontmatter mapping
+    must render block style (one key per line), NOT collapse to an inline
+    flow-style brace line ({name: x, ...}). Round-trip equality alone does NOT
+    catch the regression because the flow form round-trips fine; assert on the
+    on-disk LAYOUT directly."""
+    fm = {
+        "name": "rule-x",
+        "description": "a short hook",
+        "type": "feedback",
+        "uid": "mem-00001",
+        "tier": "index",
+    }
+    out = render(fm, "body\n")
+    assert "\nname:" in out
+    assert "\ntype:" in out
+    assert "{name:" not in out
+    # No flow-style braces anywhere in the frontmatter block.
+    fm_block = out.split("---", 2)[1]
+    assert "{" not in fm_block
+
+
 def test_render_round_trip_preserves_list_values():
     fm = {"name": "rule", "tags": ["topic:routing", "topic:cost"]}
     body = "body\n"
@@ -177,3 +199,51 @@ def test_render_round_trip_after_date_stringification():
 
 def test_render_with_empty_frontmatter_returns_body_only():
     assert render({}, "just body\n") == "just body\n"
+
+
+# ---------- frontmatter-01: close fence must be a full `---` line ----------
+
+
+def test_parse_trailing_text_on_fence_line_is_not_a_fence():
+    """Regression for frontmatter-01.
+
+    `--- not a real fence` is NOT a close fence (the delimiter is `---` alone on
+    its own line per SPEC). The old bare-substring match split here and leaked
+    ' not a real fence\\nbody' into the body. With no valid close fence in this
+    text, parse returns no frontmatter rather than a mis-split.
+    """
+    text = "---\nname: z\ntype: user\n--- not a real fence\nbody\n"
+    assert has_frontmatter(text) is False
+    fm, body = parse(text)
+    assert fm == {}
+    assert body == text
+
+
+def test_parse_four_dash_line_is_not_a_fence():
+    """A `----` line is not a `---` fence; it must not be consumed as one."""
+    text = "---\nname: z\ntype: user\n----\nbody\n"
+    assert has_frontmatter(text) is False
+    fm, body = parse(text)
+    assert fm == {}
+    assert body == text
+
+
+def test_parse_skips_non_fence_dash_line_to_real_fence():
+    """The close-fence search must skip a `--- trailing text` line and stop at
+    the first true `---`-on-its-own-line fence. The skipped line and what
+    follows the real fence land in the body, not the YAML block."""
+    text = "---\nname: z\ntype: user\n---\n--- still in body\nrest\n"
+    assert has_frontmatter(text) is True
+    fm, body = parse(text)
+    assert fm.get("name") == "z"
+    assert body == "--- still in body\nrest\n"
+
+
+def test_parse_fence_at_eof_without_trailing_newline():
+    """A file ending exactly with `\\n---` (no trailing newline, empty body)
+    is a valid close fence."""
+    text = "---\nname: z\ntype: user\n---"
+    assert has_frontmatter(text) is True
+    fm, body = parse(text)
+    assert fm.get("name") == "z"
+    assert body == ""

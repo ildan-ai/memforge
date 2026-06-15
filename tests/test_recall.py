@@ -58,15 +58,46 @@ def test_build_index_includes_only_live(folder: Path):
     assert "Always use OAuth for login" in names
     assert "Old database rule" not in names  # superseded excluded (PC6 liveness)
     assert payload["counts"]["entries"] == 3
-    assert payload["spec"] == "0.6.0"
+    assert payload["spec"] == "0.6.1"  # doc-07: stamped spec matches package/spec
     assert payload["version"] == recall.INDEX_VERSION
+
+
+def test_build_index_strips_control_chars(tmp_path: Path):
+    """recall-01: build_index feeds the CLI --rebuild path, which passes the
+    in-memory payload straight to recall() without load_index/_sanitize_payload.
+    So build_index itself MUST strip ANSI/control-char escapes from name/desc/
+    path, or hostile frontmatter smuggles terminal escapes into injected output
+    on the rebuild path (while the load path strips them)."""
+    # YAML double-quoted scalars with \x1b (ESC) + \x07 (BEL) escape sequences;
+    # yaml.safe_load decodes these to the actual control chars in the parsed
+    # frontmatter values (the smuggling vector this test guards against).
+    _write(
+        tmp_path, "evil.md",
+        'name: "kubernetes ev\\x1b[31mil"\n'
+        'description: "distinctivetoken ev\\x1b]0;ttl\\x07"\n'
+        "type: feedback\nstatus: active",
+    )
+    payload = recall.build_index(tmp_path)
+    entry = next(iter(payload["entries"].values()))
+    assert "\x1b" not in entry["name"]
+    assert "\x1b" not in entry["desc"]
+    assert "\x07" not in entry["desc"]
+    # And the same is true when surfaced as a Hit via recall() on the freshly
+    # built (un-loaded) payload.
+    hits = recall.recall("kubernetes distinctivetoken", [payload])
+    for h in hits:
+        assert "\x1b" not in h.name and "\x1b" not in h.desc
+        assert "\x07" not in h.desc
 
 
 def test_build_index_empty_folder(tmp_path: Path):
     payload = recall.build_index(tmp_path)
     assert payload["counts"]["entries"] == 0
     assert payload["entries"] == {}
-    assert payload["always"] == []
+    # recall-03: the derived always-set is exposed only as a count for human/
+    # debug visibility; there is no unused top-level 'always' list to carry.
+    assert payload["counts"]["always"] == 0
+    assert "always" not in payload
 
 
 def test_build_index_skips_memory_md_and_archive(folder: Path):
@@ -179,6 +210,107 @@ def test_recall_access_team_gate(tmp_path: Path):
     assert "Security team note" not in _names(recall.recall("widget", [p]))  # no team
     assert "Security team note" in _names(
         recall.recall("widget", [p], viewer_teams={"team:security"}))
+
+
+def test_recall_access_counsel_default_deny(tmp_path: Path):
+    # BLOCKER recall-access-01: a non-team restricting access label (counsel)
+    # must fail CLOSED. A teamless viewer must NOT see its description.
+    _write(tmp_path, "counsel.md",
+           "name: Privileged counsel note\ndescription: privileged widget legal advice\n"
+           "type: reference\nstatus: active\naccess: [counsel]\ntriggers: [widget]")
+    p = recall.build_index(tmp_path)
+    # Default viewer (no teams): counsel memory is suppressed.
+    assert "Privileged counsel note" not in _names(recall.recall("widget", [p]))
+    # Even a viewer holding a team does not gain counsel access (no counsel role).
+    assert "Privileged counsel note" not in _names(
+        recall.recall("widget", [p], viewer_teams={"team:security"}))
+
+
+def test_recall_access_public_internal_surface(tmp_path: Path):
+    # public/internal access labels are open and MUST still surface (not over-blocked).
+    _write(tmp_path, "pub.md",
+           "name: Public widget note\ndescription: public widget data\n"
+           "type: reference\nstatus: active\naccess: [public]\ntriggers: [widget]")
+    _write(tmp_path, "int.md",
+           "name: Internal widget note\ndescription: internal widget data\n"
+           "type: reference\nstatus: active\naccess: [internal]\ntriggers: [widget]")
+    p = recall.build_index(tmp_path)
+    names = _names(recall.recall("widget", [p]))
+    assert "Public widget note" in names
+    assert "Internal widget note" in names
+
+
+def test_recall_access_team_still_visible_to_member(tmp_path: Path):
+    # A team:x viewer-in-team still sees its team memory (BLOCKER fix must not
+    # over-restrict the existing team path).
+    _write(tmp_path, "team.md",
+           "name: Platform team note\ndescription: platform widget rotation\n"
+           "type: reference\nstatus: active\naccess: [team:platform]\ntriggers: [widget]")
+    p = recall.build_index(tmp_path)
+    assert "Platform team note" not in _names(recall.recall("widget", [p]))
+    assert "Platform team note" in _names(
+        recall.recall("widget", [p], viewer_teams={"team:platform"}))
+
+
+def test_recall_access_multi_team_any_match(tmp_path: Path):
+    # Mirror index_gen.apply_rbac_filter: with multiple team labels, holding ANY
+    # one grants access.
+    _write(tmp_path, "multi.md",
+           "name: Multi team note\ndescription: shared widget rotation\n"
+           "type: reference\nstatus: active\naccess: [team:security, team:platform]\n"
+           "triggers: [widget]")
+    p = recall.build_index(tmp_path)
+    assert "Multi team note" in _names(
+        recall.recall("widget", [p], viewer_teams={"team:platform"}))
+    assert "Multi team note" not in _names(
+        recall.recall("widget", [p], viewer_teams={"team:ops"}))
+
+
+def test_recall_access_restricted_label_default_deny(tmp_path: Path):
+    # A restricted/privileged access label (not public/internal, not team) is
+    # unsatisfiable at recall time and must fail closed.
+    _write(tmp_path, "restr.md",
+           "name: Restricted access note\ndescription: restricted widget data\n"
+           "type: reference\nstatus: active\naccess: [restricted]\ntriggers: [widget]")
+    p = recall.build_index(tmp_path)
+    assert "Restricted access note" not in _names(recall.recall("widget", [p]))
+
+
+def test_recall_honors_operator_synonym_override(tmp_path: Path):
+    # MAJOR recall-01: build/query synonym symmetry. The index is built with the
+    # merged map (default + .memforge/recall-synonyms.yaml override). A query on
+    # the surface form (k8s) must find the memory indexed under the canonical
+    # (kubernetes) WITHOUT the caller passing synonyms= explicitly.
+    override = tmp_path / recall.SYNONYMS_REL_PATH
+    override.parent.mkdir(parents=True, exist_ok=True)
+    override.write_text("map:\n  kubernetes: [k8s, kube]\n", encoding="utf-8")
+    _write(tmp_path, "infra.md",
+           "name: Kubernetes deploy note\ndescription: how we deploy kubernetes workloads\n"
+           "type: reference\nstatus: active\ntriggers: [kubernetes]")
+    p = recall.build_index(tmp_path)  # built with merged override map
+    recall.write_index(tmp_path, p)
+    loaded = recall.load_index(tmp_path)
+    # Query the surface form; reader self-loads the folder override -> match.
+    assert "Kubernetes deploy note" in _names(recall.recall("k8s rollout", [loaded]))
+
+
+def test_recall_char_budget_counts_folder_prefix(tmp_path: Path):
+    # MINOR recall-02: the folder prefix is part of the rendered line and must be
+    # counted against the budget, so a long folder shrinks how many hits fit.
+    for i in range(10):
+        _write(tmp_path, f"m{i}.md",
+               f"name: Widget memo {i}\ndescription: widget calibration note number {i}\n"
+               f"type: reference\nstatus: active\ntriggers: [widget]")
+    p = recall.build_index(tmp_path)
+    # Force the long real folder string into the payload.
+    p["folder"] = "/srv/memory-store/global-memory/some/deep/nested/path"
+    short = recall.build_index(tmp_path)
+    short["folder"] = "/x"
+    n_long = len(recall.recall("widget", [p], top_k=100, char_budget=400))
+    n_short = len(recall.recall("widget", [short], top_k=100, char_budget=400))
+    # A longer folder prefix consumes more budget per line -> at most as many hits.
+    assert n_long <= n_short
+    assert n_short >= 1
 
 
 def test_recall_budget_and_top_k(tmp_path: Path):
@@ -333,6 +465,34 @@ def test_cli_rebuild_then_query(folder: Path, capsys):
     assert "Operator nickname" in out  # always-set
 
 
+def test_cli_rebuild_skips_when_not_stale(folder: Path, capsys):
+    # MINOR recall-03: --rebuild now consumes index_is_stale and reuses an
+    # up-to-date index instead of rewriting it every time.
+    from memforge.cli import recall as cli
+    cli.main(["--path", str(folder), "--rebuild"])  # initial build
+    idx = folder / recall.INDEX_REL_PATH
+    mtime_before = idx.stat().st_mtime_ns
+    import time
+    time.sleep(0.01)
+    rc = cli.main(["--path", str(folder), "--rebuild", "login"])
+    assert rc == 0
+    # Not stale -> index file untouched (no rewrite).
+    assert idx.stat().st_mtime_ns == mtime_before
+    out = capsys.readouterr().out
+    assert "Always use OAuth for login" in out  # still queries correctly
+
+
+def test_cli_force_rebuild_always_rewrites(folder: Path):
+    from memforge.cli import recall as cli
+    cli.main(["--path", str(folder), "--rebuild"])
+    idx = folder / recall.INDEX_REL_PATH
+    mtime_before = idx.stat().st_mtime_ns
+    import time
+    time.sleep(0.01)
+    cli.main(["--path", str(folder), "--rebuild", "--force-rebuild"])
+    assert idx.stat().st_mtime_ns != mtime_before  # forced rewrite
+
+
 def test_cli_json_format(folder: Path, capsys):
     from memforge.cli import recall as cli
     cli.main(["--path", str(folder), "--rebuild"])  # build first
@@ -340,3 +500,40 @@ def test_cli_json_format(folder: Path, capsys):
     assert rc == 0
     data = json.loads(capsys.readouterr().out)
     assert any(h["name"] == "Always use OAuth for login" for h in data)
+
+
+def test_cli_rebuild_path_strips_control_chars(tmp_path: Path, capsys):
+    """recall-01: the CLI --rebuild path passes the freshly built payload to
+    recall() WITHOUT load_index/_sanitize_payload. With the build-time sanitizer
+    in place, ANSI/control-char escapes from hostile frontmatter must not reach
+    the emitted markdown/JSON on the rebuild path."""
+    from memforge.cli import recall as cli
+
+    _write(
+        tmp_path, "evil.md",
+        'name: "kubernetes ev\\x1b[31mil"\n'
+        'description: "distinctivetoken ev\\x1b]0;ttl\\x07"\n'
+        "type: feedback\nstatus: active",
+    )
+    rc = cli.main(["--path", str(tmp_path), "--rebuild", "--format", "json",
+                   "kubernetes distinctivetoken"])
+    assert rc == 0
+    out = capsys.readouterr().out
+    assert "\x1b" not in out
+    assert "\x07" not in out
+
+
+def test_recall_dedups_uid_across_payloads(tmp_path: Path):
+    """recall-04: a uid present in two payloads (e.g. the same global folder
+    configured twice) must be listed once, not double-listed."""
+    _write(
+        tmp_path, "always_rule.md",
+        "name: Operator nickname\n"
+        "description: addresses informally\n"
+        "type: user\nstatus: active\nuid: mem-dup\nalways: true",
+    )
+    payload = recall.build_index(tmp_path)
+    # Same payload twice simulates one uid surfaced from two configured folders.
+    hits = recall.recall("nickname", [payload, payload])
+    uids = [h.uid for h in hits]
+    assert uids.count("mem-dup") == 1

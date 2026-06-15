@@ -19,7 +19,6 @@ from __future__ import annotations
 
 import argparse
 import json
-import os
 import sys
 from pathlib import Path
 from typing import Optional
@@ -28,18 +27,13 @@ from memforge import recall as _recall
 
 
 def default_paths() -> list[Path]:
-    """Same default convention as memory-query / memory-index-gen."""
-    out: list[Path] = []
-    home = Path.home()
-    user = os.environ.get("USER", "")
-    if user:
-        per_cwd = home / ".claude" / "projects" / f"{user}-claude-projects" / "memory"
-        if per_cwd.exists():
-            out.append(per_cwd)
-    g = home / ".claude" / "global-memory"
-    if g.exists():
-        out.append(g)
-    return out
+    """Default memory folders via the centralized, IDE/OS-neutral resolver.
+
+    Filters to folders that exist on disk (recall is fail-open; a nonexistent
+    default folder is simply skipped)."""
+    from memforge.paths import default_memory_paths
+
+    return [p for p in default_memory_paths() if p.exists()]
 
 
 def _emit_markdown(hits) -> str:
@@ -77,13 +71,23 @@ def main(argv: Optional[list[str]] = None) -> int:
         p.add_argument("--stdin", action="store_true",
                        help="Read the query from stdin instead of argv.")
         p.add_argument("--rebuild", action="store_true",
-                       help="(Re)build the recall index for the folders before querying. "
+                       help="(Re)build the recall index for the folders before querying "
+                            "ONLY when stale (index missing or an in-scope file changed). "
                             "With no query, this is a build-only refresh.")
+        p.add_argument("--force-rebuild", action="store_true",
+                       help="With --rebuild, rebuild unconditionally even when the "
+                            "existing index is up to date (skip the staleness check).")
         p.add_argument("--top-k", type=int, default=_recall.DEFAULT_TOP_K)
         p.add_argument("--char-budget", type=int, default=_recall.DEFAULT_CHAR_BUDGET)
         p.add_argument("--sensitivity-max",
                        choices=("public", "internal", "restricted", "privileged"),
-                       default=None, help="Exclude memories above this sensitivity tier.")
+                       default=None,
+                       help="Exclude memories above this sensitivity tier. WARNING: "
+                            "when UNSET there is NO sensitivity ceiling, so a memory "
+                            "labeled restricted or privileged is eligible for injection. "
+                            "Descriptions are spec'd public-class, but in a not-yet-"
+                            "compliant store pass an explicit ceiling (e.g. internal) "
+                            "on the per-prompt recall path to be safe.")
         p.add_argument("--viewer-team", action="append", default=[],
                        help="Viewer team membership (repeatable, e.g. team:security).")
         p.add_argument("--format", choices=("markdown", "json"), default="markdown")
@@ -102,8 +106,15 @@ def main(argv: Optional[list[str]] = None) -> int:
             payload = None
             if args.rebuild:
                 try:
-                    payload = _recall.build_index(f)
-                    _recall.write_index(f, payload)
+                    # Consume index_is_stale (its stated purpose): when an index
+                    # already exists and nothing in-scope changed, skip the
+                    # walk+write and reuse it. --force-rebuild bypasses the check.
+                    existing = None if args.force_rebuild else _recall.load_index(f)
+                    if existing is not None and not _recall.index_is_stale(f, existing):
+                        payload = existing
+                    else:
+                        payload = _recall.build_index(f)
+                        _recall.write_index(f, payload)
                 except Exception:
                     payload = _recall.load_index(f)  # fall back to any existing index
             else:

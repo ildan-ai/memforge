@@ -42,6 +42,40 @@ def test_is_memory_file_accepts_subfolder_md(tmp_path):
     assert is_memory_file(p) is True
 
 
+# ---------- discovery-01: is_memory_file / walk_memory_files consistency ----------
+
+
+def test_is_memory_file_consistent_with_walk_when_root_under_archive(tmp_path):
+    """Regression for discovery-01.
+
+    When the memory root itself sits under a directory named 'archive'
+    (e.g. data-archive/memory or .../archive/memory), walk_memory_files
+    yields the files (it prunes archive/ only BELOW root) but the old
+    is_memory_file rejected every one (matched 'archive' anywhere in the
+    absolute path), silently dropping every memory for a consumer that
+    filtered walk output through is_memory_file. Passing the root makes the
+    two agree.
+    """
+    root = tmp_path / "archive" / "memory"
+    f = _touch(root / "feedback_x.md")
+
+    walked = list(walk_memory_files(root))
+    assert [p.name for p in walked] == ["feedback_x.md"]
+
+    # With root supplied, is_memory_file agrees with walk_memory_files.
+    assert is_memory_file(f, root=root) is True
+    for p in walked:
+        assert is_memory_file(p, root=root) is True
+
+
+def test_is_memory_file_rejects_archive_below_root_even_with_root(tmp_path):
+    """A genuine archive/ subtree BELOW the root is still rejected when root
+    is supplied (the consistency fix must not stop excluding real archives)."""
+    root = tmp_path / "archive" / "memory"
+    archived = _touch(root / "archive" / "old.md")
+    assert is_memory_file(archived, root=root) is False
+
+
 # ---------- walk_memory_files ----------
 
 

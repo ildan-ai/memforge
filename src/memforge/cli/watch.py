@@ -21,11 +21,15 @@
 #
 # Multiple events within --debounce-ms coalesce into one commit so a
 # multi-file write doesn't produce a commit per file.
+#
+# Commit scope: staging is scoped to memory content (`*.md` + `.memforge/`),
+# not `git add -A`, so editor swap files and OS metadata are not committed.
+# Keep a committed `.gitignore` in the memory folder for anything else you
+# want excluded; the watcher will not stage it regardless.
 
 from __future__ import annotations
 
 import argparse
-import os
 import shutil
 import subprocess
 import sys
@@ -75,24 +79,39 @@ class CommitDebouncer:
             self.timer.start()
 
     def _commit(self) -> None:
+        # Never os.chdir here: _commit runs on a per-repo Timer thread and
+        # os.chdir is process-global, so with two watched folders one repo's
+        # chdir can land between another repo's chdir and its git add/commit,
+        # committing repo A's change into repo B's working directory. Bind every
+        # git call to this repo with `-C <repo>` instead (mirrors resolve._git).
+        repo = str(self.repo)
         try:
-            os.chdir(self.repo)
-        except OSError:
-            return
-        try:
-            unstaged = subprocess.call(["git", "diff", "--quiet"])
-            staged = subprocess.call(["git", "diff", "--cached", "--quiet"])
+            unstaged = subprocess.call(["git", "-C", repo, "diff", "--quiet"])
+            staged = subprocess.call(["git", "-C", repo, "diff", "--cached", "--quiet"])
             untracked = subprocess.check_output(
-                ["git", "ls-files", "--others", "--exclude-standard"],
+                ["git", "-C", repo, "ls-files", "--others", "--exclude-standard"],
                 text=True,
             ).strip()
         except (subprocess.CalledProcessError, FileNotFoundError):
             return
         if unstaged == 0 and staged == 0 and not untracked:
             return
-        subprocess.call(["git", "add", "-A"])
+        # Scope staging to memory content (*.md + the .memforge/ tool dir) rather
+        # than `git add -A`, so editor swap files, .DS_Store, and other transient
+        # junk landing during the debounce window do not ride along in the
+        # `memory: filesystem write` commit (mirrors resolve.py's scoped commit;
+        # watch-01). A committed .gitignore in the memory folder remains the
+        # belt-and-suspenders guard for anything under these pathspecs.
+        # Only pass the .memforge pathspec when it exists: git treats an
+        # unmatched pathspec as a hard error for the WHOLE `git add`, which would
+        # otherwise drop the *.md change too (and commit nothing) in a memory
+        # folder that has no .memforge/ dir yet.
+        pathspecs = ["*.md"]
+        if (self.repo / ".memforge").exists():
+            pathspecs.append(".memforge")
+        subprocess.call(["git", "-C", repo, "add", "-A", "--", *pathspecs])
         msg = f"memory: filesystem write ({now_utc()})"
-        rc = subprocess.call(["git", "commit", "-q", "-m", msg])
+        rc = subprocess.call(["git", "-C", repo, "commit", "-q", "-m", msg])
         if rc == 0 and not self.quiet:
             print(f"[memory-watch] committed in {self.repo} at {now_utc()}", flush=True)
 
@@ -121,17 +140,11 @@ class MemoryHandler(FileSystemEventHandler):
 
 
 def default_paths() -> list[Path]:
-    out: list[Path] = []
-    home = Path.home()
-    user = os.environ.get("USER") or os.environ.get("USERNAME") or ""
-    if user:
-        per_cwd = home / ".claude" / "projects" / f"{user}-claude-projects" / "memory"
-        if per_cwd.exists():
-            out.append(per_cwd)
-    glob = home / ".claude" / "global-memory"
-    if glob.exists():
-        out.append(glob)
-    return out
+    # Centralized in memforge.paths (env override -> grandfathered .claude layout
+    # if present -> ~/.memforge). Preserve the .exists() filter so we only watch
+    # folders that actually exist.
+    from memforge.paths import default_memory_paths
+    return [p for p in default_memory_paths() if p.exists()]
 
 
 def main() -> int:
