@@ -125,7 +125,7 @@ A secure-mode adapter additionally MUST (these are obligations 4 through 6, in a
 
 - Run `memory-audit --export-tier=<level> --strict` as a CI / pre-export gate when the adapter exports memory to any external surface. The level is whatever the adapter's destination accepts. The gate fails BLOCKER on any file whose declared `sensitivity` exceeds `<level>`. Privileged-tier files always block when the gate runs, regardless of `audit.enforce_sensitivity_export_gate` config.
 - Run `memory-dlp-scan --strict` (default `dlp.enforce_sensitivity_cross_check: true`) before any export. The cross-check emits a BLOCKER `sensitivity_label_mismatch` finding when body content's implied tier exceeds the declared label. The check cannot be disabled when implied tier is `privileged`.
-- Pass the conformance suite at `tests/conformance/sensitivity/`. Five scenarios: `export_tier_public`, `export_tier_internal`, `export_tier_restricted`, `export_tier_privileged`, `label_mismatch_blocked`. Adapter authors run `pytest tests/conformance/sensitivity/` to verify.
+- Pass the conformance suite at `tests/conformance/sensitivity/`. Five scenarios: `export_tier_public`, `export_tier_internal`, `export_tier_restricted`, `export_tier_privileged`, `label_mismatch_blocked`. Adapter authors run `pytest tests/test_conformance_sensitivity.py` to verify (the fixtures live under `tests/conformance/sensitivity/`; the test module that drives them is `tests/test_conformance_sensitivity.py`).
 
 Operators MAY disable the export-tier gate or the DLP cross-check at non-privileged levels by setting `audit.enforce_sensitivity_export_gate: false` and / or `dlp.enforce_sensitivity_cross_check: false` in `.memforge/config.yaml`. Privileged enforcement is a hard floor that no config knob can override.
 
@@ -182,7 +182,7 @@ Before declaring your adapter v0.4-conformant, run the following test scenarios.
 2. Run `memforge-migrate-claim-block`.
 3. **Assert**: per-group `status:` rewritten to `state:`; per-member `status:` (under `members:`) untouched; running again is a no-op.
 
-A reference test fixture set is at `tests/conformance/sensitivity/` (covers spec §"Sensitivity enforcement (v0.4.0+)" with five scenarios: `export_tier_public`, `export_tier_internal`, `export_tier_restricted`, `export_tier_privileged`, `label_mismatch_blocked`). Run `pytest tests/conformance/sensitivity/` to verify your secure-mode adapter honors the export-tier gate and the DLP label-vs-implied-tier cross-check. Adapters claiming secure-mode MUST pass all five.
+A reference test fixture set is at `tests/conformance/sensitivity/` (covers spec §"Sensitivity enforcement (v0.4.0+)" with five scenarios: `export_tier_public`, `export_tier_internal`, `export_tier_restricted`, `export_tier_privileged`, `label_mismatch_blocked`). Run `pytest tests/test_conformance_sensitivity.py` to verify your secure-mode adapter honors the export-tier gate and the DLP label-vs-implied-tier cross-check. Adapters claiming secure-mode MUST pass all five.
 
 ## Authority threat model summary (for adapter authors)
 

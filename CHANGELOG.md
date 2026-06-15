@@ -36,7 +36,9 @@ The Contributor License Agreement infrastructure is counsel-blocked; external pu
 
 ### CI
 
-- New `package-version-check` (asserts `__version__` == installed metadata == a matching CHANGELOG heading), a release-time `test` gate (pytest + version consistency on the exact tag commit), a deep verified secret-scan gating PRs, and conservative runtime-dependency upper bounds.
+- New `package-version-check` (asserts `__version__` == installed metadata == a matching CHANGELOG heading), a release-time `test` gate (pytest + version consistency on the exact tag commit), and conservative runtime-dependency upper bounds.
+- **Signed releases + SBOM.** The release tag is signed (SSH, GitHub-verified), and `release.yml` generates a CycloneDX SBOM from the built wheel and attaches it to the GitHub Release alongside the sdist and wheel.
+- **Supply-chain audit gate.** A `supply-chain-audit` CI job resolves the shipped runtime dependency tree and runs `pip-audit --strict` against it (OSV/PyPI advisories) on every push and PR.
 
 ### Spec compatibility
 

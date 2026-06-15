@@ -46,11 +46,11 @@ GitHub Security Advisory CVE flow.
 
 | Version | Status |
 | --- | --- |
-| 0.6.x | Supported (current) |
-| < 0.6 | Not supported |
+| 0.7.x | Supported (current) |
+| < 0.7 | Not supported |
 
 This is a pre-1.0 project on a fast-moving SemVer track: only the current
-minor line (0.6.x) receives security fixes. When the next minor line ships,
+minor line (0.7.x) receives security fixes. When the next minor line ships,
 security fixes for the prior line continue for 90 days from that line's first
 release; after that window, upgrade to the current minor to stay supported.
 Patch releases within the current line always carry the latest fixes.

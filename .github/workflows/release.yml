@@ -81,10 +81,30 @@ jobs:
         run: python -m build
       - name: Inspect dist
         run: ls -la dist/
+      - name: Generate CycloneDX SBOM from the built wheel
+        shell: bash
+        run: |
+          # SBOM is generated from a clean env containing ONLY the built wheel +
+          # its runtime deps, so it reflects the shipped artifact's real
+          # dependency tree (not the build toolchain). Written to a SEPARATE
+          # sbom/ dir so the PyPI publish job uploads only the sdist + wheel.
+          ver="${GITHUB_REF_NAME#v}"
+          mkdir -p sbom
+          python -m venv /tmp/sbomenv
+          /tmp/sbomenv/bin/pip install --quiet --upgrade pip
+          /tmp/sbomenv/bin/pip install --quiet dist/*.whl
+          pip install --quiet 'cyclonedx-bom==7.3.0'
+          cyclonedx-py environment /tmp/sbomenv --of JSON -o "sbom/ildan-memforge-${ver}.cdx.json" --validate
+          ls -la sbom/
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7.0.1
         with:
           name: dist
           path: dist/
+          if-no-files-found: error
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7.0.1
+        with:
+          name: sbom
+          path: sbom/
           if-no-files-found: error
 
   publish:
@@ -121,3 +141,33 @@ jobs:
       - uses: pypa/gh-action-pypi-publish@cef221092ed1bacb1cc03d23a2d87d1d172e277b  # v1.14.0
         with:
           skip-existing: true
+
+  github-release:
+    name: GitHub Release (dist + CycloneDX SBOM)
+    needs: [build, publish]
+    runs-on: ubuntu-latest
+    # Every release ships a CycloneDX SBOM alongside the sdist + wheel (signed
+    # source release rule). The tag itself is signed at creation time (SSH,
+    # GitHub-verified); this
+    # job attaches the build artifacts + SBOM to the GitHub Release.
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c  # v8.0.1
+        with:
+          name: dist
+          path: dist/
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c  # v8.0.1
+        with:
+          name: sbom
+          path: sbom/
+      - name: Create GitHub Release with dist + SBOM
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          TAG: ${{ github.ref_name }}
+        run: |
+          gh release create "$TAG" dist/* sbom/* \
+            --repo "$REPO" \
+            --title "$TAG" \
+            --notes "MemForge $TAG. See CHANGELOG.md for the release notes. A CycloneDX SBOM (ildan-memforge-*.cdx.json) is attached alongside the sdist and wheel. The release tag is signed and GitHub-verified."
