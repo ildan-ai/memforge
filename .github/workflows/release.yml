@@ -147,7 +147,8 @@ jobs:
     needs: [build, publish]
     runs-on: ubuntu-latest
     # Every release ships a CycloneDX SBOM alongside the sdist + wheel (signed
-    # source release rule). The tag itself is GPG-signed at creation time; this
+    # source release rule). The tag itself is signed at creation time (SSH,
+    # GitHub-verified); this
     # job attaches the build artifacts + SBOM to the GitHub Release.
     permissions:
       contents: write
@@ -169,4 +170,4 @@ jobs:
           gh release create "$TAG" dist/* sbom/* \
             --repo "$REPO" \
             --title "$TAG" \
-            --notes "MemForge $TAG. See CHANGELOG.md for the release notes. A CycloneDX SBOM (ildan-memforge-*.cdx.json) is attached alongside the sdist and wheel. The release tag is GPG-signed."
+            --notes "MemForge $TAG. See CHANGELOG.md for the release notes. A CycloneDX SBOM (ildan-memforge-*.cdx.json) is attached alongside the sdist and wheel. The release tag is signed and GitHub-verified."
