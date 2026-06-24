@@ -65,6 +65,7 @@ memory-watch = "memforge.cli.watch:main"
 agents-md-gen = "memforge.cli.agents_md_gen:main"
 memforge-resolve = "memforge.cli.resolve:main"
 memforge-migrate-claim-block = "memforge.cli.migrate_claim_block:main"
+memforge-detect = "memforge.cli.detect:main"
 
 [tool.setuptools.packages.find]
 where = ["src"]
