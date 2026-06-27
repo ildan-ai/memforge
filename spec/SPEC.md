@@ -250,7 +250,7 @@ The controlled vocabulary lives in `spec/taxonomy.yaml`. The vocabulary carries 
 
 ## Index format (`MEMORY.md`)
 
-`MEMORY.md` is an index, not a memory. It MUST NOT carry frontmatter. It SHOULD be kept under 150 total lines.
+`MEMORY.md` is an index, not a memory. It MUST NOT carry frontmatter. It SHOULD be kept under 180 total lines.
 
 In v0.3.0+, MEMORY.md is treated as a generated build artifact. Manual edits remain valid (current state) but the long-term direction is generator-driven via the `memory-index-gen` tool (Phase 1).
 
@@ -262,7 +262,8 @@ Each `tier: index` memory file MUST appear exactly once in the index (top-level 
 
 For top-level files: `<path>` is the filename. For rollup README.md files: `<path>` is `<topic>/README.md`.
 
-The hook line SHOULD stay under 150 characters (and 150 bytes; em-dashes are 3 UTF-8 bytes; prefer colons). Tools SHOULD flag overruns as warnings, not errors.
+The hook line SHOULD stay under 180 characters (and 180 bytes; em-dashes are 3 UTF-8 bytes; prefer colons). Tools SHOULD flag overruns as warnings, not errors.
+<!-- TODO: project-specific pointer-line limits become configurable via `.memforge/config.yaml` in a future major version. -->
 
 Section headers (`##`, `###`) MAY group pointers by theme. An introductory paragraph at the top is permitted.
 

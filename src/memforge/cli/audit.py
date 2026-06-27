@@ -22,8 +22,9 @@ from memforge.frontmatter import has_frontmatter, parse
 
 VALID_TYPES = {"user", "feedback", "project", "reference"}
 VALID_SENSITIVITIES = {"public", "internal", "restricted", "privileged"}
-MEMORY_MD_LINE_CAP = 150
-POINTER_LINE_BYTE_CAP = 150
+SPEC_TIERS = {"index", "detail"}
+MEMORY_MD_LINE_CAP = 180
+POINTER_LINE_BYTE_CAP = 180
 
 
 # ---------- helpers ----------
@@ -433,6 +434,12 @@ def audit_target(
         gate_msg = _export_tier_gate(sens, export_tier, enforce_sensitivity_export_gate)
         if gate_msg:
             violations.append(f"{fname}: {gate_msg}")
+
+        tier = fm.get("tier", "")
+        if tier and tier not in SPEC_TIERS:
+            health.append(
+                f"{fname}: tier '{tier}' is not a spec tier (index|detail)"
+            )
 
         if not body.strip():
             violations.append(f"{fname}: empty body")

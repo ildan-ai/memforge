@@ -51,10 +51,63 @@ DEFAULT_PATHS = default_memory_paths()
 LINK_RE = re.compile(r"(?<!!)\[([^\]\n]+?)\]\(([^)\n]+?)\)")
 MEM_URI_RE = re.compile(r"^mem:([A-Za-z0-9_\-]+)$")
 
+# Wikilink regex: captures [[token]] and [[token|display]].
+# Group 1 = token, group 2 = display text (may be None).
+WIKILINK_RE = re.compile(r"\[\[([^\]|\n]+?)(?:\|([^\]\n]+?))?\]\]")
+
 
 # Memory, FolderIndex, and Link are the canonical shared domain models
 # (memforge.models), imported above. This tool no longer forks its own
 # divergent copies (closes models-01 / discovery-02).
+
+
+# ----- wikilink helpers -----
+
+def _build_alias_set(m):
+    """Return alias set for a Memory: old filename stem, old name frontmatter, uid.
+
+    Only non-empty strings are included. This is the resolution set used by the
+    wikilink rewrite guard: a [[token]] is rewritten ONLY when the token matches
+    one of these aliases, preventing false rewrites of prose/ADR/code tokens that
+    happen to contain [[ ]].
+    """
+    aliases: set = set()
+    # Filename stem (e.g. 'mem-00408' from 'mem-00408.md')
+    stem = m.path.stem
+    if stem:
+        aliases.add(stem)
+    # Frontmatter name (may contain spaces; wikilinks use it as-is)
+    name = m.frontmatter.get('name', '') if m.frontmatter else ''
+    if name:
+        aliases.add(name)
+    # UID
+    if m.uid:
+        aliases.add(m.uid)
+    return aliases
+
+
+def _collect_wikilink_rewrites(text, src_aliases, new_stem):
+    """Scan text for [[token]] / [[token|display]] wikilinks that resolve to a
+    renamed file (token in src_aliases) and return replacement spans.
+
+    Returns list of (start, end, replacement) sorted ascending by start.
+    Caller applies in reverse order to keep earlier spans valid.
+
+    False-rewrite guard: only tokens in src_aliases are rewritten.
+    """
+    rewrites: list = []
+    for m in WIKILINK_RE.finditer(text):
+        token = m.group(1).strip()
+        display = m.group(2)  # None when no '|display' suffix
+        if token not in src_aliases:
+            continue  # does not resolve to the renamed file; leave untouched
+        # Build the replacement: [[new_stem]] or [[new_stem|display]]
+        if display is not None:
+            replacement = f'[[{new_stem}|{display}]]'
+        else:
+            replacement = f'[[{new_stem}]]'
+        rewrites.append((m.start(), m.end(), replacement))
+    return rewrites
 
 
 # ----- frontmatter parsing -----
@@ -238,7 +291,13 @@ def cmd_rename(idx: FolderIndex, src: Path, dst: Path, *, dry_run: bool) -> int:
     # find all references to src in OTHER files
     src_basename = src_abs.name
     src_relpath_str = str(src_rel)
-    rewrites: list[tuple[Memory, list[tuple[Link, str]]]] = []
+    src_mem = idx.by_relpath.get(str(src_rel))
+    src_aliases = _build_alias_set(src_mem) if src_mem else {src_abs.stem}
+    dst_stem = dst_abs.stem
+    # rewrites: (Memory, markdown_rewrites, wikilink_rewrites)
+    # wikilink_rewrites: list of (start, end, replacement)
+    rewrites: list[tuple[Memory, list[tuple[Link, str]], list[tuple[int, int, str]]]] = []
+    wikilink_ambiguous: list[str] = []
 
     for m in idx.memories:
         if m.path == src_abs:
@@ -258,15 +317,21 @@ def cmd_rename(idx: FolderIndex, src: Path, dst: Path, *, dry_run: bool) -> int:
                 fragment = ("#" + link.target.split("#", 1)[1]) if "#" in link.target else ""
                 new_target = new_rel + fragment
                 per_file.append((link, new_target))
-        if per_file:
-            rewrites.append((m, per_file))
+        wl_file = _collect_wikilink_rewrites(text, src_aliases, dst_stem)
+        if per_file or wl_file:
+            rewrites.append((m, per_file, wl_file))
 
+    md_count = sum(len(per) for _, per, _ in rewrites)
+    wl_count = sum(len(wl) for _, _, wl in rewrites)
     print(f"rename: {src_rel} -> {dst_rel}")
-    print(f"references to rewrite: {sum(len(per) for _, per in rewrites)} in {len(rewrites)} files")
-    for m, per in rewrites:
+    print(f"references to rewrite: {md_count} markdown + {wl_count} wikilink(s) in {len(rewrites)} files")
+    for m, per, wl in rewrites:
         print(f"  {m.relpath}:")
         for link, new in per:
             print(f"    {link.target} -> {new}")
+        for start, end, rep in wl:
+            src_text = m.path.read_text(encoding="utf-8")[start:end]
+            print(f"    wikilink: {src_text} -> {rep} (line approx {m.path.read_text(encoding='utf-8')[:start].count(chr(10)) + 1})")
 
     if dry_run:
         print("\n(dry-run; no changes written)")
@@ -277,15 +342,21 @@ def cmd_rename(idx: FolderIndex, src: Path, dst: Path, *, dry_run: bool) -> int:
     src_abs.rename(dst_abs)
 
     # rewrite references
-    for m, per in rewrites:
+    for m, per, wl in rewrites:
         text = m.path.read_text(encoding="utf-8")
-        # apply rewrites in reverse to keep spans valid
+        # apply markdown rewrites in reverse to keep spans valid
         per_sorted = sorted(per, key=lambda x: -x[0].span[0])
         for link, new in per_sorted:
             start, end = link.span
             old_md = text[start:end]
             new_md = f"[{link.text}]({new})"
             text = text[:start] + new_md + text[end:]
+        # apply wikilink rewrites in reverse to keep spans valid
+        # NOTE: spans are from the ORIGINAL text; re-collect after markdown rewrites
+        # to get correct positions in the modified text
+        wl_fresh = _collect_wikilink_rewrites(text, src_aliases, dst_stem)
+        for start, end, replacement in sorted(wl_fresh, key=lambda x: -x[0]):
+            text = text[:start] + replacement + text[end:]
         m.path.write_text(text, encoding="utf-8")
 
     print(f"\nmoved + rewrote {len(rewrites)} files")
@@ -325,20 +396,39 @@ def cmd_rename_batch(idx: FolderIndex, pairs: list[tuple[Path, Path]], *, dry_ru
         return 0
 
     src_set = set(src_to_dst.keys())
+
+    # Build per-src alias sets for wikilink resolution.
+    # alias_to_src: token -> list of src_abs that expose that alias.
+    # Used for cross-root disambiguation: if a token resolves to >1 src in
+    # the batch, we resolve within the linking file's own root; if still
+    # ambiguous, skip (do not rewrite).
+    src_alias_map: dict[Path, set] = {}
+    alias_to_srcs: dict[str, list] = {}
+    src_to_new_stem: dict[Path, str] = {}
+    for src_abs, dst_abs in src_to_dst.items():
+        src_mem = idx.by_relpath.get(str(src_abs.relative_to(root_resolved)))
+        aliases = _build_alias_set(src_mem) if src_mem else {src_abs.stem}
+        src_alias_map[src_abs] = aliases
+        src_to_new_stem[src_abs] = dst_abs.stem
+        for alias in aliases:
+            alias_to_srcs.setdefault(alias, []).append(src_abs)
+
     # Per-memory rewrite plan. For each memory, the "effective parent dir"
     # is its post-move location (same as current for non-moved files; the
     # mapped destination's parent for moved files). Relative paths are
     # computed against that effective parent so links survive the move.
-    rewrites: list[tuple[Memory, Path, list[tuple[Link, str]]]] = []
+    # rewrites: (Memory, new_dir, markdown_rewrites, wikilink_rewrites)
+    rewrites: list[tuple[Memory, Path, list[tuple[Link, str]], list[tuple[int, int, str]]]] = []
+    wikilink_ambiguous: list[str] = []
 
     for m in idx.memories:
         m_resolved = m.path.resolve()
         is_moved = m_resolved in src_set
         new_m_dir = src_to_dst[m_resolved].parent if is_moved else m.path.parent.resolve()
 
-        text = m.path.read_text(encoding="utf-8")
+        m_text = m.path.read_text(encoding="utf-8")
         per_file: list[tuple[Link, str]] = []
-        for link in extract_links(text):
+        for link in extract_links(m_text):
             if link.is_mem_uri:
                 continue
             if not is_internal_path_link(link.target):
@@ -357,11 +447,60 @@ def cmd_rename_batch(idx: FolderIndex, pairs: list[tuple[Path, Path]], *, dry_ru
             if new_target == link.target:
                 continue
             per_file.append((link, new_target))
-        if per_file:
-            rewrites.append((m, new_m_dir, per_file))
 
+        # Wikilink rewriting: for each [[token]] in this file, find which
+        # (if any) renamed src it resolves to.
+        wl_file: list[tuple[int, int, str]] = []
+        seen_wl_tokens: set[str] = set()
+        for wl_match in WIKILINK_RE.finditer(m_text):
+            token = wl_match.group(1).strip()
+            if token in seen_wl_tokens:
+                continue
+            candidates = alias_to_srcs.get(token, [])
+            if not candidates:
+                continue  # token does not match any renamed file
+            if len(candidates) == 1:
+                # Unambiguous: rewrite
+                target_src = candidates[0]
+            else:
+                # Cross-root ambiguity: resolve within this file's own root.
+                # Since all files here are in idx.root (single root per invocation),
+                # filter candidates within this root.
+                same_root = [c for c in candidates if c.parent == m.path.parent.resolve()
+                             or str(c).startswith(str(root_resolved))]
+                if len(same_root) == 1:
+                    target_src = same_root[0]
+                else:
+                    # Still ambiguous: skip and log.
+                    wikilink_ambiguous.append(
+                        f"[[{token}]] in {m.relpath}: resolves to {len(candidates)} renamed files; skipped"
+                    )
+                    seen_wl_tokens.add(token)
+                    continue
+            new_stem = src_to_new_stem[target_src]
+            seen_wl_tokens.add(token)
+            # Collect all occurrences of this token in the file
+            per_token = _collect_wikilink_rewrites(m_text, {token}, new_stem)
+            wl_file.extend(per_token)
+
+        if per_file or wl_file:
+            rewrites.append((m, new_m_dir, per_file, wl_file))
+
+    md_count = sum(len(per) for _, _, per, _ in rewrites)
+    wl_count = sum(len(wl) for _, _, _, wl in rewrites)
     print(f"rename-batch: {len(src_to_dst)} files to move")
-    print(f"references to rewrite: {sum(len(per) for _, _, per in rewrites)} in {len(rewrites)} files")
+    print(f"references to rewrite: {md_count} markdown + {wl_count} wikilink(s) in {len(rewrites)} files")
+    if wl_count > 0:
+        for m, _, _, wl in rewrites:
+            for start, end, rep in wl:
+                m_text = m.path.read_text(encoding="utf-8")
+                orig = m_text[start:end]
+                lineno = m_text[:start].count("\n") + 1
+                print(f"  wikilink: {orig} -> {rep} in {m.relpath} (line {lineno})")
+    if wikilink_ambiguous:
+        print(f"  ambiguous/skipped wikilinks ({len(wikilink_ambiguous)}):")
+        for msg in wikilink_ambiguous:
+            print(f"    {msg}")
 
     if dry_run:
         for src, dst in pairs:
@@ -372,13 +511,29 @@ def cmd_rename_batch(idx: FolderIndex, pairs: list[tuple[Path, Path]], *, dry_ru
     # Pre-compute rewritten text for each affected memory; defer writes
     # until after moves so we can write to the post-move path.
     rewritten_text: dict[Path, str] = {}
-    for m, _new_dir, per in rewrites:
+    for m, _new_dir, per, wl in rewrites:
         text = m.path.read_text(encoding="utf-8")
         per_sorted = sorted(per, key=lambda x: -x[0].span[0])
         for link, new in per_sorted:
             start, end = link.span
             new_md = f"[{link.text}]({new})"
             text = text[:start] + new_md + text[end:]
+        # Re-collect wikilink rewrites on the (possibly already-modified) text
+        # to get correct spans after markdown substitutions.
+        # We only rewrite tokens that were identified as non-ambiguous above.
+        # Build the per-file alias map: token -> new_stem for non-ambiguous.
+        token_to_new_stem: dict[str, str] = {}
+        for start, end, rep in wl:
+            # extract original token from original text (before any changes)
+            # by re-scanning. Simpler: just rebuild from wl entries.
+            pass
+        # Collect fresh (idempotent: new_stem won't match old aliases after rename)
+        for src_abs_inner, dst_abs_inner in src_to_dst.items():
+            aliases = src_alias_map[src_abs_inner]
+            new_stem = src_to_new_stem[src_abs_inner]
+            wl_fresh = _collect_wikilink_rewrites(text, aliases, new_stem)
+            for s, e, replacement in sorted(wl_fresh, key=lambda x: -x[0]):
+                text = text[:s] + replacement + text[e:]
         rewritten_text[m.path.resolve()] = text
 
     moved: list[tuple[Path, Path]] = []
