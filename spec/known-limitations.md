@@ -1,6 +1,6 @@
 # MemForge known limitations
 
-**Updated:** 2026-06-14 (covers v0.6.1 ship state)
+**Updated:** 2026-06-27 (covers v0.6.2 ship state)
 **Status:** Living document. Each spec release updates this file; the file ships with the Zenodo deposit for that release as a versioned snapshot.
 
 ---
@@ -45,6 +45,10 @@ Deferred refinements (not gaps):
 - **Per-file incremental index build.** The reference build recompiles the whole index and records per-file mtimes; it skips a rebuild when nothing changed, but does not yet do per-file incremental updates. Adequate for typical folder sizes; a v0.6.x optimization for very large folders.
 
 ---
+
+## v0.6.2 (wikilink rewriting, pointer-line cap, tier warning)
+
+v0.6.2 is a patch bump shipping with package 0.8.0. Three additive changes: `memory-link-rewriter rename`/`rename-batch` now rewrite `[[wikilinks]]` (`[[token]]` and `[[token|display]]`) so a rename no longer orphans inbound wikilinks; the pointer-line and `MEMORY.md` `SHOULD` length caps relax from 150 to 180 (bytes/lines) to accommodate descriptive filename slugs; and `memory-audit` emits an advisory warning on non-spec `tier` values (spec tiers are `index`/`detail` only). No frontmatter or normative-contract change, so every prior-version folder remains conformant. The pre-ship spec-delta panel (architect + adversarial critic) returned no BLOCKER-class known limitations. Known scope limit: the wikilink rewriter restricts rewrites to the rename alias set (old stem / name / uid); a uid-only strict mode for short-stem collision safety is deferred to a future major version.
 
 ## v0.6.1 (recall-readiness lint)
 

@@ -12,7 +12,7 @@ Docs: [PyPI](https://pypi.org/project/ildan-memforge/) | [CHANGELOG](./CHANGELOG
 
 ```bash
 pip install ildan-memforge
-memforge --version                  # memforge 0.6.1
+memforge --version                  # memforge 0.8.0
 memforge init-operator --name "Your Name" --gen-key
 cd /path/to/memory-root
 memforge init-store                 # creates the signed operator-registry first
@@ -27,7 +27,7 @@ Full quickstart at [`docs/quickstart.md`](./docs/quickstart.md) (includes a sect
 
 If you use MemForge in research or publications, please cite:
 
-> Hiltz, Mike. *MemForge: Portable, agent-neutral persistent memory format for AI coding agents (v0.6.1)*. Zenodo, 2026. DOI: [10.5281/zenodo.20113963](https://doi.org/10.5281/zenodo.20113963)
+> Hiltz, Mike. *MemForge: Portable, agent-neutral persistent memory format for AI coding agents (v0.8.0)*. Zenodo, 2026. DOI: [10.5281/zenodo.20113963](https://doi.org/10.5281/zenodo.20113963)
 
 The DOI above is the version-agnostic concept DOI; it always resolves to the latest archived release.
 
@@ -203,7 +203,7 @@ Run `--help` on any of them.
 | `memory-index-gen` | Build `MEMORY.md` from frontmatter as a CI artifact. RBAC-aware filtering for shared folders. `--with-recall-index` also emits the recall inverted index. |
 | `memory-cluster-suggest` | Suggest rollup subfolders when a topic accumulates five or more memories. |
 | `memory-dlp-scan` | Pre-commit scanner for secrets, credentials, and PII in memory bodies. |
-| `memory-link-rewriter` | UID-based cross-folder link integrity (`check`, `rename`, `rename-batch`, `upgrade`). |
+| `memory-link-rewriter` | UID-based cross-folder link integrity (`check`, `rename`, `rename-batch`, `upgrade`). `rename`/`rename-batch` also rewrite `[[wikilinks]]` (including `[[token\|display]]`) so a rename does not orphan inbound wikilinks. |
 | `memory-audit-log` | Append-only tamper-evident hash chain. JSONL on disk, exports CEF for SIEM. |
 | `memory-dedup` | LLM-backed near-duplicate detection. Local-only by default; reports candidates, never writes. |
 | `memory-rollup` | Bulk-move primitive: create / undo / list. Maintains an undo ledger. |
@@ -245,6 +245,7 @@ Format invariants are in [`spec/SPEC.md`](./spec/SPEC.md). Topic taxonomy is in 
 | v0.6.0 | 2026-06-07 | Query-triggered recall. Three optional frontmatter fields (`triggers`, `always`, `do_not_inject`) + the §"Recall operation" spec contract (UI-neutral; descriptions only, never bodies; fail-open-empty). New `memory-recall` reader + `memory-index-gen --with-recall-index`. All fields optional, so pre-v0.6.0 folders stay well-formed and older tools ignore the new keys. |
 | v0.6.1 (package) | 2026-06-07 | Docs + packaging patch. PyPI trove classifiers added (fixes the Python-versions badge); README Status table, CLI count, and tool tables corrected; DOI badge + citation switched to the version-agnostic concept DOI. No spec change; no code change at the tag. |
 | v0.7.0 | 2026-06-15 | `memory-lint` quality CLI (recall-readiness + token-cost scoring; local-only-by-default cloud safety with sensitivity/access filtering) + `memory-audit` recall-field / always-set budget WARNs (spec/VERSION 0.6.0 -> 0.6.1; new §"Recall-readiness lint"). Broad security + correctness hardening: path-traversal containment (resolve/rollup/index-gen), recall/lint/dedup RBAC fail-closed, cryptographic-attribution trust root + RSA-4096 subkey verify + superseded-key refusal, revocation-snapshot floor disabled, broadened DLP coverage. Portability: IDE/OS-neutral default paths. Signed release tags + CycloneDX SBOM + a `pip-audit` supply-chain gate. Additive and backward-compatible. |
+| v0.8.0 | 2026-06-27 | `memory-link-rewriter rename`/`rename-batch` now rewrite `[[wikilinks]]` (`[[token]]` and `[[token\|display]]`) so a rename no longer orphans inbound wikilinks: an alias-set guard (stem/name/uid) prevents false rewrites of prose or code tokens, cross-root ambiguity is skipped and listed, every rewrite is logged, and the pass is idempotent. `memory-audit` now warns on non-spec `tier` values (`index`/`detail` only; such files were previously dropped from the index with no diagnostic). Pointer-line and MEMORY.md caps raised 150 -> 180 so descriptive filename slugs leave room for the hook text (spec/VERSION 0.6.1 -> 0.6.2). Additive and backward-compatible; upgrade with `pip install --upgrade ildan-memforge`, no data migration required. |
 
 The reference implementation is running in production. External adoption is welcome once the CLA flow is live.
 

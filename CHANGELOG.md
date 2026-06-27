@@ -10,6 +10,35 @@ The version number tracked here is the **package / tooling** version. The on-dis
 
 The Contributor License Agreement infrastructure is counsel-blocked; external pull requests are paused until the CLA flow lands.
 
+## [0.8.0] - 2026-06-27
+
+**Minor: three additive improvements. Package 0.8.0 / spec 0.6.2. All changes are backward-compatible; no existing folder breaks.**
+
+### Added
+
+- **Wikilink rewriting in `memory-link-rewriter rename` and `rename-batch`** (`[[token]]` and `[[token|display]]`). Previously, renaming a file silently orphaned every inbound wikilink. The rewriter now rewrites `[[old-stem]]`, `[[old-name]]`, and `[[old-uid]]` occurrences when the token resolves unambiguously to the renamed file, preserving any `|display` text. A false-rewrite guard ensures only tokens in the rename alias set are touched; prose, ADR refs, and code fragments that happen to match `[[ ]]` are left untouched. Cross-root ambiguity resolves within the linking file's own root; tokens that remain ambiguous are skipped and listed in a printed "ambiguous/skipped" summary. Every rewrite is logged (`old -> new`, file, line) to stdout. Idempotent: a second identical rename-batch run produces zero changes.
+- **Non-spec-tier warning in `memory-audit`**. Spec tiers are `index` and `detail` only. A file carrying any other `tier` value (e.g., `anchor`, `tactical`) was previously silently excluded from `MEMORY.md` and rollup generation with no diagnostic. `memory-audit` now emits a HEALTH warning `tier '<x>' is not a spec tier (index|detail)` for each such file. No auto-correction; this is advisory. Non-blocking (never an integrity violation).
+
+### Changed
+
+- **Pointer-line byte cap and MEMORY.md line cap raised from 150 to 180**. Descriptive filename slugs are longer than short identifiers; at the 150-byte ceiling, the hook portion of a pointer line had little room. In practice, the worst-case pointer line is approximately 159 bytes with a 55-character slug. 180 restores adequate hook room while remaining terminal-readable. This loosens an existing `SHOULD` warning threshold; no previously-conformant folder becomes non-conformant.
+
+### Spec
+
+- `spec/VERSION` 0.6.1 -> 0.6.2. `spec/SPEC.md` cap thresholds updated to 180. A `TODO` comment notes that project-specific pointer-line limits will become configurable via `.memforge/config.yaml` in a future major version.
+
+### Tests
+
+- New `tests/test_spec_delta_r1.py`: cap threshold flips at 180 (179 ok, 181 flags); wikilink rewrite covers stem form, name-with-underscores form, and `|display` passthrough; false-rewrite guard (unrelated prose token untouched); cross-root disambiguation (ambiguous token skipped); idempotency (second rename-batch pass = 0 changes); non-spec-tier warning fires for `tier: anchor` and not for `tier: detail`.
+
+### Spec compatibility
+
+- Fully backward-compatible. Existing folders remain conformant. Cap increase is a loosening. Wikilink rewriting is additive (previously ignored; now correctly maintained). Tier warning is advisory-only.
+
+### Pre-ship review
+
+- Multi-voice panel (architect + adversarial critic): wikilink alias-set approach confirmed correct; stem kept in alias set as required for the primary use case; idempotency and full rewrite logging adopted as mandatory mitigations; cross-root disambiguation specified. No blockers.
+
 ## [0.7.0] - 2026-06-14
 
 **Minor: new `memory-lint` quality CLI + a broad security/correctness hardening pass. Package 0.7.0 ships the spec-0.6.1 surface; the spec track is on its own SemVer line.** All new frontmatter and config keys are optional, so existing folders remain conformant.
