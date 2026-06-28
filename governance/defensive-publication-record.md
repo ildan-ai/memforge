@@ -90,6 +90,20 @@ This file tracks MemForge's defensive-publication artifacts: the citable archiva
 - **Software Heritage SWHID:** minted 2026-06-28 via save-code-now (request 2376063; ingestion succeeded, visit_status=full).
   - Snapshot-level: `swh:1:snp:b70f08ef7f51e0e2c52848db99bca6f166baa312`.
 
+### v0.9.0
+
+- **Zenodo DOI:** [10.5281/zenodo.20999236](https://doi.org/10.5281/zenodo.20999236) (new version under the same concept DOI 10.5281/zenodo.20113963).
+- **Minted:** 2026-06-28
+- **Resource type:** Publication / Technical note
+- **License:** Apache-2.0.
+- **Bundle contents:** SPEC.md (spec_version 0.7.0); VERSION; taxonomy.yaml; v0.9.0-known-limitations.md (living-doc snapshot at v0.9.0); CHANGELOG.md (full history through v0.9.0); LICENSE; README.md; full examples/ tree.
+- **Bundle SHA-256:** `8cbbb5ce9a63a04cddb9a967350a1d14195746fe0a0aef225a51c5b81f5e7280`
+- **Maintainer note:** anchors the v0.9.0 package release (write-boundary hardening: the `memory-validate` write-gate operation plus integrity invariant 27; the `memory-audit` `.memforge/audit-waivers.yaml` mechanism; single-sourced MEMORY.md caps; folds the `memory-detect` hygiene orchestrator). spec/VERSION 0.7.0. Additive and backward-compatible; no new required frontmatter field and no existing well-formed folder breaks. Pre-tag cross-family release-rigor panel caught and fixed 1 critic BLOCKER (empty-fence over-strictness) plus 2 threat-modeler MAJORs (waiver-loader fail-closed + date-cutoff type-confusion), with a re-review confirming convergence.
+- **Software Heritage SWHID:** minted 2026-06-28 via save-code-now (request submitted 2026-06-28T12:18Z; ingestion succeeded, visit_status=full).
+  - Release-level (the v0.9.0 tag): `swh:1:rel:8d5f7e0417aaf2f3954f9c4c1f0746fdae2f8aba`.
+  - Commit-level (the v0.9.0 tagged commit): `swh:1:rev:77cd8e56bc071f2fabec2f4755584522e9d440a5`.
+  - Snapshot-level: `swh:1:snp:2e10f18a55af6293d124ae85daf7b9b962155349`.
+
 ## Channel 2 — Operator-brand timestamped disclosure
 
 ### v0.4.0
@@ -123,6 +137,7 @@ This file tracks MemForge's defensive-publication artifacts: the citable archiva
 | 0.7.0   | v0.7.0 | 2026-06-14          | Minor: memory-lint recall-readiness + token-cost quality CLI (20th console script) + security/correctness hardening (path-traversal containment, recall/lint/dedup RBAC, cryptographic-attribution trust root, broadened DLP); spec 0.6.1 lint section; signed tag + CycloneDX SBOM + pip-audit supply-chain gate |
 | 0.8.0   | v0.8.0 | 2026-06-27          | Minor (package): wikilink rewriting in memory-link-rewriter rename/rename-batch (renames no longer orphan inbound [[wikilinks]]; alias-set false-rewrite guard; cross-root disambiguation; idempotent; every rewrite logged), pointer-line + MEMORY.md SHOULD caps raised 150 -> 180 for descriptive filename slugs, and a memory-audit advisory warning on non-spec tier values; spec 0.6.2; Zenodo deposit v0.8.0 (DOI 10.5281/zenodo.20975501; concept 10.5281/zenodo.20113963) + GitHub release tag + CycloneDX SBOM + signed tag. SWHID `swh:1:snp:e8b89d19b50b8a1defd23ce391439e6f19bb7b42` (save-code-now request 2375439, 2026-06-27, visit_status=full). |
 | 0.8.1   | v0.8.1 | 2026-06-28          | Patch: deterministic pointer-hook truncation in memory-index-gen (generated MEMORY.md pointer lines now truncate the hook on a UTF-8 boundary to stay within the 180-byte cap; full description preserved in frontmatter + recall index, so lossless for recall; hook omitted when the title/path prefix leaves <=3 bytes); spec 0.6.3 (generator pointer-truncation rule, no new folder integrity invariant); reconciles the generator with the existing 180-byte audit check. Zenodo deposit v0.8.1 (DOI 10.5281/zenodo.20995032; concept 10.5281/zenodo.20113963) + GitHub release tag + CycloneDX SBOM + signed tag. SWHID `swh:1:snp:b70f08ef7f51e0e2c52848db99bca6f166baa312` (save-code-now request 2376063, 2026-06-28, visit_status=full). |
+| 0.9.0   | v0.9.0 | 2026-06-28          | Minor (package): write-boundary hardening. New `memory-validate` write-gate operation (HARD-rejects frontmatter that does not parse as a YAML mapping, the unquoted-colon break, integrity invariant 27; SOFT caps/fields/enums; shares parser + caps with memory-audit; git pre-commit = universal wiring, CC PreToolUse = pre-write). New `memory-audit` `.memforge/audit-waivers.yaml` mechanism (explicit, reported, fail-closed allowlist that zeroes the immutable migration-era Tier 2 floor). Single-sourced MEMORY.md caps (audit + validate + index-gen). Folds the `memory-detect` hygiene orchestrator + audit convention-drift demotion. spec 0.7.0. Pre-tag cross-family panel caught 1 BLOCKER + 2 MAJORs, all fixed with regression tests (re-review converged). Zenodo deposit v0.9.0 (DOI 10.5281/zenodo.20999236; concept 10.5281/zenodo.20113963) + GitHub release tag + CycloneDX SBOM + signed tag. SWHID `swh:1:snp:2e10f18a55af6293d124ae85daf7b9b962155349` (save-code-now 2026-06-28, visit_status=full). |
 
 The continuous-prior-art commitment: every spec-bumping commit is tagged with semver; every tag has a corresponding GitHub release; release notes name the substantive additions. Each commit is timestamped + indexed by GitHub + walkable by examiner prior-art search tools.
 
