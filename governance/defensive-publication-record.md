@@ -80,6 +80,16 @@ This file tracks MemForge's defensive-publication artifacts: the citable archiva
   - Commit-level (the v0.7.0 tagged commit): `swh:1:rev:f09906d03241e56b8a7506b4f30a3747cb088514`.
   - Snapshot-level: `swh:1:snp:f37220e4468588dba8edf32ab89b1876ca289272`.
 
+### v0.8.1
+
+- **Zenodo DOI:** [10.5281/zenodo.20995032](https://doi.org/10.5281/zenodo.20995032) (new version under the same concept DOI 10.5281/zenodo.20113963).
+- **License:** Apache-2.0.
+- **Bundle contents:** SPEC.md (spec_version 0.6.3); VERSION; taxonomy.yaml; v0.8.1-known-limitations.md (living-doc snapshot at v0.8.1); CHANGELOG.md (full history through v0.8.1); LICENSE; README.md; full examples/ tree.
+- **Bundle SHA-256:** `8cf75d37308281e1e5798598506e2cfa984fcff7dad17d734a81a5febad7bf08`
+- **Maintainer note:** anchors the v0.8.1 package release (deterministic pointer-hook truncation in memory-index-gen; spec 0.6.3). Backward-compatible; regenerating an index only shortens over-cap pointer hooks.
+- **Software Heritage SWHID:** minted 2026-06-28 via save-code-now (request 2376063; ingestion succeeded, visit_status=full).
+  - Snapshot-level: `swh:1:snp:b70f08ef7f51e0e2c52848db99bca6f166baa312`.
+
 ## Channel 2 — Operator-brand timestamped disclosure
 
 ### v0.4.0
@@ -111,7 +121,8 @@ This file tracks MemForge's defensive-publication artifacts: the citable archiva
 | 0.6.0   | v0.6.0 | 2026-06-07          | Minor spec bump: query-triggered recall (triggers/always/do_not_inject frontmatter + Recall operation spec contract); memory-recall reader + memory-index-gen --with-recall-index |
 | 0.6.1   | v0.6.1 | 2026-06-07          | Docs + packaging patch: PyPI trove classifiers (pyversions badge fix); README Status / CLI-count / tool-table corrections; DOI switched to concept DOI (no spec change) |
 | 0.7.0   | v0.7.0 | 2026-06-14          | Minor: memory-lint recall-readiness + token-cost quality CLI (20th console script) + security/correctness hardening (path-traversal containment, recall/lint/dedup RBAC, cryptographic-attribution trust root, broadened DLP); spec 0.6.1 lint section; signed tag + CycloneDX SBOM + pip-audit supply-chain gate |
-| 0.8.0   | v0.8.0 | 2026-06-27          | Minor (package): wikilink rewriting in memory-link-rewriter rename/rename-batch (renames no longer orphan inbound [[wikilinks]]; alias-set false-rewrite guard; cross-root disambiguation; idempotent; every rewrite logged), pointer-line + MEMORY.md SHOULD caps raised 150 -> 180 for descriptive filename slugs, and a memory-audit advisory warning on non-spec tier values; spec 0.6.2; Zenodo deposit v0.8.0 (DOI 10.5281/zenodo.20975501; concept 10.5281/zenodo.20113963) + GitHub release tag + CycloneDX SBOM + signed tag. SWHID (Channel 1) pending. |
+| 0.8.0   | v0.8.0 | 2026-06-27          | Minor (package): wikilink rewriting in memory-link-rewriter rename/rename-batch (renames no longer orphan inbound [[wikilinks]]; alias-set false-rewrite guard; cross-root disambiguation; idempotent; every rewrite logged), pointer-line + MEMORY.md SHOULD caps raised 150 -> 180 for descriptive filename slugs, and a memory-audit advisory warning on non-spec tier values; spec 0.6.2; Zenodo deposit v0.8.0 (DOI 10.5281/zenodo.20975501; concept 10.5281/zenodo.20113963) + GitHub release tag + CycloneDX SBOM + signed tag. SWHID `swh:1:snp:e8b89d19b50b8a1defd23ce391439e6f19bb7b42` (save-code-now request 2375439, 2026-06-27, visit_status=full). |
+| 0.8.1   | v0.8.1 | 2026-06-28          | Patch: deterministic pointer-hook truncation in memory-index-gen (generated MEMORY.md pointer lines now truncate the hook on a UTF-8 boundary to stay within the 180-byte cap; full description preserved in frontmatter + recall index, so lossless for recall; hook omitted when the title/path prefix leaves <=3 bytes); spec 0.6.3 (generator pointer-truncation rule, no new folder integrity invariant); reconciles the generator with the existing 180-byte audit check. Zenodo deposit v0.8.1 (DOI 10.5281/zenodo.20995032; concept 10.5281/zenodo.20113963) + GitHub release tag + CycloneDX SBOM + signed tag. SWHID `swh:1:snp:b70f08ef7f51e0e2c52848db99bca6f166baa312` (save-code-now request 2376063, 2026-06-28, visit_status=full). |
 
 The continuous-prior-art commitment: every spec-bumping commit is tagged with semver; every tag has a corresponding GitHub release; release notes name the substantive additions. Each commit is timestamped + indexed by GitHub + walkable by examiner prior-art search tools.
 
@@ -119,7 +130,7 @@ The continuous-prior-art commitment: every spec-bumping commit is tagged with se
 
 - Every **minor spec bump** (v0.3 → v0.4 → v0.5 → ...) gets a new Zenodo DOI as a new version of the existing concept-DOI.
 - **Major architectural pivots** (a future ADR that changes core patterns) trigger a fresh Zenodo deposit bundle within 30 days of acceptance.
-- **Patch releases** (v0.4.1 / v0.4.2 / v0.5.0.1 / etc.) do NOT mint new Zenodo DOIs; they flow through Channel 3 (GitHub release tag) only.
+- **Patch releases.** As of v0.8.1, every tagged release including patch releases mints a new-version Zenodo DOI under the concept record (deposit-every-release). Earlier patch releases (v0.5.4 through v0.6.1) predate this practice and flowed through Channel 3 (GitHub release tag) plus Channel 1 Software Heritage only. All releases, patch or otherwise, get a GitHub release tag and a Software Heritage SWHID.
 
 ## Bundle improvements queued
 
