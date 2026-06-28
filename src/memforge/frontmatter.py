@@ -114,6 +114,81 @@ def parse(text: str) -> tuple[dict[str, Any], str]:
     return _stringify_dates(fm), body
 
 
+def _short_yaml_err(e: "yaml.YAMLError") -> str:
+    """Concise one-line locator for a YAML parse failure.
+
+    Prefers PyYAML's problem_mark (1-indexed line/column within the frontmatter
+    block) over the multi-line default str(e), so a write-gate deny message
+    stays terminal-readable."""
+    mark = getattr(e, "problem_mark", None)
+    if mark is not None:
+        return f"frontmatter line {mark.line + 1}, column {mark.column + 1}"
+    first = (str(e).splitlines() or [""])[0]
+    return first or e.__class__.__name__
+
+
+def validate_frontmatter(text: str) -> tuple[bool, str | None]:
+    """Granular pre-write validation of a memory file's frontmatter block.
+
+    Unlike parse(), which silently collapses every failure mode to ({}, text),
+    this distinguishes them so a write-boundary gate can REJECT a malformed
+    write and name the cause. This is the agent-neutral primitive any adapter
+    (git pre-commit, a CC PreToolUse shim, editor-on-save) calls before
+    accepting a memory write; no adapter reimplements YAML parsing.
+
+    Returns (ok, reason):
+      - (True, None)  : no RECOGNIZED frontmatter block (no `---` fence, or an
+                        opening `---` with no closing `---` on its own line --
+                        either way not invariant 27's concern, it is invariant
+                        1's), OR a recognized block whose YAML parses as a
+                        mapping (an EMPTY block is the benign empty mapping).
+      - (False, msg)  : a recognized (closed) `---` fence whose block is
+                        MALFORMED: a YAML parse error (the recurring
+                        unquoted-colon break) or a non-mapping scalar/list.
+
+    Deliberately mirrors has_frontmatter()/parse()'s leniency: an opening `---`
+    with no recognized closing fence is treated as "no frontmatter" (exactly as
+    parse() does), NOT a parse violation, so validate never false-positives on a
+    plain markdown file that opens with a `---` thematic break, and an empty
+    frontmatter block is accepted as the empty mapping (parse() returns {} for
+    it). Presence of a valid block on a memory file is invariant 1's job, not
+    this gate's. (Resolves the 0.9.0 panel BLOCKER: empty/degenerate fences must
+    not HARD-fail.)
+    """
+    norm = text.replace("\r\n", "\n").replace("\r", "\n")
+    if not has_frontmatter(norm):
+        # No fence, or an unclosed/unrecognized one: invariant 1's concern, not
+        # invariant 27's. parse() treats this as no-frontmatter; so do we.
+        return True, None
+
+    end = _close_fence_index(norm)  # guaranteed != -1 by has_frontmatter()
+    block = norm[len(_OPEN):end]
+    try:
+        loaded = yaml.safe_load(block)
+    except yaml.YAMLError as e:
+        return False, (
+            "frontmatter YAML failed to parse, most likely an UNQUOTED COLON "
+            "(an unquoted `:` followed by a space) inside a value such as "
+            "`description:` or `name:` (a bare `#`, or a leading `>`/`|`, can "
+            "also break it); reword to remove the `:`-space or wrap the whole "
+            f"value in single quotes. Parser detail: {_short_yaml_err(e)}"
+        )
+
+    if loaded is None:
+        # An empty (whitespace-only) frontmatter block is the empty mapping --
+        # benign and syntactically valid. Emptiness (missing required fields) is
+        # a SOFT/audit concern, not a parse-gate failure.
+        return True, None
+
+    if not isinstance(loaded, dict):
+        return False, (
+            f"frontmatter parsed as {type(loaded).__name__}, not a mapping; the "
+            "block must be `key: value` pairs in block style (one per line)"
+        )
+
+    return True, None
+
+
 def render(frontmatter: dict[str, Any], body: str) -> str:
     """Serialize a frontmatter dict + body back to a memory file string.
 

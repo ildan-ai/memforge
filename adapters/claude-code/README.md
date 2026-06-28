@@ -54,6 +54,14 @@ The recall index is a derived build artifact at `<memory-folder>/.memforge/recal
 
 Register under `UserPromptSubmit`.
 
+### Write-boundary gate hook (spec v0.7.0)
+
+Claude Code is the one adapter that can reject a malformed memory write *before the bytes hit disk* (Tier A in the adapter guide), via a `PreToolUse` hook matching `Write|Edit`. The shim reconstructs the post-write content (Write = the `content` field; Edit = the current file with `old_string` -> `new_string` applied) and pipes it to the `memory-validate` primitive `memforge.frontmatter.validate_frontmatter`; on a frontmatter-parse failure it returns `permissionDecision: deny` with the reason. It MUST fail open on any internal error so the gate never wedges the editor.
+
+This replaces the interim hand-written CC frontmatter hook: the parsing now lives in the installed package (shared with the git pre-commit gate every other IDE uses), so the rule tracks spec updates. The reference shim + the universal git pre-commit fallback are in [`../../docs/adapter-implementation-guide.md`](../../docs/adapter-implementation-guide.md) §"Write-boundary gate".
+
+Register under `PreToolUse` with matcher `Write|Edit`.
+
 ### Settings.json registration
 
 In `~/.claude/settings.json`:

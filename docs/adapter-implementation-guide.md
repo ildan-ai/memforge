@@ -194,6 +194,102 @@ If you're integrating MemForge as the substrate for a multi-agent system, you sh
 - The resolve operation is the only path that mutates resolution state. All other writes are advisory until the resolve operation ratifies them.
 - `created_by` on snoozes is best-effort provenance. Pure git allows author amend; adapters seeking unforgeable provenance should require signed commits.
 
+## Write-boundary gate (v0.7.0)
+
+The **validate operation** (`memory-validate`, spec §"Write-validation operation") is the agent-neutral pre-write gate. Its job: reject a memory file whose frontmatter does not parse as a YAML mapping (the recurring unquoted-colon break, integrity invariant 27) at the write boundary, instead of letting it sail in and surface later as a `memory-audit` failure. Every adapter wires the SAME one-line check; no adapter reimplements YAML parsing.
+
+Before v0.7.0 this gate could only be a Claude-Code-specific PreToolUse hook, which did nothing for a Cursor / Cline / Aider / Copilot / Codex user. The portable replacement is this operation. Wire it once for your surface.
+
+### Where to gate: three tiers
+
+Pick the strongest tier your surface supports. Most adapters can do at least Tier B.
+
+| Tier | When it fires | Rejects the bad write before… | Available on |
+|------|---------------|-------------------------------|--------------|
+| **A — pre-write** | before the bytes reach disk | …the file is ever written | surfaces with a true pre-write hook (Claude Code `PreToolUse`) |
+| **B — pre-commit** | when the change is staged for commit | …it enters git history | **every** adapter (all version via git: CC auto-commit, `memory-watch`, Aider native) |
+| **C — on-save / advisory** | after the write, in the editor | nothing; surfaces inline | editor-on-save integrations |
+
+Tier B is the universal floor: because every MemForge adapter versions the memory folder with git, a `pre-commit` hook is a gate every adapter inherits for free. Tier A is strictly better (the malformed bytes never touch disk) but needs a real pre-write hook, which today only Claude Code exposes.
+
+### Tier B — git pre-commit hook (universal, copy-paste)
+
+Install in the memory folder's git repo at `.git/hooks/pre-commit` (or wire via `core.hooksPath` / pre-commit framework):
+
+```bash
+#!/usr/bin/env bash
+# Reject a commit that would version a memory file with unparseable frontmatter.
+staged=$(git diff --cached --name-only --diff-filter=ACM -- '*.md')
+[ -z "$staged" ] && exit 0
+# HARD failures (invariant 27) exit nonzero; SOFT findings do not block (no --strict).
+echo "$staged" | xargs memory-validate || {
+  echo "memory-validate: blocked commit (fix the frontmatter above and re-stage)" >&2
+  exit 1
+}
+```
+
+This is the recommended gate for Cursor, VS Code Copilot, Aider, Codex, Cline, Continue, Windsurf, and any future adapter — they all already commit through git (most via `memory-watch`), so the hook fires regardless of which agent did the write. Add `--strict` if you want SOFT findings (pointer-cap, missing fields, bad enums) to block too; the default blocks only the HARD frontmatter-parse failure.
+
+### Tier A — Claude Code PreToolUse shim (reference implementation)
+
+Claude Code can deny a `Write`/`Edit` before it lands. The shim reconstructs the *post-write* content and pipes it to `memory-validate`. The adapter (not memforge) owns the reconstruction, because only the adapter knows the tool semantics:
+
+- **Write**: the post-write content is the tool's `content` field verbatim.
+- **Edit**: the post-write content is the current on-disk file with `old_string` replaced by `new_string`.
+
+```python
+#!/usr/bin/env python3
+# Claude Code PreToolUse hook (matcher: Write|Edit). Denies a memory write whose
+# reconstructed post-write content has unparseable frontmatter. Fail-OPEN on any
+# internal error so the gate never wedges the editor.
+import json, sys
+from pathlib import Path
+from memforge.frontmatter import validate_frontmatter   # the same primitive memory-validate uses
+
+def main() -> int:
+    try:
+        data = json.loads(sys.stdin.read() or "{}")
+        ti = data.get("tool_input") or {}
+        fp = ti.get("file_path") or ""
+        if not fp.endswith(".md") or "/.claude/" not in fp:   # scope to memory trees
+            return 0
+        if data.get("tool_name") == "Write":
+            text = ti.get("content") or ""
+        else:  # Edit: apply old->new to the current file
+            cur = Path(fp).read_text(encoding="utf-8") if Path(fp).exists() else ""
+            text = cur.replace(ti.get("old_string", ""), ti.get("new_string", ""), 1)
+        ok, reason = validate_frontmatter(text)
+        if not ok:
+            print(json.dumps({"hookSpecificOutput": {
+                "hookEventName": "PreToolUse", "permissionDecision": "deny",
+                "permissionDecisionReason": f"memory-validate: {reason}"}}))
+    except Exception:
+        return 0  # fail open
+    return 0
+
+if __name__ == "__main__":
+    sys.exit(main())
+```
+
+Call the installed package's `validate_frontmatter`, not a vendored copy, so the gate tracks spec updates. Always fail open on internal error: a write-gate that wedges on its own bug is worse than the break it prevents.
+
+### Tier C — editor-on-save
+
+For an editor integration, run `memory-validate <file>` on save and surface failures inline (a red squiggle / problems-panel entry). This is advisory: it informs the author but does not stop the save. Pair it with Tier B so the authoritative rejection still happens at commit time.
+
+### Per-IDE specifics
+
+- **Claude Code** — Tier A. Register the shim above under `PreToolUse` matching `Write|Edit`. This is the only adapter today that pre-empts the on-disk write. (The interim hand-written CC hook that motivated this operation is now exactly this shim over the shared primitive.)
+- **Cursor** — Tier B. Cursor exposes no pre-write hook (writes are surfaced after the fact via `memory-watch`), so the git pre-commit hook is the gate. Optionally extend the `memory-watch` invocation to run `memory-validate` on a settled write and skip the auto-commit on failure, surfacing the reason in the watcher log.
+- **VS Code Copilot** — Tier B (+ optional Tier C via a VS Code task bound to `onSave`). Same constraint as Cursor: no pre-write hook, so gate at commit. The VS Code "Problems" panel is the natural Tier C surface.
+- **Aider** — Tier B. Aider's native auto-commit fires the pre-commit hook for files it edits via `/add`; `memory-watch` covers external edits, and its commit fires the same hook. No Aider-specific pre-write hook exists.
+- **Codex CLI / Cline / Continue / Windsurf** — Tier B. All AGENTS.md-aware agents version via `memory-watch` (or native git), so the pre-commit hook is the universal gate. None expose a pre-write hook.
+- **Plain shell / vim / emacs / CI** — Tier B is just `memory-validate` in a pre-commit hook; CI can additionally run `memory-validate --path <root> --strict` as a blocking job alongside `memory-audit`.
+
+### Validate vs audit (do not confuse them)
+
+`memory-validate` is the FAST single-file pre-write subset; `memory-audit` is the full-corpus conformance pass. Wire validate at the write boundary (Tier A/B) for instant rejection of the colon-break; keep `memory-audit` as the CI gate for the whole-folder invariants (orphans, supersession graph, sensitivity, commit-log). They share caps + enums + the parser, so a file that passes validate's HARD check will not later fail audit's frontmatter-parse check for a different reason.
+
 ## Implementing query-triggered recall (v0.6.0)
 
 Recall is an alternative to bulk-loading the `tier: index` hotlist (`MEMORY.md`) every session: given a query (for example the user's prompt), surface only the descriptions of the memories whose triggers match. The normative contract is in `spec/SPEC.md` §"Recall operation"; this is implementation guidance.

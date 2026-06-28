@@ -18,13 +18,14 @@ from pathlib import Path
 from typing import Optional
 
 from memforge.frontmatter import has_frontmatter, parse
+# S5: caps are single-sourced in memforge.constants so audit, validate, and
+# index-gen cannot drift (closes the 150-vs-180 split).
+from memforge.constants import MEMORY_MD_LINE_CAP, POINTER_LINE_BYTE_CAP
 
 
 VALID_TYPES = {"user", "feedback", "project", "reference"}
 VALID_SENSITIVITIES = {"public", "internal", "restricted", "privileged"}
 SPEC_TIERS = {"index", "detail"}
-MEMORY_MD_LINE_CAP = 180
-POINTER_LINE_BYTE_CAP = 180
 
 
 # ---------- helpers ----------
@@ -326,16 +327,19 @@ def audit_target(
             violations.append("MEMORY.md has frontmatter (should be index only)")
         line_count = len(index_text.splitlines())
         if line_count > MEMORY_MD_LINE_CAP:
-            violations.append(
-                f"MEMORY.md is {line_count} lines (>{MEMORY_MD_LINE_CAP} cap)"
+            health.append(
+                f"[convention-drift] MEMORY.md is {line_count} lines "
+                f"(>{MEMORY_MD_LINE_CAP} cap; SHOULD stay under it)"
             )
         long_pointer_lines = 0
         for line in index_text.splitlines():
             if _BULLET_POINTER_RE.match(line) and len(line.encode("utf-8")) > POINTER_LINE_BYTE_CAP:
                 long_pointer_lines += 1
         if long_pointer_lines > 0:
-            violations.append(
-                f"MEMORY.md has {long_pointer_lines} pointer lines >{POINTER_LINE_BYTE_CAP} bytes"
+            health.append(
+                f"[convention-drift] MEMORY.md has {long_pointer_lines} pointer "
+                f"lines >{POINTER_LINE_BYTE_CAP} bytes "
+                f"(spec SHOULD stay under the {POINTER_LINE_BYTE_CAP}-byte cap; em-dashes cost 3 bytes each)"
             )
 
     # ---- pointer / disk-file set comparison ----

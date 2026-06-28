@@ -55,8 +55,8 @@ GENERATED_HEADER = (
 # UTF-8 byte budget so the index stays terminal-readable; the pointer hook (the
 # description excerpt) is truncated to fit. The full description remains authoritative
 # in the file frontmatter and the recall index, so truncating the hook is lossless for
-# recall. Mirrors audit.POINTER_LINE_BYTE_CAP; keep the two in sync.
-POINTER_LINE_BYTE_CAP = 180
+# recall. S5: single-sourced in memforge.constants alongside audit + validate.
+from memforge.constants import POINTER_LINE_BYTE_CAP  # noqa: E402
 
 
 @dataclass

@@ -35,7 +35,7 @@ def _default_spec_version() -> str:
     from the package (not a hardcoded literal) so the default cannot drift
     STALE behind the shipping package (closes config-03).
     """
-    fallback = "0.7.0"
+    fallback = "0.9.0"
     try:
         from importlib.metadata import PackageNotFoundError, version as _pkg_version
 

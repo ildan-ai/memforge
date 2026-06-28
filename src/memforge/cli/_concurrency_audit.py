@@ -29,7 +29,9 @@ import re
 import subprocess
 from collections import defaultdict
 from pathlib import Path
-from typing import Any, Iterable, Optional
+from typing import Any, Iterable, NamedTuple, Optional
+
+import yaml
 
 from memforge.frontmatter import has_frontmatter, parse
 
@@ -372,6 +374,91 @@ def _find_cycle(graph: dict[str, set[str]], start: str) -> Optional[list[str]]:
 # ---------- tier 2: commit-log invariants ----------
 
 
+class WaiverSet(NamedTuple):
+    """Parsed `.memforge/audit-waivers.yaml` (R2).
+
+    commits: explicit short/full SHAs whose Tier-2 prefix-violation is waived.
+    superseded_before: ISO date (YYYY-MM-DD); superseded-transition findings on
+        commits dated strictly before it are waived (the migration-era floor).
+    """
+
+    commits: frozenset[str]
+    superseded_before: Optional[str]
+
+
+def _load_waivers(target: Path) -> WaiverSet:
+    """Load the audit-waiver allowlist for a memory root.
+
+    The waiver file is `<target>/.memforge/audit-waivers.yaml`: a frontmatter-
+    free YAML mapping (so `memory-validate` can check it). FAIL-CLOSED: a
+    missing, unreadable, malformed, or non-mapping waiver file yields an EMPTY
+    waiver set, so genuine violations still fire. Only an explicit, valid,
+    git-tracked waiver suppresses a finding.
+    """
+    path = target / ".memforge" / "audit-waivers.yaml"
+    if not path.is_file():
+        return WaiverSet(frozenset(), None)
+    try:
+        data = yaml.safe_load(path.read_text(encoding="utf-8"))
+    except Exception:
+        # Fail-closed on ANY parse failure. safe_load can raise more than
+        # YAMLError: an unquoted invalid date (`2026-13-99`) raises ValueError
+        # from the timestamp constructor. A waiver loader that crashes is worse
+        # than one that ignores a malformed file, so the contract is empty-set
+        # on every malformation.
+        return WaiverSet(frozenset(), None)
+    if not isinstance(data, dict):
+        return WaiverSet(frozenset(), None)
+    # FAIL-CLOSED on a non-list waived_commits (a scalar like `waived_commits: 1234567`
+    # would otherwise raise TypeError on iteration, or a bare string would iterate
+    # per-character). Anything that is not a list yields no commit waivers.
+    raw = data.get("waived_commits")
+    if not isinstance(raw, list):
+        raw = []
+    # Only honor sha entries >= 7 chars so a stray short token cannot waive
+    # broadly by prefix-match.
+    commits = frozenset(
+        str(c).strip() for c in raw if isinstance(c, (str, int)) and len(str(c).strip()) >= 7
+    )
+    # FAIL-CLOSED on a non-date cutoff. `str(before)[:10]` on a YAML bool / int
+    # (e.g. `superseded_transition_waived_before: true` -> "True") would, via
+    # string comparison, waive ALL superseded transitions ("2026-..." < "True").
+    # Require a real YYYY-MM-DD; reject anything else to None (no cutoff).
+    raw_before = data.get("superseded_transition_waived_before")
+    before = _coerce_iso_date(raw_before)
+    return WaiverSet(commits, before)
+
+
+def _coerce_iso_date(value: Any) -> Optional[str]:
+    """Return a canonical YYYY-MM-DD string iff `value` is a valid ISO date,
+    else None. yaml.safe_load may hand back a datetime.date (unquoted ISO date)
+    or a string; a bool/int/garbage value yields None (fail-closed)."""
+    import datetime
+    if isinstance(value, datetime.date):  # safe_load parses an unquoted date
+        return value.isoformat()
+    if not isinstance(value, str):
+        return None
+    try:
+        return datetime.date.fromisoformat(value.strip()[:10]).isoformat()
+    except ValueError:
+        return None
+
+
+def _is_waived(sha: str, commit_date: str, kind: str, waivers: WaiverSet) -> bool:
+    """True iff this (commit, finding) pair is covered by the waiver set."""
+    for w in waivers.commits:
+        if sha.startswith(w):  # w may be short (8) or full (40); sha is full
+            return True
+    if (
+        waivers.superseded_before
+        and "superseded" in kind.lower()
+        and commit_date
+        and commit_date[:10] < waivers.superseded_before
+    ):
+        return True
+    return False
+
+
 def tier2_findings(
     target: Path,
     *,
@@ -384,11 +471,17 @@ def tier2_findings(
     mutations, superseded_by writes, and config edits that are NOT in
     appropriately-prefixed commits.
 
+    R2: a finding whose commit is covered by `.memforge/audit-waivers.yaml` is
+    suppressed from the BLOCKER list but REPORTED in a visible "N waived"
+    summary (waivers are never silent).
+
     Implementation note: this is a best-effort defense-in-depth layer. Tier 1
     is load-bearing. Force-push or shallow-clone scenarios reduce Tier 2
     coverage; the spec acknowledges this as a residual git-layer threat.
     """
     out: list[Finding] = []
+    waivers = _load_waivers(target)
+    waived: list[str] = []
     repo_top = _git_toplevel(target)
     if repo_top is None:
         # Not a git repo, or the git binary is unavailable. Surface a WARN so a
@@ -408,7 +501,7 @@ def tier2_findings(
         log_proc = subprocess.run(
             ["git", "-C", str(repo_top), "log",
              f"--since={audit_window_days}.days",
-             "--pretty=format:%H%x09%s"],
+             "--pretty=format:%H%x09%cI%x09%s"],
             capture_output=True, text=True, check=True,
         )
     except (subprocess.CalledProcessError, FileNotFoundError) as exc:
@@ -421,9 +514,10 @@ def tier2_findings(
         return out
 
     for line in log_proc.stdout.splitlines():
-        if "\t" not in line:
+        parts = line.split("\t", 2)
+        if len(parts) < 3:
             continue
-        sha, subject = line.split("\t", 1)
+        sha, commit_date, subject = parts
         # For each commit, inspect file-level changes against memory files.
         try:
             diff = subprocess.run(
@@ -447,12 +541,23 @@ def tier2_findings(
         for path in memory_files:
             transitions = _check_diff_for_authority_changes(repo_top, sha, path)
             for kind in transitions:
+                if _is_waived(sha, commit_date, kind, waivers):
+                    waived.append(sha[:8])
+                    continue
                 out.append((
                     "BLOCKER",
                     f"commit {sha[:8]} ({subject!r}): {kind} on {path} without "
                     f"`memforge: resolve` / `memforge: snooze` / `memforge: alias` / "
                     f"`memforge: config` prefix",
                 ))
+
+    if waived:
+        uniq = sorted(set(waived))
+        out.append((
+            "WARN",
+            f"{len(waived)} commit-log invariant finding(s) waived per "
+            f".memforge/audit-waivers.yaml (commits: {', '.join(uniq)})",
+        ))
 
     return out
 

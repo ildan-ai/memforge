@@ -38,6 +38,10 @@ Cursor adapter for MemForge. Surfaces a memory folder via Cursor's `.cursor/rule
 - **No skills / slash commands**. Cursor has its own command surface; the Claude Code `consolidate-memory` skill does not port. You can replicate the workflow manually by running the tools from a terminal.
 - **No `Edit` vs `Write` distinction in commit messages**. The `memory-watch` commit message is just a timestamp; CC's hook gets the tool name and file path from the event payload.
 
+## Write-boundary gate (spec v0.7.0)
+
+Cursor exposes **no pre-write hook** (writes surface after the fact via `memory-watch`), so the write-boundary gate is the **git pre-commit hook** (Tier B): `memory-validate` over the staged `*.md` files rejects a malformed frontmatter write before it enters history. This works because `memory-watch` commits through git, so the hook fires regardless of which agent did the write. Optionally extend the `memory-watch` invocation to run `memory-validate` on a settled write and skip the auto-commit on failure. The copy-paste hook + the rationale are in [`../../docs/adapter-implementation-guide.md`](../../docs/adapter-implementation-guide.md) §"Write-boundary gate".
+
 ## Files in this adapter
 
 - `rules/memory-load.mdc` — Cursor rule that loads `MEMORY.md` content as session-start context. Copy to `~/.cursor/rules/` or `<repo>/.cursor/rules/`.
