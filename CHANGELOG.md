@@ -10,6 +10,26 @@ The version number tracked here is the **package / tooling** version. The on-dis
 
 The Contributor License Agreement infrastructure is counsel-blocked; external pull requests are paused until the CLA flow lands.
 
+## [0.8.1] - 2026-06-28
+
+**Patch: deterministic pointer-hook truncation in `memory-index-gen`. Package 0.8.1 / spec 0.6.3. Backward-compatible; regenerating an index only shortens over-cap hooks, no folder breaks.**
+
+### Fixed
+
+- **`memory-index-gen` pointer lines now respect the 180-byte cap.** The generator embedded the full `description` in each `MEMORY.md` pointer line, so a rich description produced a pointer line over the spec's 180-byte cap. `memory-audit` flagged these as integrity violations, yet the generator itself produced them. The generator now truncates the hook to fit (split on a UTF-8 codepoint boundary, append the literal `...`); the authoritative full `description` is preserved in the file frontmatter and the recall index, so truncation is lossless for recall (recall reads the frontmatter `description`, not the MEMORY.md hook). The one un-truncatable case is a `[title](path)` prefix that alone exceeds the cap, which is emitted intact and attributable to the title/path.
+
+### Spec
+
+- `spec/VERSION` 0.6.2 -> 0.6.3. The "MEMORY.md format" section gains the generator pointer-truncation rule (generator MUST keep emitted pointer lines within the byte cap). Reconciles the generator with the existing 180-byte audit check. No frontmatter or normative-contract change; every v0.6.2 folder remains conformant under v0.6.3 readers.
+
+### Tests
+
+- New `tests/test_index_gen_pointer_truncation.py` (8 cases): `_truncate_hook` under-budget / over-budget-ellipsis / UTF-8-boundary split; `_bullet` no-description / short-untruncated / long-truncated-to-cap / frontmatter-description-preserved / prefix-over-cap-emitted-intact.
+
+### Pre-ship review
+
+- Cross-family panel (release-rigor gate 1): architect on grok-reasoning + adversarial critic on gemini-pro. The critic caught a BLOCKER (the prefix-over-cap edge case appended an over-cap hook instead of omitting it); fixed in-commit (hook now omitted when the title/path prefix leaves <=3 bytes). Resolution on the spec-invariant question: generator guarantee, no new folder integrity invariant (truncation is a generation/presentation rule, not a folder-conformance property). Gate 2 threat-modeler: WAIVED - the change is pure UTF-8 string formatting in index_gen with no new I/O, subprocess, filesystem, or cryptographic surface.
+
 ## [0.8.0] - 2026-06-27
 
 **Minor: three additive improvements. Package 0.8.0 / spec 0.6.2. All changes are backward-compatible; no existing folder breaks.**

@@ -51,6 +51,13 @@ GENERATED_HEADER = (
     "<!-- Operator-curated preamble lives in `_memforge.yaml` in this folder. -->\n"
 )
 
+# Pointer-line byte cap (spec v0.6.3+). MEMORY.md pointer lines are kept within this
+# UTF-8 byte budget so the index stays terminal-readable; the pointer hook (the
+# description excerpt) is truncated to fit. The full description remains authoritative
+# in the file frontmatter and the recall index, so truncating the hook is lossless for
+# recall. Mirrors audit.POINTER_LINE_BYTE_CAP; keep the two in sync.
+POINTER_LINE_BYTE_CAP = 180
+
 
 @dataclass
 class MemoryFile:
@@ -681,11 +688,41 @@ def render(folder_root: Path, files: list[MemoryFile]) -> str:
     return "\n".join(lines).rstrip() + "\n"
 
 
+def _truncate_hook(desc: str, budget: int) -> str:
+    """Truncate a pointer-hook description to at most `budget` UTF-8 bytes,
+    splitting on a UTF-8 boundary and appending the literal ``...`` when any
+    truncation occurs. Returns the (possibly shortened) description."""
+    encoded = desc.encode("utf-8")
+    if len(encoded) <= budget:
+        return desc
+    cap = max(budget - 3, 0)  # leave room for the 3-byte ellipsis marker
+    while cap > 0:
+        try:
+            return encoded[:cap].decode("utf-8") + "..."
+        except UnicodeDecodeError:
+            cap -= 1
+    return "..."
+
+
 def _bullet(mf: MemoryFile) -> str:
     desc = mf.description.strip()
-    if desc:
-        return f"- [{mf.name}]({mf.rel_path}): {desc}"
-    return f"- [{mf.name}]({mf.rel_path})"
+    if not desc:
+        return f"- [{mf.name}]({mf.rel_path})"
+    bullet = f"- [{mf.name}]({mf.rel_path}): {desc}"
+    if len(bullet.encode("utf-8")) <= POINTER_LINE_BYTE_CAP:
+        return bullet
+    # Whole line exceeds the cap: truncate the description hook to fit. The full
+    # description stays in frontmatter + the recall index (authoritative), so this
+    # is lossless for recall and only shortens the human-browsable MEMORY.md hook.
+    prefix = f"- [{mf.name}]({mf.rel_path}): "
+    budget = POINTER_LINE_BYTE_CAP - len(prefix.encode("utf-8"))
+    if budget <= 3:
+        # No room for a meaningful hook after the title/path prefix: omit the hook
+        # entirely rather than append an over-cap description. Respects the cap as
+        # far as possible; if the title/path alone exceeds it, that overrun is
+        # unavoidable and attributable to the title/path, not the hook.
+        return f"- [{mf.name}]({mf.rel_path})"
+    return prefix + _truncate_hook(desc, budget)
 
 
 def default_paths() -> list[Path]:
