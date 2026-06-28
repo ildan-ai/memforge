@@ -48,6 +48,10 @@ This adapter is for **GitHub Copilot Chat in VS Code** specifically. Other VS Co
 - **`.github/copilot-instructions.md` is per-repo, not global**. To get global memory loaded across all repos, use the user-settings `github.copilot.chat.codeGeneration.instructions` path (Option B above) which references the absolute path of the global memory file.
 - **Inlining cost**. Copilot inlines the entire instructions file into every request. Large `MEMORY.md` files (>10KB) eat token budget and slow responses. For big folders, run `memory-index-gen --print --viewer-tier internal` periodically and reference the filtered file instead.
 
+## Write-boundary gate (spec v0.7.0)
+
+Copilot Chat exposes no pre-write hook, so the gate is the **git pre-commit hook** (Tier B): `memory-validate` over the staged `*.md` files, fired by the `memory-watch` commit. Optionally add a Tier C advisory surface by binding a VS Code task to `onSave` that runs `memory-validate <file>` and reports into the Problems panel. The copy-paste hook is in [`../../docs/adapter-implementation-guide.md`](../../docs/adapter-implementation-guide.md) §"Write-boundary gate".
+
 ## Files in this adapter
 
 - `copilot-instructions.md.template` — drop-in template for `.github/copilot-instructions.md`. Edit the memory-folder paths.

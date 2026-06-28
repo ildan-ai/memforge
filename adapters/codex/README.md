@@ -39,6 +39,10 @@ This adapter also covers other AGENTS.md-aware agents that don't have their own 
 - `AGENTS.md.template` — drop-in template that points at the memory folders. Copy to your repo root as `AGENTS.md` and edit paths.
 - `daemon-launchd.plist` and `daemon-systemd.service` — for daemon-style memory-watch, see `../cursor/` (the same files work for any agent).
 
+## Write-boundary gate (spec v0.7.0)
+
+None of the AGENTS.md-aware agents (Codex CLI, Cline, Continue, Windsurf) expose a pre-write hook, so the gate is the **git pre-commit hook** (Tier B): `memory-validate` over the staged `*.md` files, fired by the `memory-watch` commit (or the agent's native git integration). One hook covers every agent in this family because the contract is git, not the agent. The copy-paste hook is in [`../../docs/adapter-implementation-guide.md`](../../docs/adapter-implementation-guide.md) §"Write-boundary gate".
+
 ## Per-agent notes
 
 ### OpenAI Codex CLI

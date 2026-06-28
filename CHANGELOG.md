@@ -10,6 +10,32 @@ The version number tracked here is the **package / tooling** version. The on-dis
 
 The Contributor License Agreement infrastructure is counsel-blocked; external pull requests are paused until the CLA flow lands.
 
+## [0.9.0] - 2026-06-28
+
+**Minor: write-boundary hardening. Package 0.9.0 / spec 0.7.0. Additive and backward-compatible; no existing well-formed folder breaks.**
+
+### Added
+
+- **`memory-validate` — the syntax-aware write-boundary gate.** The agent-neutral primitive an adapter invokes BEFORE accepting or committing a memory write, so a malformed file is rejected at the boundary instead of surfacing later as a `memory-audit` failure. HARD check (always fails): the frontmatter parses as a YAML mapping (the recurring unquoted-colon break, new integrity invariant 27). SOFT checks (fail only under `--strict`): pointer/line caps, required v0.4 fields, `tier`/`status` enums. Read-only; single-file and batch; `--json`. The parser (`memforge.frontmatter.validate_frontmatter`) and the caps/enums (`memforge.constants`) are shared with `memory-audit`, so the two cannot disagree. Replaces the previously Claude-Code-only frontmatter hook with one check every IDE wires (git pre-commit = universal; Claude Code `PreToolUse` shim = pre-write).
+- **`memory-audit` waiver mechanism (`.memforge/audit-waivers.yaml`).** An explicit, recorded, fail-closed allowlist that suppresses immutable migration-era Tier 2 commit-log findings so a genuinely-clean corpus audits to zero. Waivers are REPORTED (audit prints "N waived" with the commit SHAs), never silent. Fail-closed: a missing, unreadable, malformed, non-mapping, or non-list-shaped waiver file yields an empty waiver set. `waived_commits` (>=7-char SHAs, short-token guarded) and/or a `superseded_transition_waived_before` date cutoff.
+- **`memory-detect` hygiene orchestrator + `memory-audit` convention-drift health check** (folded from the curate work): runs the read-only detection primitives on a cadence and writes a prioritized findings queue; the MEMORY.md line-count + pointer-byte checks move from integrity violations to `[convention-drift]` health warnings (the spec uses SHOULD on those caps).
+
+### Changed
+
+- **Single-source `POINTER_LINE_BYTE_CAP` / `MEMORY_MD_LINE_CAP` (both 180)** in `memforge.constants`; `memory-audit`, `memory-validate`, and `memory-index-gen` all import them, closing the prior drift where the cap was defined independently in two modules. Fixed stale "under 150" warning text in `memory-audit`.
+
+### Spec
+
+- `spec/VERSION` 0.6.3 -> 0.7.0. New integrity invariant 27 (a recognized `---` fence MUST parse as a YAML mapping; an empty block is the empty mapping; an unclosed/absent fence is invariant 1's concern). New sections: "Write-validation operation (v0.7.0+)" (operation contract + post-conditions) and "Audit waivers (R2; v0.7.0+)" (file format + normative reported/fail-closed/min-SHA/trust-boundary semantics). No new REQUIRED frontmatter field; invariant 27 restates invariant 1's implicit parse requirement, so every well-formed pre-v0.7.0 folder stays well-formed.
+
+### Tests
+
+- New `tests/test_validate.py` (validate operation + the shared primitive: colon-break / non-mapping / empty + degenerate fence leniency / caps / required-field + enum warns / `--strict` escalation / `--json` / archive exclusion) and `tests/test_audit_waiver.py` (loader fail-closed shapes, short-token guard, date-cutoff coercion, git-integration suppress-and-report). Plus the folded `tests/test_detect.py` + `tests/test_audit_convention_drift.py`. Full suite 555 passed / 37 skipped.
+
+### Pre-ship review
+
+- Cross-family release-rigor panel. **Architect**: ship, no findings. **Threat-modeler (gemini-pro, gate 2)**: 2 MAJOR + 1 MINOR. MAJOR-1 fail-closed violation (a scalar `waived_commits` raised `TypeError` instead of yielding an empty set) and MAJOR-2 spoofing via type-confusion (`superseded_transition_waived_before: true` stringified to `"True"`, over-waiving all superseded transitions via string comparison) were both fixed; writing the regression tests surfaced a 3rd crash vector (an unquoted invalid date raises `ValueError` from the YAML timestamp constructor), also fixed by broadening the loader's fail-closed guard. The MINOR (unbounded file read on a local CLI) is carried per the voice's recommendation. **Adversarial critic (grok-reasoning, gate 1)**: 1 BLOCKER — `memory-validate` HARD-failed an empty/degenerate frontmatter fence (over-strict vs the lenient parser); fixed (validate now mirrors `has_frontmatter` leniency; empty block = empty mapping) and invariant 27 spec text reconciled. Synthesis at `reviews-shared/architecture/2026-06-28-memforge-0.9.0/`.
+
 ## [0.8.1] - 2026-06-28
 
 **Patch: deterministic pointer-hook truncation in `memory-index-gen`. Package 0.8.1 / spec 0.6.3. Backward-compatible; regenerating an index only shortens over-cap hooks, no folder breaks.**

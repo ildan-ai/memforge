@@ -47,6 +47,10 @@ Aider adapter for MemForge. Surfaces a memory folder via Aider's `--read` flag (
 - `aider-memory-cmd.sh` — bash/zsh convenience function that wraps `aider` with the right `--read` flags for memforge folders. Source from `~/.bashrc` or `~/.zshrc` and use `aider-mem` instead of `aider`.
 - `aider-memory-cmd.ps1` — PowerShell equivalent for Windows. Dot-source from your PowerShell profile (`. $PROFILE` after editing).
 
+## Write-boundary gate (spec v0.7.0)
+
+Aider has no pre-write hook, so the gate is the **git pre-commit hook** (Tier B): `memory-validate` over the staged `*.md` files. It fires on Aider's native auto-commit for files edited via `/add`, and on the `memory-watch` commit for external edits, so both write paths are covered by one hook. The copy-paste hook is in [`../../docs/adapter-implementation-guide.md`](../../docs/adapter-implementation-guide.md) §"Write-boundary gate".
+
 ## Aider's commit-msg hook
 
 Aider auto-commits with messages like `aider: <description>`. If you want memory-folder commits to follow a consistent prefix (e.g., `memory: edit`), wire a git `commit-msg` hook in the memory folder that prefixes any aider commit with `memory:`. This is optional; aider's default messages are reasonable.

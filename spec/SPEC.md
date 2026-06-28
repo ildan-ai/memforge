@@ -1,6 +1,6 @@
 # MemForge spec
 
-Version 0.6.3.
+Version 0.7.0.
 
 ## Goal
 
@@ -346,6 +346,27 @@ A lint implementation that consults an external (network-bound) model to suggest
 
 An adapter MAY orchestrate lint around the resolve operation (§"The resolve operation"): lint the competing candidates before resolution (so the operator chooses among well-formed claims), then, after the scope-locked `memforge: resolve` commit, regenerate the recall index so the new active winner is immediately recallable. The index regeneration MUST be a separate step from the resolve commit, since the resolve commit may touch only the topic's group members (resolve post-condition 4); folding index regeneration or content repair into the resolve commit is a scope violation. Verifying the winner is recallable after regeneration (a smoke query) is a recommended post-condition.
 
+## Write-validation operation (v0.7.0+)
+
+The **validate operation** is the syntax-aware write-boundary gate: the agent-neutral primitive an adapter invokes BEFORE accepting or committing a memory write, so a malformed file is rejected at the boundary instead of surfacing at the next `memory-audit`. Like lint and recall, validate is defined by its operation contract + post-conditions; matching, wiring, and UX are reference-implementation + adapter concerns (per the loading-semantics principle). It is the portable replacement for editor-specific write hooks: a single adapter-neutral check any surface (git pre-commit, in-editor on-save, an agent's pre-write hook) wires once, rather than each IDE reimplementing YAML parsing.
+
+Validate is READ-ONLY (it MUST NOT mutate a file) and is a deliberately FAST single-file subset of audit, not a replacement: `memory-audit` remains the full-corpus conformance pass (orphans, supersession graph, sensitivity gates, commit-log invariants); validate is the latency-bound pre-write check on one file (or a small batch).
+
+**Contract.**
+
+- **HARD** (a validate FAILURE, the gate): the file's frontmatter satisfies integrity invariant 27 (a present `---` fence is closed and parses as a YAML mapping). A failure here MUST cause the operation to report failure (nonzero exit for a CLI adapter) regardless of any soft-check configuration, because the gate's purpose is `validate || reject`.
+- **SOFT** (reported, advisory): the `MEMORY.md` pointer/line caps (§"Index format"), presence of the v0.4 required fields on a memory file, and `tier` / `status` within their enums. These overlap audit; validate surfaces them as the early single-file signal but a SOFT finding MUST NOT block a write unless the operator opts into a strict mode (mirrors the lint "never a hard gate" rule for the advisory layer).
+
+**Post-conditions (normative).**
+
+1. Validate never mutates any file.
+2. A file with no `---` fence is not a validate failure (presence is invariant 1's concern for memory files, not validate's).
+3. A HARD failure is reported per-file with a machine-consumable code identifying the cause (malformed-fence / non-mapping / parse-error).
+4. The SOFT check set is a strict subset of `memory-audit`'s checks and uses the same caps + enums (single-sourced), so validate and audit can never disagree on a shared check.
+5. Validate is composable into any write path; per-surface wiring (git pre-commit over staged files, in-editor on-save, agent pre-write hook) lives in `docs/adapter-implementation-guide.md` §"Write-boundary gate".
+
+**Reference implementation.** `memory-validate [--path DIR ...] [FILE ...] [--json] [--strict]`. Single-file and batch; read-only; exit 0 when no HARD failures (and, under `--strict`, no SOFT findings either).
+
 ## Multi-agent concurrency: competing claims
 
 (v0.4.0+. Closes the v0.3.x §"Not in scope" deferral on multi-user concurrency.)
@@ -526,6 +547,23 @@ This is a **git-layer threat**, not a MemForge-layer threat. The mitigation is a
 **Secure-mode adapter conformance (informative).** Adapters MAY claim secure-mode. Secure-mode adapters MUST: (1) at startup, detect (via the git provider's API where available) whether the canonical branch has branch protection with no force-push, required pull-request review, and required signed commits; (2) emit a startup MAJOR if any is missing; (3) refuse to perform any resolve operation if branch protection is absent (operator may override with `--insecure`, recorded in commit metadata).
 
 Adapters that do NOT claim secure-mode MUST emit an informative startup notice that the deployment is operating without git-layer protection and that Tier 2 audit guarantees are reduced. Solo-operator deployments running without branch protection are explicitly NOT in secure-mode; the operator accepts the residual force-push threat as part of running solo.
+
+### Audit waivers (R2; v0.7.0+)
+
+The Tier 2 (commit-log) layer flags authority-state transitions (e.g. a `status: superseded` transition) that land in a commit lacking a recognized `memforge:` prefix. Some such commits are immutable historical facts: a corpus migration or a rename predating the prefix convention produces a permanent floor of Tier 2 findings that cannot be fixed without rewriting history. The waiver mechanism lets an operator record an explicit, auditable allowlist so a genuinely-clean corpus audits to zero rather than carrying a permanent nonzero floor that desensitizes the operator to real findings.
+
+**File.** `<memory-root>/.memforge/audit-waivers.yaml`, a frontmatter-free YAML mapping (so `memory-validate` and `memory-audit` can themselves check it). Recognized keys:
+
+- `waived_commits` (list of commit SHAs, short ≥ 7 chars or full): a Tier 2 finding whose commit SHA is prefixed by a listed entry is waived.
+- `superseded_transition_waived_before` (optional ISO date `YYYY-MM-DD`): a superseded-transition finding on a commit dated strictly before this cutoff is waived. Intended for a migration-era floor.
+- `reason` (optional string): operator note recorded alongside the allowlist.
+
+**Semantics (normative).**
+
+1. **Reported, never silent.** When any waiver applies, `memory-audit` MUST emit a visible "N finding(s) waived" line listing the waived commit SHAs. A waiver suppresses a finding from the BLOCKER set; it MUST NOT hide that a waiver occurred.
+2. **Fail-closed.** A missing, unreadable, malformed, or non-mapping waiver file yields an EMPTY waiver set, so genuine violations still fire. Only an explicit, valid, git-tracked waiver suppresses a finding.
+3. **Minimum SHA length.** A `waived_commits` entry shorter than 7 characters MUST be ignored, so a stray short token cannot waive broadly by prefix-match.
+4. **Trust boundary.** The waiver file is git-tracked and shares the trust boundary of the memory files themselves: anyone who can write the repo can author a waiver. Deployments with untrusted writers rely on the same git-provider branch-protection + signed-commit mitigations as the rest of the Tier 2 layer (§"Residual git-layer threat"); a waiver is not a security control, it is a recorded, reviewable suppression of a known-benign historical finding.
 
 ## v0.5.0 surface map
 
@@ -1108,6 +1146,7 @@ A MemForge folder is well-formed if, and only if:
 24. (v0.5.1+) Agent-signed writes MUST land at paths within `attestation.capability_scope.memory_roots` and the operation MUST be in `attestation.capability_scope.allowed_operations`. Out-of-scope path → BLOCKER `agent_session_out_of_scope_write`; out-of-scope operation → BLOCKER `agent_session_out_of_scope_operation`.
 25. (v0.5.1+) The `<agent-session-id>` portion of `identity` MUST match the regex `^[a-z0-9]+-\d{4}-\d{2}-\d{2}-[a-z0-9]{8,16}$`. Non-matching agent-session-ids are rejected on read with audit MAJOR `agent_session_id_format_invalid`.
 26. (v0.6.0+) The recall frontmatter fields are optional and, when present, well-typed: `triggers` MUST be a list of strings (malformed `triggers` is audit WARN `triggers_malformed`, and consumers fall back to derived triggers); `always` and `do_not_inject` MUST be boolean. A non-boolean `always` or `do_not_inject` is audit WARN (`always_malformed` / `do_not_inject_malformed`), NOT BLOCKER; consumers MUST treat the malformed value as the default `false` (no coercion of truthy strings). Absence is equivalent to `always: false`, `do_not_inject: false`, and derived-only triggers. These fields do not affect the well-formedness of any pre-v0.6.0 folder.
+27. (v0.7.0+) **Frontmatter parses as a YAML mapping.** Wherever a memory file carries a *recognized* frontmatter block (an opening `---` fence with a closing `---` on its own line), the enclosed block MUST parse (via a YAML safe-loader) as a *mapping* of key/value pairs or be empty (an empty block is the empty mapping). A YAML parse error (most commonly an unquoted `:` followed by a space inside a value such as `description:` or `name:`) or a non-mapping scalar/list result is a HEAD-pure BLOCKER. This restates the parse requirement implicit in invariant 1 as a named, write-time-checkable property: the validate operation (§"Write-validation operation (v0.7.0+)") enforces exactly this subset eagerly at the write boundary, so the break is rejected before commit instead of surfacing at the next full audit. An opening `---` with no recognized closing fence, like the absence of any fence, is treated as no frontmatter block and is invariant 1's concern for memory files, not a violation of this invariant.
 
 The `tools/memory-audit` script verifies these invariants plus health heuristics. v0.4.0+ adds the Tier 1 / Tier 2 split documented in §"Multi-agent concurrency". v0.5.0+ adds the multi-identity + cryptographic-attribution + key-lifecycle invariants documented in §"Multi-identity primitives" + §"Cryptographic attribution" + §"Operator identity + cross-store references" + §"Messaging adapter contract" + §"Key lifecycle + revocation". v0.5.1+ adds agent-session attestation content scope + format guidance + cross-cutting fail-closed posture + privacy considerations.
 
@@ -1121,7 +1160,7 @@ The `references_global` and `referenced_by_global` fields support cross-folder r
 
 ## Versioning
 
-**Current spec version**: 0.6.1.
+**Current spec version**: 0.7.0.
 
 The spec version lives in `spec/VERSION`. Breaking changes bump per semantic versioning applied to spec semantics:
 
@@ -1132,6 +1171,8 @@ The spec version lives in `spec/VERSION`. Breaking changes bump per semantic ver
 v0.3.0 was a minor bump (new optional fields + rollup-subfolder formalization). v0.4.0 was a major bump: required-field set expanded, byte-match CI tightened, multi-agent concurrency surface added. v0.5.0 was a minor bump: v0.4 folders remain well-formed (the v0.5 frontmatter additions `identity` + `signature` are REQUIRED on v0.5+ writes but optional in v0.4 frontmatter). v0.4 memories load under v0.5 readers as `(v0.4: unsigned)` read-only-untrusted; mixed-deployment posture in §"Multi-identity primitives". v0.5.1 is a patch bump: closes the v0.5.0 agent-session-attestation content-scope MAJOR + 3 MINORs (agent-session-id format guidance, cross-cutting fail-closed posture, privacy considerations) and ships the reference CLI binaries; v0.5.0 folders remain well-formed under v0.5.1 readers.
 
 v0.6.0 is a minor bump: adds three OPTIONAL recall frontmatter fields (`triggers`, `always`, `do_not_inject`) and the §"Recall operation" contract. All three are optional, so every pre-v0.6.0 folder remains well-formed under v0.6.0 readers, and v0.6.0 folders remain readable by older tools (which ignore the unknown keys).
+
+v0.7.0 is a minor bump: adds the §"Write-validation operation (v0.7.0+)" (the agent-neutral write-boundary gate) and the §"Audit waivers (R2; v0.7.0+)" allowlist, names integrity invariant 27 (frontmatter parses as a YAML mapping), and reconciles the `MEMORY.md` pointer/line caps to a single 180-byte/180-line source. No new REQUIRED frontmatter field and no existing-folder regression: invariant 27 only restates the parse requirement already implicit in invariant 1, so every well-formed pre-v0.7.0 folder remains well-formed under v0.7.0 readers, and the waiver file is optional (fail-closed when absent).
 
 v0.6.1 is a patch bump: adds the §"Recall-readiness lint" section (lint dimensions, always-set budget guidance, a normative cloud-dispatch safety posture, informative consolidation orchestration) and the §"Tier and recall (clarification, v0.6.1+)" note (a live `tier: detail` memory is recall-eligible; the `index`/`detail` split governs the session-start `MEMORY.md` hotlist, not query-driven recall). Additive and backward-compatible: no frontmatter or normative-contract change, so every v0.6.0 folder remains conformant under v0.6.1 readers.
 
@@ -1188,5 +1229,6 @@ Adapters MAY add encryption layers if they target a multi-developer or shared-wo
 - v0.5.2 , patch bump: closes 2 BLOCKERs + 1 MAJOR surfaced by the post-v0.5.1 retrospective code + spec panel (critic via gemini-pro + threat-modeler via gemini-pro) AND adds native Windows support via a platform-agnostic ACL-based restriction abstraction. Canonical-form Unicode NFC normalization MUST on signed envelopes (§"Signed envelope scope (normative)"); closes the repudiation vector where visually-identical inputs in different normalization forms produced different signatures. Seen-nonce set bounding promoted from MAY to SHOULD with explicit GC contract; closes the unbounded-set DoS. Reference implementation atomicity: `write_secure_yaml` + `write_secure_bytes` now use O_CREAT|O_EXCL + atomic rename to close the TOCTOU window between file create and chmod. **Cross-platform secure-file abstraction:** §"Operator-identity file (per-machine)" + integrity invariant 21 are restated platform-agnostically; POSIX mode 0600/0700 and Windows NTFS ACLs (via `icacls`) are both normative implementations of the "file restricted to current owner" contract. v0.5.1 folders remain well-formed under v0.5.2 readers; the Unicode normalization change is backward-compatible for any input that was already in NFC form (the common case for ASCII + standard composed Unicode).
 - v0.5.3 , patch bump: closes the 3 remaining MAJORs from the v0.5.2 retrospective threat-modeler pass. Registry-layer cool-down enforcement: `memforge.registry.verify_signing_key_acceptable` now refuses a signing key in cool-down regardless of CLI consumer; CLI-only enforcement was a bypass surface. Bounded git-log walk: `walk_revocation_set` now streams output line-by-line with caps on commits-walked + bytes-read (default 100k commits / 100 MB; operator-configurable). TOCTOU-safe read on every secure-file path: `_security.secure_read_text` + `secure_read_bytes` use `O_NOFOLLOW` + post-open fd `fstat` verification on POSIX; path-level verify on Windows. v0.5.2 folders remain well-formed under v0.5.3 readers; no spec-frontmatter or normative-contract regressions.
 - v0.6.0 , minor bump: query-triggered recall. Three new OPTIONAL frontmatter fields (`triggers`, `always`, `do_not_inject`) plus the §"Recall operation" section defining recall by frontmatter contract + post-conditions (UI-neutral; matching, index, and injection are reference-implementation + adapter concerns per the loading-semantics principle). Recall surfaces memory `description` text (never bodies), honors `sensitivity` / `access` + the live-set partition, and is fail-open-empty (never blocks the operation it serves). Reconciles with the reserved outbound `dynamic_supplement` field. Reference implementation: `memory-index-gen` emits a derived recall inverted-index artifact and a thin `memory-recall` reader does query-time matching for latency-sensitive per-query hooks. All fields optional, so pre-v0.6.0 folders remain well-formed and older tools ignore the new keys. New integrity invariant 26.
+- v0.7.0 , minor bump: write-boundary hardening. Adds the §"Write-validation operation (v0.7.0+)" (`memory-validate`: the agent-neutral pre-write gate that rejects a malformed frontmatter file -- the recurring unquoted-colon break -- at the write boundary instead of at the next audit), the §"Audit waivers (R2; v0.7.0+)" allowlist (`.memforge/audit-waivers.yaml`: an explicit, reported, fail-closed suppression of immutable migration-era Tier 2 findings so a clean corpus audits to zero), and integrity invariant 27 (a present `---` fence MUST parse as a YAML mapping). The `MEMORY.md` pointer-byte + line caps are single-sourced (both 180) so audit, validate, and index-gen cannot drift. No new REQUIRED field; invariant 27 restates invariant 1's implicit parse requirement, so every well-formed pre-v0.7.0 folder stays well-formed and the waiver file is optional (fail-closed absent).
 - v0.6.3 , patch bump: deterministic pointer-hook truncation. The index generator MUST keep every emitted `MEMORY.md` pointer line within the 180-byte cap by truncating the hook on a UTF-8 boundary + appending `...`; the authoritative full `description` stays in frontmatter + the recall index, so truncation is lossless for recall (§"MEMORY.md format"). Closes the long-standing gap where a rich `description` produced an over-cap generated pointer line, reconciling the generator with the existing 180-byte audit check. No frontmatter or normative-contract change; every v0.6.2 folder remains conformant under v0.6.3 readers and regenerating an index only shortens over-cap hooks. (Spec VERSION jumps 0.6.2 -> 0.6.3; there is no 0.6.2-internal change.)
 - v0.6.1 , patch bump: adds the §"Recall-readiness lint" section (defines the lint operation by the dimensions it scores and a normative cloud-dispatch safety posture, NOT by a scoring algorithm; lint is advisory, read-only, and never a hard gate) plus the §"Tier and recall (clarification, v0.6.1+)" note (a live `tier: detail` memory is recall-eligible on the same terms as an `index`-tier memory; the `index`/`detail` split governs the session-start `MEMORY.md` hotlist, not query-driven recall). Reference implementation: the `memory-lint` reader scores recall-readiness + token cost, and `memory-audit` adds spec-mandated recall-field WARNs plus an advisory always-set budget WARN. No frontmatter or normative-contract change, so every v0.6.0 folder remains conformant under v0.6.1 readers.

@@ -267,6 +267,35 @@ The Claude Code PostToolUse `memory-auto-commit.sh` hook (operator-side; not shi
 
 **Bottom line.** Commits ARE the audit trail. The diff IS the receipt. Hygiene is the operator's responsibility; MemForge will work cleanly as long as the commits land with the right prefixes. The commit-msg hook above is enough to catch the bulk of the common mistakes; the watcher pattern is the easy step beyond.
 
+### Pattern 3: write-boundary validation gate (`memory-validate`)
+
+`memory-validate` (v0.7.0) is the syntax-aware pre-write gate. It HARD-fails any memory file whose frontmatter does not parse as a YAML mapping, the most common break being an unquoted colon in a value (`description: this breaks: here`), so the malformed file is rejected at the write boundary instead of surfacing later as a `memory-audit` failure.
+
+Validate a file (or a batch) directly:
+
+```bash
+memory-validate ~/.claude/global-memory/some-memory.md       # one file
+memory-validate --path ~/.claude/global-memory               # walk a folder
+memory-validate --path ~/.claude/global-memory --strict      # SOFT findings fail too
+memory-validate --json some-memory.md                        # machine-readable
+```
+
+Exit is nonzero on a HARD frontmatter-parse failure always; SOFT findings (pointer/line caps, missing v0.4 fields, bad `tier`/`status`) only fail under `--strict`. So the gate idiom is just `memory-validate <file> || reject`.
+
+Wire it as a git pre-commit hook so a malformed write never enters history (`.git/hooks/pre-commit` in the memory repo):
+
+```bash
+#!/usr/bin/env bash
+staged=$(git diff --cached --name-only --diff-filter=ACM -- '*.md')
+[ -z "$staged" ] && exit 0
+echo "$staged" | xargs memory-validate || {
+  echo "memory-validate: blocked commit; fix the frontmatter above and re-stage" >&2
+  exit 1
+}
+```
+
+This works for **any** IDE (every adapter versions via git). Claude Code can gate one step earlier, before the bytes hit disk, with a `PreToolUse` shim. Both wirings, plus per-IDE specifics (Cursor, VS Code Copilot, Aider, Codex, Cline, Continue, Windsurf), are in [`adapter-implementation-guide.md`](./adapter-implementation-guide.md) §"Write-boundary gate".
+
 ## Step 5: run the pre-flight checker
 
 `messaging-doctor` runs the v0.5+ fail-closed checklist + reports posture:
