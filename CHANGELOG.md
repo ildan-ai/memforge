@@ -10,6 +10,41 @@ The version number tracked here is the **package / tooling** version. The on-dis
 
 The Contributor License Agreement infrastructure is counsel-blocked; external pull requests are paused until the CLA flow lands.
 
+## [0.9.1] - 2026-07-29
+
+**Patch: closes a class of SILENT memory loss. Package 0.9.1 / spec 0.7.0 (unchanged).**
+
+One of these changes is BREAKING for `memory-audit --strict` on a store that
+already has parentless rollup subfolders. See Breaking, below. The break is
+deliberate: the condition it now fails on was previously passing while memories
+were unreachable.
+
+### Breaking
+
+- **`memory-audit` now raises an integrity violation for a subfolder that holds `.md` files but has no `README.md` rollup parent.** Stores with such a subfolder will FAIL `--strict` until a rollup README is authored. This condition previously passed **silently** while every file in that subfolder was unreachable from `MEMORY.md`.
+
+  Why it was invisible: `_disk_md_files()` adds `<topic>/README.md` to the pointer-comparable set only when that README exists. With the parent absent, the subfolder contributed nothing to the pointer/disk comparison, so there was nothing to compare and nothing to report. Spec §"Folder layout" already marks `README.md` "Required when subfolder exists"; the audit simply could not see the violation.
+
+  Observed in the field before this release: a store with 17 subfolders holding 266 files had exactly ONE rollup parent. 266 memories were unreachable from the index and `memory-audit` reported clean.
+
+  **Remediation:** author the missing `README.md` rollup parent(s), then regenerate with `memory-index-gen --write`. Do NOT add the detail files to `MEMORY.md` directly — that violates the rollup compression contract the spec defines (and the audit downgrades a direct pointer to a health advisory rather than accepting it as canonical).
+
+  A file pointed at DIRECTLY from `MEMORY.md` is reachable and is NOT counted toward the violation; it continues to raise only the existing health advisory recommending the rollup pattern.
+
+### Added
+
+- **`memory-index-gen` now WARNS on stderr when it is about to ship a lossy index**, naming each parentless subfolder and its file count, on the `--write` path and on BOTH `--check` paths including `OK`. `OK` means "the generated file is byte-identical to the existing one", never "every memory is reachable" — staying silent there was the false-assurance case. Exit codes are unchanged; `memory-audit` remains the enforcement gate.
+
+### Fixed
+
+- **`memory-frontmatter-backfill` no longer fabricates an `access` label that contradicts an operator-set `sensitivity`.** It previously wrote `access: internal` unconditionally, so a file declaring `sensitivity: restricted` emerged asserting both — two classification fields disagreeing, one of them invented by tooling rather than chosen by the operator. Backfill now leaves `access` UNSET when `sensitivity` is `restricted` or `privileged`.
+
+  Scope, stated precisely: this was **not** a live exposure. `recall._access_ok()` treats an absent access list and an `internal` label identically (both visible), and `sensitivity` is enforced by a separate ANDed gate, so nothing was bypassed. It would have BECOME an exposure the moment the no-label default changed to fail-closed — at which point every restricted file carrying a fabricated open label would have stayed visible while appearing gated. The non-restrictive default (`access: internal`) is unchanged.
+
+- **`memory-audit`'s new subfolder walk skips symlinked directories.** `index_gen` guards symlinks in five places; `audit.py` had none. A symlink pointing outside the store (worst case `-> /`) would make the walk enumerate an arbitrary tree — a cheap denial-of-service against the audit — and could report a "subfolder" not part of the store.
+
+- **`memory-audit`'s new subfolder walk excludes dot-directories** (`.git`, `.memforge`, and similar tooling state), matching `index_gen`. Previously only `archive/` was excluded, which was harmless before this release but would have raised an integrity violation for `.git/` as soon as any markdown appeared inside it.
+
 ## [0.9.0] - 2026-06-28
 
 **Minor: write-boundary hardening. Package 0.9.0 / spec 0.7.0. Additive and backward-compatible; no existing well-formed folder breaks.**
