@@ -261,3 +261,79 @@ def test_cmd_run_summary_matches_planned_count(tmp_path: Path, capsys, monkeypat
     assert "would change: 2" in out
     # plan_change called exactly once per file (the planning loop), NOT 4x.
     assert calls["n"] == 2, f"plan_change invoked {calls['n']} times (expected 2)"
+
+
+# ---- access default must not contradict operator-set sensitivity ---------
+
+
+def _write(p, sensitivity=None):
+    lines = ["---", "name: n", "description: d", "type: reference"]
+    if sensitivity:
+        lines.append(f"sensitivity: {sensitivity}")
+    lines += ["---", "", "body", ""]
+    p.write_text("\n".join(lines), encoding="utf-8")
+
+
+def test_backfill_does_not_fabricate_access_on_restricted(tmp_path):
+    """Backfill must not invent an OPEN access label on a file whose
+    operator-set sensitivity is restrictive.
+
+    Previously `access: internal` was written unconditionally, so a file
+    declaring `sensitivity: restricted` came out asserting both -- two
+    classification fields disagreeing, one of them fabricated by tooling
+    rather than chosen by the operator.
+
+    Not a live exposure today: `_access_ok` treats an absent access list and
+    an `internal` label identically, and sensitivity is enforced by a separate
+    ANDed gate. It becomes one the moment the no-label default is changed to
+    fail-closed, at which point every restricted file carrying a fabricated
+    open label would stay visible while appearing gated.
+    """
+    from memforge.cli.frontmatter_backfill import plan_change
+
+    for sens in ("restricted", "privileged"):
+        f = tmp_path / f"{sens}.md"
+        _write(f, sens)
+        change = plan_change(f, tmp_path)
+        assert change is not None
+        assert "access" not in change.additions, (
+            f"backfill fabricated access={change.additions.get('access')!r} "
+            f"on a sensitivity:{sens} file"
+        )
+
+
+def test_backfill_still_defaults_access_on_non_restrictive(tmp_path):
+    """Non-regression: the common path keeps its `access: internal` default.
+
+    The fix must narrow the behaviour for restrictive sensitivities only. A
+    fix that stopped defaulting access everywhere would change classification
+    for every ordinary memory in the store.
+    """
+    from memforge.cli.frontmatter_backfill import plan_change
+
+    f = tmp_path / "internal.md"
+    _write(f, "internal")
+    assert plan_change(f, tmp_path).additions.get("access") == "internal"
+
+    g = tmp_path / "unset.md"
+    _write(g, None)
+    add = plan_change(g, tmp_path).additions
+    assert add.get("sensitivity") == "internal"
+    assert add.get("access") == "internal"
+
+
+def test_backfill_access_respects_sensitivity_it_adds_in_same_pass(tmp_path):
+    """When backfill itself supplies `sensitivity` in the same pass, the
+    access decision must read that value, not the absent original.
+
+    Guards the ordering dependency: `sensitivity` is defaulted a few lines
+    above `access`, so reading only `fm` would miss it.
+    """
+    from memforge.cli import frontmatter_backfill as fb
+
+    f = tmp_path / "x.md"
+    _write(f, None)
+    add = fb.plan_change(f, tmp_path).additions
+    # default sensitivity is non-restrictive, so access is still set
+    assert add.get("sensitivity") == "internal"
+    assert add.get("access") == "internal"

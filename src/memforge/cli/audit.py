@@ -79,6 +79,87 @@ def _disk_md_files(folder: Path) -> list[str]:
     return out
 
 
+def _parentless_rollup_subfolders(
+    folder: Path, reachable: Optional[set[str]] = None
+) -> list[tuple[str, int]]:
+    """Subfolders holding UNREACHABLE .md files and no README.md rollup parent.
+
+    `reachable` is the set of POSIX-relative paths already pointed at directly
+    from MEMORY.md. Files in it are NOT counted: a detail file pointed at
+    directly is reachable, merely non-canonical, and the caller already emits
+    a health advisory steering it toward the rollup pattern. Counting it here
+    too would raise an integrity violation for a memory that is not lost --
+    a false positive the existing
+    `test_no_orphan_pointer_for_subfolder_detail_file` correctly rejects.
+
+    A subfolder is only reported when it has NO README.md and at least one
+    file that nothing points at. Returns (subfolder_name, unreachable_count)
+    pairs, sorted by name.
+
+    WHY THIS EXISTS. `_disk_md_files()` above adds `<topic>/README.md` to the
+    pointer-comparable set only `if readme.is_file()`. When the README is
+    ABSENT the subfolder contributes nothing to that set, so the pointer/disk
+    comparison has nothing to compare and raises nothing -- every file in it
+    is silently unreachable from MEMORY.md while the audit reports clean.
+
+    The spec is unambiguous that this is a violation: §"Folder layout" marks
+    README.md "Required when subfolder exists", and §"Rollup subfolders"
+    states detail files "are surfaced via the rollup README.md, which IS
+    pointed to from MEMORY.md".
+
+    Observed consequence before this check existed: a folder with 17
+    subfolders holding 266 files had exactly ONE rollup parent; 266 memories
+    were unreachable from the index and the audit passed. An audit that
+    cannot see a whole class of loss is worse than one that reports nothing,
+    because it converts an unknown into an assurance.
+
+    Deliberately counts ANY .md file other than README.md rather than only
+    files declaring `tier: detail`. A file that omits `tier` defaults to
+    `index` per spec, and an index-tier file stranded in a parentless
+    subfolder is *equally* unreachable -- gating on the tier value would let
+    that case through untouched.
+    """
+    seen = reachable or set()
+    out: list[tuple[str, int]] = []
+    for sub in sorted(folder.iterdir()):
+        if not sub.is_dir():
+            continue
+        # Never descend a symlinked directory. index_gen guards this in five
+        # places; audit.py had none, so this helper inherited the gap. A
+        # symlink pointing outside the store (worst case `-> /`) would make
+        # this walk enumerate an arbitrary tree, and glob("*.md") on it is a
+        # cheap denial-of-service against the audit itself. It could also
+        # report a "subfolder" that is not part of the store at all.
+        # (threat-model finding, 2026-07-29.)
+        if sub.is_symlink():
+            continue
+        # Exclude archive/ (outside the rollup contract) AND any dot-directory
+        # (tooling state: .git, .memforge, .memforge-rollup-history, ...).
+        #
+        # Scoped here rather than in `_disk_md_files()` on purpose. That
+        # function's narrower `== "archive"` exclusion is pre-existing and
+        # harmless there -- iterating a dot-dir that has no README simply adds
+        # nothing to the pointer-comparable set. This check is what makes the
+        # difference CONSEQUENTIAL: without the dot-dir filter it would raise
+        # an integrity VIOLATION for `.git/` the moment any markdown appeared
+        # inside it. Widening `_disk_md_files()` would change the
+        # pointer-comparable set for every folder and needs its own
+        # justification, so it is deliberately left alone.
+        # (arch-review-critic finding, 2026-07-29: audit excluded only
+        # `archive` while index_gen excluded `archive`, `.git`, `.memforge`.)
+        if sub.name == "archive" or sub.name.startswith("."):
+            continue
+        if (sub / "README.md").is_file():
+            continue
+        n = len([
+            p for p in sub.glob("*.md")
+            if p.name != "README.md" and f"{sub.name}/{p.name}" not in seen
+        ])
+        if n:
+            out.append((sub.name, n))
+    return out
+
+
 def _all_md_files_recursive(folder: Path) -> set[str]:
     """All .md files under folder, POSIX-relative.
 
@@ -353,6 +434,17 @@ def audit_target(
     pointer_set = set(pointers)
     disk_set = set(_disk_md_files(target))
     all_md_set = _all_md_files_recursive(target)
+
+    # A subfolder with files but no README.md rollup parent contributes NOTHING
+    # to disk_set, so the comparison below cannot see it. Raise it explicitly:
+    # every file in such a subfolder is unreachable from MEMORY.md, which is
+    # exactly the loss the orphan checks exist to catch (spec §"Folder layout":
+    # README.md is "Required when subfolder exists").
+    for sub_name, n_files in _parentless_rollup_subfolders(target, pointer_set):
+        violations.append(
+            f"Rollup subfolder missing README.md: {sub_name}/ "
+            f"({n_files} file(s) unreachable from MEMORY.md)"
+        )
 
     for f in sorted(disk_set - pointer_set):
         orphan_files.append(f)

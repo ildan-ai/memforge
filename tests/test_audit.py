@@ -334,3 +334,154 @@ def test_truly_missing_subfolder_pointer_still_violates(tmp_path: Path) -> None:
     output = buf.getvalue()
     assert "Orphan pointer (no file): forge/does_not_exist.md" in output
     assert violations >= 1
+
+
+# ---- rollup-parent integrity (parentless subfolder) ----------------------
+
+
+def test_parentless_subfolder_raises_integrity_violation(tmp_path: Path) -> None:
+    """A subfolder with files and NO README.md rollup parent must raise an
+    integrity violation naming the unreachable count.
+
+    This is the regression the check exists for. `_disk_md_files()` adds
+    `<topic>/README.md` to the pointer-comparable set only when that README
+    exists, so a parentless subfolder previously contributed NOTHING to the
+    comparison and its files were silently unreachable from MEMORY.md while
+    the audit reported clean. Observed in the field at 266 files across 16
+    subfolders, with a passing audit.
+    """
+    from memforge.cli.audit import audit_target
+
+    _seed_top_level(tmp_path, "feedback_a.md")
+    _seed_subfolder_detail(tmp_path, "lost", "detail_one.md")
+    _seed_subfolder_detail(tmp_path, "lost", "detail_two.md")
+    (tmp_path / "MEMORY.md").write_text(
+        "# Memory Index\n\n- [feedback A](feedback_a.md) - top-level entry\n",
+        encoding="utf-8",
+    )
+
+    import io
+    from contextlib import redirect_stdout
+
+    buf = io.StringIO()
+    with redirect_stdout(buf):
+        violations, _ = audit_target(
+            tmp_path, stale_days=365, fix=False, add_defaults=False, json_out=False
+        )
+    output = buf.getvalue()
+    assert "Rollup subfolder missing README.md: lost/" in output
+    assert "2 file(s) unreachable" in output
+    assert violations >= 1
+
+
+def test_parentless_subfolder_ignores_directly_pointed_files(tmp_path: Path) -> None:
+    """A detail file POINTED AT directly from MEMORY.md is reachable, so it
+    must NOT count toward the unreachable tally.
+
+    Non-canonical (the rollup README is the spec's pattern) and already
+    covered by a health advisory -- but not lost. Counting it would raise an
+    integrity violation for a memory nothing has lost, which is exactly the
+    false positive `test_no_orphan_pointer_for_subfolder_detail_file` guards.
+    """
+    from memforge.cli.audit import audit_target
+
+    _seed_top_level(tmp_path, "feedback_a.md")
+    _seed_subfolder_detail(tmp_path, "pointed", "reachable.md")
+    (tmp_path / "MEMORY.md").write_text(
+        "# Memory Index\n\n"
+        "- [feedback A](feedback_a.md) - top-level entry\n"
+        "- [reachable](pointed/reachable.md) - pointed at directly\n",
+        encoding="utf-8",
+    )
+
+    import io
+    from contextlib import redirect_stdout
+
+    buf = io.StringIO()
+    with redirect_stdout(buf):
+        audit_target(
+            tmp_path, stale_days=365, fix=False, add_defaults=False, json_out=False
+        )
+    output = buf.getvalue()
+    assert "Rollup subfolder missing README.md: pointed/" not in output
+
+
+def test_parentless_check_counts_untiered_files_too(tmp_path: Path) -> None:
+    """A file omitting `tier` defaults to index per spec, and an index-tier
+    file stranded in a parentless subfolder is equally unreachable. Gating
+    the count on `tier: detail` would let the worst case through.
+    """
+    from memforge.cli.audit import _parentless_rollup_subfolders
+
+    sub = tmp_path / "notier"
+    sub.mkdir()
+    (sub / "no_tier_field.md").write_text(
+        "---\nname: n\ndescription: d\ntype: reference\n---\nbody\n", encoding="utf-8"
+    )
+    assert _parentless_rollup_subfolders(tmp_path) == [("notier", 1)]
+
+
+def test_parentless_check_skips_archive_and_populated_rollups(tmp_path: Path) -> None:
+    """archive/ is excluded from the rollup contract, and a subfolder WITH a
+    README.md is compliant and must never be reported."""
+    from memforge.cli.audit import _parentless_rollup_subfolders
+
+    arch = tmp_path / "archive"
+    arch.mkdir()
+    (arch / "old.md").write_text("---\nname: o\n---\nb\n", encoding="utf-8")
+    ok = tmp_path / "compliant"
+    ok.mkdir()
+    (ok / "README.md").write_text("---\nname: r\n---\nb\n", encoding="utf-8")
+    (ok / "detail.md").write_text("---\nname: d\n---\nb\n", encoding="utf-8")
+    assert _parentless_rollup_subfolders(tmp_path) == []
+
+
+def test_parentless_check_excludes_dot_directories(tmp_path: Path) -> None:
+    """Tooling dot-directories are not rollup subfolders.
+
+    arch-review-critic finding: audit excluded only `archive` while index_gen
+    excluded `archive`, `.git`, and `.memforge`. Harmless before this check
+    existed -- a dot-dir without a README simply contributed nothing to the
+    pointer-comparable set. With the check in place it would raise an
+    integrity VIOLATION for `.git/` as soon as any markdown landed there.
+    """
+    from memforge.cli.audit import _parentless_rollup_subfolders
+
+    for d in (".git", ".memforge", ".memforge-rollup-history"):
+        sub = tmp_path / d
+        sub.mkdir()
+        (sub / "stray.md").write_text("---\nname: s\n---\nb\n", encoding="utf-8")
+    real = tmp_path / "realtopic"
+    real.mkdir()
+    (real / "detail.md").write_text("---\nname: d\n---\nb\n", encoding="utf-8")
+
+    assert _parentless_rollup_subfolders(tmp_path) == [("realtopic", 1)]
+
+
+def test_parentless_check_does_not_descend_symlinked_dirs(tmp_path: Path) -> None:
+    """A symlinked directory must never be walked.
+
+    threat-model finding: index_gen guards symlinks in five places, audit.py
+    had none. A symlink pointing outside the store (worst case `-> /`) turns
+    this walk into an arbitrary-tree enumeration -- a cheap DoS against the
+    audit -- and could report a "subfolder" that is not part of the store.
+    """
+    import os
+    from memforge.cli.audit import _parentless_rollup_subfolders
+
+    outside = tmp_path.parent / f"outside_{tmp_path.name}"
+    outside.mkdir()
+    (outside / "stray.md").write_text("---\nname: s\n---\nb\n", encoding="utf-8")
+
+    link = tmp_path / "linked"
+    try:
+        os.symlink(outside, link)
+    except (OSError, NotImplementedError):  # pragma: no cover
+        import pytest
+        pytest.skip("symlinks unavailable on this platform")
+
+    real = tmp_path / "realtopic"
+    real.mkdir()
+    (real / "detail.md").write_text("---\nname: d\n---\nb\n", encoding="utf-8")
+
+    assert _parentless_rollup_subfolders(tmp_path) == [("realtopic", 1)]

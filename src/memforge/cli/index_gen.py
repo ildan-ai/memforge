@@ -202,6 +202,74 @@ def discover_index_files(folder_root: Path) -> list[MemoryFile]:
     return out
 
 
+def parentless_subfolders(folder_root: Path) -> list[tuple[str, int]]:
+    """Subfolders holding .md files but no README.md rollup parent.
+
+    Returns (subfolder_name, file_count) pairs, sorted by name.
+
+    `discover_index_files()` above skips any subfolder whose README.md is
+    absent (`if not readme.exists(): continue`). That is the correct index
+    SHAPE per spec -- detail files never appear in MEMORY.md -- but when the
+    rollup parent is missing there is nothing to surface them through, so
+    they vanish from the index with no signal at all. The generated file
+    looks smaller and cleaner; the memories are simply gone from view.
+
+    This helper exists so the caller can WARN instead of silently shipping a
+    lossy index. It deliberately does not change what gets written: adding
+    detail files to MEMORY.md would violate the spec's compression contract.
+    The fix for a warning is to author the missing README.md, not to widen
+    the index.
+    """
+    out: list[tuple[str, int]] = []
+    for sub in sorted(folder_root.iterdir()):
+        if not sub.is_dir() or sub.is_symlink():
+            continue
+        if sub.name in ("archive", ".git", ".memforge"):
+            continue
+        if (sub / "README.md").exists():
+            continue
+        n = len([p for p in sub.glob("*.md") if p.name != "README.md"])
+        if n:
+            out.append((sub.name, n))
+    return out
+
+
+def _warn_parentless(folder_root: Path) -> None:
+    """Print a stderr warning for each parentless subfolder, if any.
+
+    Emitted on the write path AND on both --check paths, including `OK`. An
+    index can match what is on disk exactly and still be lossy -- `OK` means
+    "the generated file is byte-identical to the existing one", not "every
+    memory is reachable". Staying silent there is the false-assurance case
+    this warning exists to remove.
+
+    Deliberately does NOT change the exit code. `memory-index-gen` reports on
+    the index it can legitimately build; `memory-audit` is the enforcement
+    gate that fails on this condition (see audit's
+    `_parentless_rollup_subfolders`). Splitting warn-here / fail-there keeps
+    a lossy folder from blocking an otherwise-valid regeneration while still
+    making the loss impossible to miss.
+    """
+    missing = parentless_subfolders(folder_root)
+    if not missing:
+        return
+    total = sum(n for _, n in missing)
+    print(
+        f"WARN {folder_root}: {len(missing)} subfolder(s) have .md files but no "
+        f"README.md rollup parent, so {total} file(s) are NOT reachable from "
+        f"MEMORY.md:",
+        file=sys.stderr,
+    )
+    for name, n in missing:
+        print(f"     - {name}/ ({n} file(s))", file=sys.stderr)
+    print(
+        "     Fix: author the missing README.md rollup parent(s). Adding the "
+        "detail files to MEMORY.md instead would violate the spec's rollup "
+        "compression contract. `memory-audit` fails on this condition.",
+        file=sys.stderr,
+    )
+
+
 def apply_rbac_filter(
     files: list[MemoryFile],
     viewer_tier: Optional[str],
@@ -755,11 +823,14 @@ def process(
         existing = target.read_text(encoding="utf-8") if target.exists() else ""
         if existing == output:
             print(f"OK   {folder} ({len(files)} index files)")
+            _warn_parentless(folder)
             return 0
         print(f"DRIFT {folder} ({len(files)} index files)")
+        _warn_parentless(folder)
         return 1
     target.write_text(output, encoding="utf-8")
     print(f"WROTE {target} ({len(files)} index files)")
+    _warn_parentless(folder)
     if with_recall_index:
         try:
             payload = _recall.build_index(folder)

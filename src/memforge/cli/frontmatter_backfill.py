@@ -23,7 +23,9 @@
 #                     (only the topic prefix; operator adds others later)
 #   status          = `active`
 #   sensitivity     = `internal` (deny-public default)
-#   access          = `internal`
+#   access          = `internal` UNLESS sensitivity is restricted/privileged,
+#                     in which case it is left UNSET (never fabricate an open
+#                     access label over an operator-set restrictive sensitivity)
 #   owner           = `operator`
 #
 # Modes:
@@ -205,7 +207,29 @@ def plan_change(path: Path, folder_root: Path) -> Optional[PlannedChange]:
         additions["sensitivity"] = "internal"
 
     if "access" not in fm:
-        additions["access"] = "internal"
+        # Do NOT fabricate an open access label on a file whose operator-set
+        # `sensitivity` says otherwise. Backfill previously wrote
+        # `access: internal` unconditionally, so a file declaring
+        # `sensitivity: restricted` came out asserting BOTH -- two
+        # classification fields disagreeing, one of them invented here.
+        #
+        # Note what this is and is not. `_access_ok` treats an ABSENT access
+        # list and an `internal` label identically (both visible), and
+        # sensitivity is enforced by a separate ANDed gate, so the old
+        # behaviour was not a live exposure. It was a correctness defect that
+        # would BECOME an exposure the moment the no-label default changed to
+        # fail-closed -- at which point every restricted file silently carrying
+        # a fabricated open label would stay visible while looking gated.
+        #
+        # Omitting the field is strictly better than guessing it: absent means
+        # "operator has not classified access", which is true, and it leaves
+        # the no-label default in charge rather than baking today's default
+        # into the file as though it were an operator decision.
+        sens = str(fm.get("sensitivity", additions.get("sensitivity", "internal"))).strip().lower()
+        if sens in ("restricted", "privileged"):
+            pass  # leave unset; do not widen, do not guess
+        else:
+            additions["access"] = "internal"
 
     if "owner" not in fm:
         additions["owner"] = "operator"
