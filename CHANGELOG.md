@@ -10,47 +10,48 @@ The version number tracked here is the **package / tooling** version. The on-dis
 
 The Contributor License Agreement infrastructure is counsel-blocked; external pull requests are paused until the CLA flow lands.
 
+## [0.9.2] - 2026-07-30
+
+**Minor SPEC bump (0.7.0 -> 0.8.0) shipped in a package patch. Closes a second class of SILENT memory loss.**
+
+This is BREAKING for `memory-audit --strict` on a store whose rollup `README.md` omits a sibling, in the same deliberate way 0.9.1's parentless-rollup check was: the condition it now fails on was previously passing while memories were unreachable.
+
+### Spec compatibility
+
+Spec 0.7.0 -> **0.8.0**, a minor bump. Names integrity invariant 28: **a rollup README reaches every sibling it hides.** Minor rather than patch because a folder well-formed under 0.7.x can be non-conformant under 0.8.0.
+
+Invariants 7 and 8 govern `MEMORY.md`, and by the Rollup-subfolders section a detail file is deliberately NOT pointed to from `MEMORY.md`, so the rollup `README.md` is a detail file's ONLY path to a reader. Nothing previously required that README to actually reference its siblings, so a README could omit a memory and leave it exactly as unreachable as a subfolder with no README at all, which the folder layout already treats as malformed.
+
+The pointer set is **CLOSED** to two forms so the check is deterministic and portable: a wikilink `[[slug]]` (optionally `[[slug|label]]` / `[[slug#anchor]]`), and a markdown inline link whose target ends in `.md`. A backticked bare filename is explicitly NOT a pointer. Pointers are read from **prose only**: fenced code blocks, inline code spans, and HTML comments are excluded, so a documentation example or a commented-out note cannot be mistaken for a membership claim. An open pointer set would let two conforming implementations disagree on the same folder, which an audit (binary) must never do.
+
 ### Added
 
-- **`memory-audit` now detects an INCOMPLETE rollup README, not just a missing one.**
-  0.9.1 added a check for a rollup subfolder with NO `README.md`. That check cannot
-  see a subfolder whose `README.md` EXISTS but omits some sibling detail files'
-  pointers, and those siblings are exactly as unreachable from `MEMORY.md` as a
-  parentless subfolder's files are. Two new INTEGRITY VIOLATIONS close that gap:
-  `Rollup README incomplete: <folder>/README.md has no pointer to N file(s): ...`
-  and `Rollup README dangling pointer: <folder>/README.md points at N file(s) that
-  exist nowhere in the store: ...`. Observed in practice: a rollup can omit most of
-  its siblings, or carry pointers left behind by a file rename so that every
-  pointer dangles, while the audit still reports clean. This closes that detector
-  gap.
+- **`memory-audit` detects an INCOMPLETE rollup README, not just a missing one.** 0.9.1 added a check for a rollup subfolder with NO `README.md`; that check cannot see a subfolder whose README EXISTS but omits siblings. Three new INTEGRITY VIOLATIONS:
+  - `Rollup README incomplete: <folder>/README.md has no pointer to N file(s): ...`
+  - `Rollup README dangling pointer: <folder>/README.md points at N file(s) that exist nowhere in the store: ...`
+  - `Rollup README unreadable: <folder>/README.md could not be read, so coverage cannot be verified (fail-closed); N sibling file(s) treated as unreachable`
 
-  Both directions are reported, and the specific slugs are always named in full
-  rather than summarized as a count. The comparison is set-based, never
-  count-based: a duplicate pointer alongside an omission yields a matching count
-  while a memory is still lost, so a count check would pass.
+  Both gap directions are reported and the specific slugs are always named in full rather than summarized as a count. The comparison is **set-based, never count-based**: a duplicate pointer alongside an omission yields equal counts while a memory is still lost.
 
-  Parses all three pointer forms real rollups use: wikilinks (`[[slug]]`,
-  `[[slug|label]]`), markdown links (`](slug.md)`, `](./slug.md)`, with an optional
-  trailing `#anchor`), and backtick bare filenames (`` `slug.md` ``). Wikilink and
-  markdown-link extraction is deliberately unanchored to any bullet prefix, because
-  a numbered-prose Members list with the link mid-sentence is a real and common
-  convention, and an earlier bullet-anchored draft of this check produced a false
-  all-unreachable reading against a wikilink-style rollup it could not parse at all.
+  A pointer at a file in a different subfolder, or at store root, resolves against the whole store and is NOT dangling; only a target matching nothing anywhere is. `archive/`, dot-directories, and symlinked directories are excluded, matching the existing parentless-rollup check.
 
-  A backtick bare filename is only read as a pointer on a Members-style list-item
-  line (bullet or numbered). A backtick citation inside ordinary prose, such as a
-  Why or How-to-apply paragraph naming an old pre-rename filename, is never
-  extracted, so a repair note cannot manufacture a phantom dangling pointer.
+### Pre-ship review
 
-  A pointer at a file in a different folder, or at store root, resolves against the
-  whole store and is NOT reported as dangling; only a target matching nothing
-  anywhere is. `archive/`, dot-directories, and symlinked directories are excluded,
-  matching the existing parentless-rollup check.
+Both spec-delta voices plus a threat-modeler pass. Five findings closed in-commit, two refuted with evidence:
 
-  This is BREAKING for `memory-audit --strict` on a store that already has an
-  incomplete or stale-pointer rollup README, in the same deliberate way the 0.9.1
-  parentless check was: the condition it now fails on was previously passing while
-  memories were unreachable.
+- **Closed (BLOCKER, threat-modeler): fail-open on an unreadable README.** An earlier draft caught `OSError` and silently skipped the subfolder, so making a README unreadable suppressed every finding for it. A check whose purpose is finding completeness gaps must never report clean because it could not look. Now fails closed as its own violation.
+- **Closed (MAJOR, architect): version bump misclassified** as a spec patch. A new hard conformance requirement that can invalidate previously-well-formed folders is a minor bump.
+- **Closed (MAJOR, architect): non-deterministic audit surface.** "Pointer syntax unconstrained beyond resolvability" contradicted audit being binary. The set is now closed to two forms. Verified empirically first that no real store depends on the backtick form, so closing it breaks nothing live.
+- **Closed (MAJOR, critic): links inside fenced blocks, code spans, and HTML comments** were unspecified, so two conforming implementations could disagree. Extraction is now prose-only. Latent rather than live when found.
+- **Closed (self-found by dogfooding): a backtick citation of an external repo path** was read as a store pointer, producing a phantom dangling finding. Moot under the closed set.
+- **Refuted (critic): "bump should be 0.9.0 because 0.7.x accepted backtick pointers."** 0.7.x had no rollup-coverage invariant at all, so no 0.7.x-conformant folder could have relied on them; the inverted test expectation was against an unreleased draft. The v0.4.0 precedent bumps the middle digit for exactly this class of change.
+- **Refuted (threat-modeler): "an embedded NUL in a pointer crashes `Path(x).name`."** Verified it does not raise, and this code never opens a pointer target, it only compares basenames. No guard added rather than carrying dead defensive code; a regression test asserts the real property.
+
+Deferred with a note, both pre-existing patterns shared with `_parentless_rollup_subfolders` and bounded by the audit running as the operator on the operator's own store: TOCTOU between the symlink check and the read, and an unbounded read on a very large README. The threat model itself recommended accept-and-document for the first.
+
+### Tests
+
+12 new cases: complete/markdown-style, wikilink-unreachable, numbered-prose (not bullet-anchored), dangling pre-rename, out-of-folder cross-reference, duplicate-pointer-masks-omission, backtick-is-never-a-pointer, backtick-external-repo-path, prose-only (fence + code span + HTML comment), unreadable-README-fails-closed, NUL-byte-does-not-crash, and end-to-end through `audit_target`. Audit suite 31 passed.
 
 ## [0.9.1] - 2026-07-29
 
