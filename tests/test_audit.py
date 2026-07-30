@@ -485,3 +485,234 @@ def test_parentless_check_does_not_descend_symlinked_dirs(tmp_path: Path) -> Non
     (real / "detail.md").write_text("---\nname: d\n---\nb\n", encoding="utf-8")
 
     assert _parentless_rollup_subfolders(tmp_path) == [("realtopic", 1)]
+
+
+# Regression coverage for the rollup-README-completeness check.
+#
+# memory-audit already fails a subfolder that has NO README.md
+# (`_parentless_rollup_subfolders`). It did NOT detect a README.md that
+# EXISTS but omits some sibling detail files' pointers, so those files were
+# unreachable from MEMORY.md while the folder audited clean. Observed in
+# practice: a rollup can omit most of its siblings, or a rename can leave
+# every pointer dangling, and the audit still reports clean.
+
+
+def _seed_rollup_readme_with_body(folder: Path, topic: str, body: str) -> None:
+    sub = folder / topic
+    sub.mkdir(exist_ok=True)
+    (sub / "README.md").write_text(
+        "---\n"
+        f"name: {topic} rollup\n"
+        f"description: Rollup README for {topic}\n"
+        "type: reference\n"
+        "tier: index\n"
+        "---\n\n"
+        f"{body}\n",
+        encoding="utf-8",
+    )
+
+
+def test_rollup_readme_gaps_complete_markdown_style(tmp_path: Path) -> None:
+    """A complete rollup using markdown-link pointers raises nothing."""
+    from memforge.cli.audit import _rollup_readme_gaps
+
+    _seed_rollup_readme_with_body(
+        tmp_path, "topic",
+        "- [A](topic_a.md)\n- [B](./topic_b.md)\n",
+    )
+    _seed_subfolder_detail(tmp_path, "topic", "topic_a.md")
+    _seed_subfolder_detail(tmp_path, "topic", "topic_b.md")
+
+    gaps = _rollup_readme_gaps(tmp_path, {"topic_a.md", "topic_b.md"})
+    assert gaps == []
+
+
+def test_rollup_readme_gaps_wikilink_unreachable_file(tmp_path: Path) -> None:
+    """Wikilink-style rollup with one sibling omitted from the Members list.
+
+    This is the shape that matters most in practice. A checker that only
+    parses markdown links (`](...)`) would score this rollup as having ZERO
+    pointers and either miss the gap entirely or over-report every sibling as
+    unreachable. Set comparison against a wikilink-aware extractor must name
+    exactly the one omitted file.
+    """
+    from memforge.cli.audit import _rollup_readme_gaps
+
+    _seed_rollup_readme_with_body(
+        tmp_path, "topic",
+        "## Members\n\n- [[topic_a]]\n",
+    )
+    _seed_subfolder_detail(tmp_path, "topic", "topic_a.md")
+    _seed_subfolder_detail(tmp_path, "topic", "topic_b.md")
+
+    gaps = _rollup_readme_gaps(tmp_path, {"topic_a.md", "topic_b.md"})
+    assert gaps == [("topic", ["topic_b.md"], [])]
+
+
+def test_rollup_readme_gaps_numbered_prose_not_bullet_anchored(tmp_path: Path) -> None:
+    """A numbered-prose Members list (link mid-sentence, no leading `-`
+    bullet) must be parsed. The real convention this regresses is
+    '1. **Title** ([label](file.md)).' An earlier checker anchored to a
+    leading bullet and produced a false all-unreachable reading against
+    exactly this shape.
+    """
+    from memforge.cli.audit import _rollup_readme_gaps
+
+    _seed_rollup_readme_with_body(
+        tmp_path, "topic",
+        "1. **First rule** ([label](topic_a.md)). Trailing prose.\n"
+        "2. **Second rule** ([label](topic_b.md)). More prose.\n",
+    )
+    _seed_subfolder_detail(tmp_path, "topic", "topic_a.md")
+    _seed_subfolder_detail(tmp_path, "topic", "topic_b.md")
+
+    gaps = _rollup_readme_gaps(tmp_path, {"topic_a.md", "topic_b.md"})
+    assert gaps == []
+
+
+def test_rollup_readme_gaps_dangling_pointer_pre_rename(tmp_path: Path) -> None:
+    """A pointer to a pre-rename filename that exists NOWHERE in the store
+    is reported as dangling, named explicitly."""
+    from memforge.cli.audit import _rollup_readme_gaps
+
+    _seed_rollup_readme_with_body(
+        tmp_path, "topic",
+        "- [A](topic_a.md)\n- [Stale](old_name_before_rename.md)\n",
+    )
+    _seed_subfolder_detail(tmp_path, "topic", "topic_a.md")
+
+    gaps = _rollup_readme_gaps(tmp_path, {"topic_a.md"})
+    assert gaps == [("topic", [], ["old_name_before_rename.md"])]
+
+
+def test_rollup_readme_gaps_out_of_folder_ref_not_dangling(tmp_path: Path) -> None:
+    """A pointer to a file that lives in a DIFFERENT folder (or store root)
+    is a legitimate cross-reference, not a dangling pointer. Resolved
+    against the whole store, not just this subfolder.
+    """
+    from memforge.cli.audit import _rollup_readme_gaps
+
+    _seed_rollup_readme_with_body(
+        tmp_path, "topic",
+        "- [A](topic_a.md)\n- [Cross-ref](other_topic/other_file.md)\n",
+    )
+    _seed_subfolder_detail(tmp_path, "topic", "topic_a.md")
+    _seed_subfolder_detail(tmp_path, "other_topic", "other_file.md")
+
+    gaps = _rollup_readme_gaps(tmp_path, {"topic_a.md", "other_file.md"})
+    assert gaps == []
+
+
+def test_rollup_readme_gaps_duplicate_pointer_masks_omission(tmp_path: Path) -> None:
+    """Compare SETS, never counts. A duplicate pointer to the same file, plus
+    an omitted sibling, must still surface the omission. A count-based check
+    (2 pointers == 2 files) would pass and lose a memory.
+    """
+    from memforge.cli.audit import _rollup_readme_gaps
+
+    _seed_rollup_readme_with_body(
+        tmp_path, "topic",
+        "- [A](topic_a.md)\n- [A again](topic_a.md)\n",
+    )
+    _seed_subfolder_detail(tmp_path, "topic", "topic_a.md")
+    _seed_subfolder_detail(tmp_path, "topic", "topic_b.md")  # never pointed to
+
+    gaps = _rollup_readme_gaps(tmp_path, {"topic_a.md", "topic_b.md"})
+    assert gaps == [("topic", ["topic_b.md"], [])]
+
+
+def test_rollup_readme_gaps_backtick_prose_not_a_pointer(tmp_path: Path) -> None:
+    """A backtick bare-filename citation inside ordinary prose (e.g. a Why or
+    How-to-apply paragraph citing an old filename) is NOT read as a pointer,
+    and must not surface as a dangling reference.
+    """
+    from memforge.cli.audit import _rollup_readme_gaps
+
+    _seed_rollup_readme_with_body(
+        tmp_path, "topic",
+        "**Why:** this rollup replaces the old `topic_a.md` naming with "
+        "clearer slugs, described here in prose.\n\n"
+        "- [AA](topic_aa.md)\n",
+    )
+    _seed_subfolder_detail(tmp_path, "topic", "topic_aa.md")
+
+    gaps = _rollup_readme_gaps(tmp_path, {"topic_aa.md"})
+    assert gaps == []  # the backtick citation must not surface as dangling
+
+
+def test_rollup_readme_gaps_backtick_list_item_is_a_pointer(tmp_path: Path) -> None:
+    """A backtick bare filename ON a Members-style list-item line (bullet or
+    numbered) IS read as a pointer. The form is real and usable; only prose
+    citations outside a list are excluded (see the prior test).
+    """
+    from memforge.cli.audit import _rollup_readme_gaps
+
+    _seed_rollup_readme_with_body(
+        tmp_path, "topic",
+        "## Members\n\n- Rule one, see `topic_a.md` for detail.\n",
+    )
+    _seed_subfolder_detail(tmp_path, "topic", "topic_a.md")
+
+    gaps = _rollup_readme_gaps(tmp_path, {"topic_a.md"})
+    assert gaps == []
+
+
+def test_rollup_readme_gaps_backtick_external_repo_path_ignored(tmp_path: Path) -> None:
+    """A backtick citation of an EXTERNAL repo path on a bullet line is not a
+    store pointer, even though it ends in `.md` and sits on a list item.
+
+    Found by running this check against a real store: a Cross-references
+    bullet citing another repository's `<org>/<repo>/ARCHITECTURE.md` was
+    reported as a dangling pointer, because taking the basename of a
+    multi-segment external path yields a filename that is not a store member
+    and never was. The backtick form therefore accepts only a BARE filename.
+    Markdown links keep accepting `folder/file.md`, which is the legitimate
+    in-store cross-folder form.
+    """
+    from memforge.cli.audit import _rollup_readme_gaps
+
+    _seed_rollup_readme_with_body(
+        tmp_path, "topic",
+        "## Members\n\n- [[topic_a]]\n\n"
+        "## Cross-references\n\n"
+        "- Canonical index: `some-org/some-repo/ARCHITECTURE.md`.\n",
+    )
+    _seed_subfolder_detail(tmp_path, "topic", "topic_a.md")
+
+    gaps = _rollup_readme_gaps(tmp_path, {"topic_a.md"})
+    assert gaps == []
+
+
+def test_rollup_readme_gaps_end_to_end_via_audit_target(tmp_path: Path) -> None:
+    """End-to-end: a wikilink rollup missing one pointer raises an
+    INTEGRITY VIOLATION through `audit_target`, naming folder and file."""
+    from memforge.cli.audit import audit_target
+
+    _seed_top_level(tmp_path, "feedback_a.md")
+    _seed_rollup_readme_with_body(
+        tmp_path, "topic",
+        "## Members\n\n- [[topic_a]]\n",
+    )
+    _seed_subfolder_detail(tmp_path, "topic", "topic_a.md")
+    _seed_subfolder_detail(tmp_path, "topic", "topic_b.md")
+    (tmp_path / "MEMORY.md").write_text(
+        "# Memory Index\n\n"
+        "- [feedback A](feedback_a.md) - top-level entry\n"
+        "- [Topic rollup](topic/README.md) - rollup\n",
+        encoding="utf-8",
+    )
+
+    import io
+    from contextlib import redirect_stdout
+
+    buf = io.StringIO()
+    with redirect_stdout(buf):
+        violations, _ = audit_target(
+            tmp_path, stale_days=365, fix=False, add_defaults=False, json_out=False
+        )
+    output = buf.getvalue()
+    assert (
+        "Rollup README incomplete: topic/README.md has no pointer to "
+        "1 file(s): topic_b.md"
+    ) in output
+    assert violations >= 1

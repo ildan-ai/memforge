@@ -160,6 +160,136 @@ def _parentless_rollup_subfolders(
     return out
 
 
+_WIKILINK_RE = re.compile(r"\[\[([^\]|#]+)(?:[|#][^\]]*)?\]\]")
+_MD_LINK_RE = re.compile(r"\]\(([^)#]+\.md)(?:#[^)]*)?\)")
+_BACKTICK_MD_RE = re.compile(r"`([A-Za-z0-9_][A-Za-z0-9_.-]*\.md)`")
+_LIST_ITEM_RE = re.compile(r"^\s*(?:[-*]|\d+[.)])\s")
+
+
+def _extract_rollup_pointer_targets(text: str) -> set[str]:
+    """Every pointer target a rollup README.md may cite, in the three forms
+    real rollups use: wikilink, markdown link, and backtick bare filename.
+
+    Deliberately UNANCHORED to any bullet or line prefix for the wikilink and
+    markdown-link forms. A Members section written as
+    "1. **Title** (`[label](file.md)`)." prose, rather than a leading `-`
+    bullet, is a real and common convention. An earlier bullet-anchored draft
+    of this check produced a false all-unreachable reading against a
+    wikilink-style rollup it could not parse at all. Anchoring to a bullet
+    prefix is exactly that bug.
+
+    The backtick bare-filename form is the one real false-positive source: a
+    Why or How-to-apply paragraph often cites an old, possibly pre-rename
+    filename in prose, and that citation is not a membership claim. Backtick
+    citations are therefore only read as pointers on a Members-style LIST-ITEM
+    line (bullet `-`/`*` or numbered `1.`/`1)`); a backtick filename inside an
+    ordinary paragraph is never extracted. Wikilinks and markdown links are
+    NOT scoped that way, because both are load-bearing pointer forms that
+    legitimately appear outside list lines too, such as in a Cross-references
+    paragraph.
+
+    The backtick pattern also accepts only a BARE filename, with no path
+    separator. A rollup legitimately cites external repo paths in prose and on
+    bullet lines (e.g. a Cross-references bullet naming another repository's
+    `<org>/<repo>/ARCHITECTURE.md`), and taking the basename of such a citation
+    would report a phantom dangling pointer for a file that was never a store
+    member. Found by running this check against a real store: exactly that
+    citation produced a false dangling result. Markdown links are NOT narrowed
+    this way, because `](folder/file.md)` is the legitimate in-store
+    cross-folder form.
+    """
+    targets: set[str] = set()
+    for m in _WIKILINK_RE.finditer(text):
+        slug = m.group(1).strip()
+        if slug:
+            targets.add(f"{slug}.md")
+    for m in _MD_LINK_RE.finditer(text):
+        raw = m.group(1).strip()
+        if raw.startswith(("http://", "https://")):
+            # An external URL that happens to end in .md is not a
+            # store-relative pointer; resolving it against the store would
+            # always read as dangling. Excluded rather than false-flagged.
+            continue
+        if raw.startswith("./"):
+            raw = raw[2:]
+        if raw:
+            targets.add(raw)
+    for line in text.splitlines():
+        if not _LIST_ITEM_RE.match(line):
+            continue
+        for m in _BACKTICK_MD_RE.finditer(line):
+            raw = m.group(1).strip()
+            if raw.startswith("./"):
+                raw = raw[2:]
+            if raw:
+                targets.add(raw)
+    return targets
+
+
+def _rollup_readme_gaps(
+    folder: Path, all_md_basenames: set[str]
+) -> list[tuple[str, list[str], list[str]]]:
+    """For every rollup subfolder that HAS a README.md, compare the README's
+    pointer set against its sibling detail-file set, in BOTH directions.
+
+    This closes the gap `_parentless_rollup_subfolders()` cannot see: that
+    check only fires when a subfolder has NO README.md at all. A subfolder
+    WITH a README.md that omits some siblings' pointers passes with zero
+    violations, while those siblings are exactly as unreachable from MEMORY.md
+    as a parentless subfolder's files are. Observed in practice: a rollup can
+    omit most of its siblings, or carry pointers left behind by a file rename
+    so that every pointer dangles, and the audit still reports clean.
+
+    Returns (subfolder_name, unreachable_files, dangling_pointers) for every
+    rollup with at least one gap in either direction; a fully-covered rollup
+    contributes nothing.
+
+    - unreachable_files: sibling `.md` filenames (README.md excluded) that no
+      pointer in the README resolves to, by basename. Compares SETS, never
+      counts: a duplicate pointer alongside an omission yields a matching
+      count while a memory is still lost. Reported in full and never
+      truncated, because the point of this check is the specific slugs rather
+      than a summary number.
+    - dangling_pointers: README pointer basenames that resolve to NO `.md`
+      file anywhere in the store. A pointer at a file in a DIFFERENT folder,
+      or at store root, is a legitimate out-of-folder cross-reference and is
+      deliberately NOT reported; only a target matching nothing anywhere is
+      dangling, which is the pre-rename-filename case.
+
+    Resolution is by basename; memory filenames are expected unique per store
+    by convention, and uid is the true identity key. Excludes archive/,
+    dot-directories, and symlinked directories, matching the hardening in
+    `_parentless_rollup_subfolders()`: a symlinked directory must never be
+    walked.
+    """
+    out: list[tuple[str, list[str], list[str]]] = []
+    for sub in sorted(folder.iterdir()):
+        if not sub.is_dir() or sub.is_symlink():
+            continue
+        if sub.name == "archive" or sub.name.startswith("."):
+            continue
+        readme = sub / "README.md"
+        if not readme.is_file():
+            continue
+        try:
+            text = readme.read_text(encoding="utf-8", errors="replace")
+        except OSError:
+            continue
+
+        pointer_targets = _extract_rollup_pointer_targets(text)
+        pointer_names = {Path(t).name for t in pointer_targets}
+        siblings = {p.name for p in sub.glob("*.md") if p.name != "README.md"}
+
+        unreachable = sorted(siblings - pointer_names)
+        dangling = sorted(
+            p for p in pointer_names
+            if p not in siblings and p not in all_md_basenames
+        )
+        if unreachable or dangling:
+            out.append((sub.name, unreachable, dangling))
+    return out
+
+
 def _all_md_files_recursive(folder: Path) -> set[str]:
     """All .md files under folder, POSIX-relative.
 
@@ -434,6 +564,7 @@ def audit_target(
     pointer_set = set(pointers)
     disk_set = set(_disk_md_files(target))
     all_md_set = _all_md_files_recursive(target)
+    all_md_basenames = {Path(p).name for p in all_md_set}
 
     # A subfolder with files but no README.md rollup parent contributes NOTHING
     # to disk_set, so the comparison below cannot see it. Raise it explicitly:
@@ -445,6 +576,26 @@ def audit_target(
             f"Rollup subfolder missing README.md: {sub_name}/ "
             f"({n_files} file(s) unreachable from MEMORY.md)"
         )
+
+    # A rollup subfolder WITH a README.md is invisible to the parentless check
+    # above and to the disk_set/pointer_set comparison below, which only ever
+    # sees the README as a single unit and never its siblings. A README that
+    # omits some siblings' pointers therefore passed with zero violations until
+    # this check existed: the exact gap the parentless check does not cover.
+    for sub_name, unreachable, dangling in _rollup_readme_gaps(
+        target, all_md_basenames
+    ):
+        if unreachable:
+            violations.append(
+                f"Rollup README incomplete: {sub_name}/README.md has no pointer "
+                f"to {len(unreachable)} file(s): {', '.join(unreachable)}"
+            )
+        if dangling:
+            violations.append(
+                f"Rollup README dangling pointer: {sub_name}/README.md points "
+                f"at {len(dangling)} file(s) that exist nowhere in the store: "
+                f"{', '.join(dangling)}"
+            )
 
     for f in sorted(disk_set - pointer_set):
         orphan_files.append(f)
