@@ -162,42 +162,40 @@ def _parentless_rollup_subfolders(
 
 _WIKILINK_RE = re.compile(r"\[\[([^\]|#]+)(?:[|#][^\]]*)?\]\]")
 _MD_LINK_RE = re.compile(r"\]\(([^)#]+\.md)(?:#[^)]*)?\)")
-_BACKTICK_MD_RE = re.compile(r"`([A-Za-z0-9_][A-Za-z0-9_.-]*\.md)`")
-_LIST_ITEM_RE = re.compile(r"^\s*(?:[-*]|\d+[.)])\s")
+# Spec invariant 28: pointers are read from PROSE ONLY. Fenced blocks, inline
+# code spans, and HTML comments are stripped first, so a documentation example
+# or a commented-out note cannot be mistaken for a membership claim.
+_FENCE_RE = re.compile(r"```.*?```|~~~.*?~~~", re.S)
+_HTML_COMMENT_RE = re.compile(r"<!--.*?-->", re.S)
+_CODE_SPAN_RE = re.compile(r"`[^`\n]*`")
 
 
 def _extract_rollup_pointer_targets(text: str) -> set[str]:
-    """Every pointer target a rollup README.md may cite, in the three forms
-    real rollups use: wikilink, markdown link, and backtick bare filename.
+    """Every pointer target a rollup README.md cites, per spec invariant 28.
 
-    Deliberately UNANCHORED to any bullet or line prefix for the wikilink and
-    markdown-link forms. A Members section written as
+    The pointer set is CLOSED to exactly two forms, and this is a conformance
+    requirement rather than an implementation choice: a wikilink `[[slug]]`
+    (optionally `[[slug|label]]` / `[[slug#anchor]]`), and a markdown inline
+    link whose target ends in `.md`. Any other textual mention of a filename,
+    including a backticked bare filename in prose, is NOT a pointer and MUST
+    NOT be counted. Closing the set is what makes the check deterministic and
+    portable across adapters; an open set lets two conforming implementations
+    disagree on the same folder, which an audit (binary) must never do.
+
+    Within those two forms, extraction is deliberately UNANCHORED to any bullet
+    or line prefix. A Members section written as
     "1. **Title** (`[label](file.md)`)." prose, rather than a leading `-`
-    bullet, is a real and common convention. An earlier bullet-anchored draft
-    of this check produced a false all-unreachable reading against a
+    bullet, is a real and common convention, and an earlier bullet-anchored
+    draft of this check produced a false all-unreachable reading against a
     wikilink-style rollup it could not parse at all. Anchoring to a bullet
     prefix is exactly that bug.
 
-    The backtick bare-filename form is the one real false-positive source: a
-    Why or How-to-apply paragraph often cites an old, possibly pre-rename
-    filename in prose, and that citation is not a membership claim. Backtick
-    citations are therefore only read as pointers on a Members-style LIST-ITEM
-    line (bullet `-`/`*` or numbered `1.`/`1)`); a backtick filename inside an
-    ordinary paragraph is never extracted. Wikilinks and markdown links are
-    NOT scoped that way, because both are load-bearing pointer forms that
-    legitimately appear outside list lines too, such as in a Cross-references
-    paragraph.
-
-    The backtick pattern also accepts only a BARE filename, with no path
-    separator. A rollup legitimately cites external repo paths in prose and on
-    bullet lines (e.g. a Cross-references bullet naming another repository's
-    `<org>/<repo>/ARCHITECTURE.md`), and taking the basename of such a citation
-    would report a phantom dangling pointer for a file that was never a store
-    member. Found by running this check against a real store: exactly that
-    citation produced a false dangling result. Markdown links are NOT narrowed
-    this way, because `](folder/file.md)` is the legitimate in-store
-    cross-folder form.
+    An external URL ending in `.md` is not a folder-relative pointer and is
+    excluded; resolving it against the folder would always read as dangling.
     """
+    text = _FENCE_RE.sub(" ", text)
+    text = _HTML_COMMENT_RE.sub(" ", text)
+    text = _CODE_SPAN_RE.sub(" ", text)
     targets: set[str] = set()
     for m in _WIKILINK_RE.finditer(text):
         slug = m.group(1).strip()
@@ -214,21 +212,12 @@ def _extract_rollup_pointer_targets(text: str) -> set[str]:
             raw = raw[2:]
         if raw:
             targets.add(raw)
-    for line in text.splitlines():
-        if not _LIST_ITEM_RE.match(line):
-            continue
-        for m in _BACKTICK_MD_RE.finditer(line):
-            raw = m.group(1).strip()
-            if raw.startswith("./"):
-                raw = raw[2:]
-            if raw:
-                targets.add(raw)
     return targets
 
 
 def _rollup_readme_gaps(
     folder: Path, all_md_basenames: set[str]
-) -> list[tuple[str, list[str], list[str]]]:
+) -> list[tuple[str, list[str], list[str], bool]]:
     """For every rollup subfolder that HAS a README.md, compare the README's
     pointer set against its sibling detail-file set, in BOTH directions.
 
@@ -240,9 +229,18 @@ def _rollup_readme_gaps(
     omit most of its siblings, or carry pointers left behind by a file rename
     so that every pointer dangles, and the audit still reports clean.
 
-    Returns (subfolder_name, unreachable_files, dangling_pointers) for every
-    rollup with at least one gap in either direction; a fully-covered rollup
+    Returns (subfolder_name, unreachable_files, dangling_pointers,
+    readme_unreadable) for every rollup with at least one gap in either
+    direction, or whose README could not be read; a fully-covered rollup
     contributes nothing.
+
+    FAIL-CLOSED on an unreadable README (threat-model BLOCKER, 2026-07-30). An
+    earlier draft caught OSError and silently skipped the subfolder, which meant
+    making a README unreadable (a permissions glitch, or a deliberate chmod 000)
+    SUPPRESSED every finding for that folder. A check whose purpose is to find
+    completeness gaps must never report clean because it could not look. An
+    unreadable README is now itself a violation, and every sibling is reported
+    unreachable because none can be proven reachable.
 
     - unreachable_files: sibling `.md` filenames (README.md excluded) that no
       pointer in the README resolves to, by basename. Compares SETS, never
@@ -271,14 +269,23 @@ def _rollup_readme_gaps(
         readme = sub / "README.md"
         if not readme.is_file():
             continue
+        siblings = {p.name for p in sub.glob("*.md") if p.name != "README.md"}
         try:
             text = readme.read_text(encoding="utf-8", errors="replace")
         except OSError:
+            # Fail closed: cannot read the README, so cannot prove any sibling
+            # is reachable. Report rather than skip.
+            out.append((sub.name, sorted(siblings), [], True))
             continue
 
         pointer_targets = _extract_rollup_pointer_targets(text)
+        # Resolution is by basename and NEVER opens the target, so a hostile or
+        # corrupt pointer string cannot reach an OS call from here. A
+        # threat-model pass flagged an embedded NUL as an unhandled-exception
+        # risk; verified false, `Path(x).name` does not raise on a NUL, and such
+        # a target simply matches no real file and is reported as dangling. No
+        # guard is added rather than carrying dead defensive code.
         pointer_names = {Path(t).name for t in pointer_targets}
-        siblings = {p.name for p in sub.glob("*.md") if p.name != "README.md"}
 
         unreachable = sorted(siblings - pointer_names)
         dangling = sorted(
@@ -286,7 +293,7 @@ def _rollup_readme_gaps(
             if p not in siblings and p not in all_md_basenames
         )
         if unreachable or dangling:
-            out.append((sub.name, unreachable, dangling))
+            out.append((sub.name, unreachable, dangling, False))
     return out
 
 
@@ -582,10 +589,16 @@ def audit_target(
     # sees the README as a single unit and never its siblings. A README that
     # omits some siblings' pointers therefore passed with zero violations until
     # this check existed: the exact gap the parentless check does not cover.
-    for sub_name, unreachable, dangling in _rollup_readme_gaps(
+    for sub_name, unreachable, dangling, unreadable in _rollup_readme_gaps(
         target, all_md_basenames
     ):
-        if unreachable:
+        if unreadable:
+            violations.append(
+                f"Rollup README unreadable: {sub_name}/README.md could not be "
+                f"read, so coverage cannot be verified (fail-closed); "
+                f"{len(unreachable)} sibling file(s) treated as unreachable"
+            )
+        elif unreachable:
             violations.append(
                 f"Rollup README incomplete: {sub_name}/README.md has no pointer "
                 f"to {len(unreachable)} file(s): {', '.join(unreachable)}"

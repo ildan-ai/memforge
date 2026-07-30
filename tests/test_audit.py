@@ -546,7 +546,7 @@ def test_rollup_readme_gaps_wikilink_unreachable_file(tmp_path: Path) -> None:
     _seed_subfolder_detail(tmp_path, "topic", "topic_b.md")
 
     gaps = _rollup_readme_gaps(tmp_path, {"topic_a.md", "topic_b.md"})
-    assert gaps == [("topic", ["topic_b.md"], [])]
+    assert gaps == [("topic", ["topic_b.md"], [], False)]
 
 
 def test_rollup_readme_gaps_numbered_prose_not_bullet_anchored(tmp_path: Path) -> None:
@@ -582,7 +582,7 @@ def test_rollup_readme_gaps_dangling_pointer_pre_rename(tmp_path: Path) -> None:
     _seed_subfolder_detail(tmp_path, "topic", "topic_a.md")
 
     gaps = _rollup_readme_gaps(tmp_path, {"topic_a.md"})
-    assert gaps == [("topic", [], ["old_name_before_rename.md"])]
+    assert gaps == [("topic", [], ["old_name_before_rename.md"], False)]
 
 
 def test_rollup_readme_gaps_out_of_folder_ref_not_dangling(tmp_path: Path) -> None:
@@ -618,7 +618,7 @@ def test_rollup_readme_gaps_duplicate_pointer_masks_omission(tmp_path: Path) -> 
     _seed_subfolder_detail(tmp_path, "topic", "topic_b.md")  # never pointed to
 
     gaps = _rollup_readme_gaps(tmp_path, {"topic_a.md", "topic_b.md"})
-    assert gaps == [("topic", ["topic_b.md"], [])]
+    assert gaps == [("topic", ["topic_b.md"], [], False)]
 
 
 def test_rollup_readme_gaps_backtick_prose_not_a_pointer(tmp_path: Path) -> None:
@@ -640,10 +640,17 @@ def test_rollup_readme_gaps_backtick_prose_not_a_pointer(tmp_path: Path) -> None
     assert gaps == []  # the backtick citation must not surface as dangling
 
 
-def test_rollup_readme_gaps_backtick_list_item_is_a_pointer(tmp_path: Path) -> None:
-    """A backtick bare filename ON a Members-style list-item line (bullet or
-    numbered) IS read as a pointer. The form is real and usable; only prose
-    citations outside a list are excluded (see the prior test).
+def test_rollup_readme_gaps_backtick_is_never_a_pointer(tmp_path: Path) -> None:
+    """Spec invariant 28 CLOSES the pointer set to wikilink + markdown link. A
+    backtick bare filename is NOT a pointer, wherever it appears, including on a
+    Members-style list-item line.
+
+    Expectation deliberately INVERTED from an earlier draft of this check, which
+    counted a backticked filename on a list-item line and excluded it only in
+    prose. The architect spec-delta pass called that out: an open pointer set
+    lets two conforming implementations disagree on the same folder, which an
+    audit (binary) must never do. So a README whose ONLY reference to a sibling
+    is backticked leaves that sibling unreachable, and the audit says so.
     """
     from memforge.cli.audit import _rollup_readme_gaps
 
@@ -654,7 +661,7 @@ def test_rollup_readme_gaps_backtick_list_item_is_a_pointer(tmp_path: Path) -> N
     _seed_subfolder_detail(tmp_path, "topic", "topic_a.md")
 
     gaps = _rollup_readme_gaps(tmp_path, {"topic_a.md"})
-    assert gaps == []
+    assert gaps == [("topic", ["topic_a.md"], [], False)]
 
 
 def test_rollup_readme_gaps_backtick_external_repo_path_ignored(tmp_path: Path) -> None:
@@ -665,9 +672,10 @@ def test_rollup_readme_gaps_backtick_external_repo_path_ignored(tmp_path: Path) 
     bullet citing another repository's `<org>/<repo>/ARCHITECTURE.md` was
     reported as a dangling pointer, because taking the basename of a
     multi-segment external path yields a filename that is not a store member
-    and never was. The backtick form therefore accepts only a BARE filename.
-    Markdown links keep accepting `folder/file.md`, which is the legitimate
-    in-store cross-folder form.
+    and never was. Under the closed pointer set of spec invariant 28 a
+    backticked filename is not a pointer at all, so the citation cannot
+    produce a phantom finding by any route. Markdown links still accept
+    `folder/file.md`, the legitimate in-folder cross-subfolder form.
     """
     from memforge.cli.audit import _rollup_readme_gaps
 
@@ -681,6 +689,94 @@ def test_rollup_readme_gaps_backtick_external_repo_path_ignored(tmp_path: Path) 
 
     gaps = _rollup_readme_gaps(tmp_path, {"topic_a.md"})
     assert gaps == []
+
+
+def test_rollup_readme_gaps_prose_only_ignores_fence_and_comment(tmp_path: Path) -> None:
+    """Spec invariant 28 reads pointers from PROSE ONLY. A link inside a fenced
+    code block, an inline code span, or an HTML comment is not a membership
+    claim and MUST NOT count in either direction.
+
+    Raised by the adversarial critic on the spec delta: without an explicit
+    exclusion, two conforming implementations can disagree on the same folder,
+    which an audit (binary) must never permit. Latent rather than live at the
+    time (no real rollup had a link inside a fence or comment), fixed before it
+    could become live.
+
+    `topic_a` is reachable only via a fenced example, a code span, and a
+    commented-out note, so it must still be reported unreachable. The fenced
+    link to `not_a_member.md` must NOT be reported dangling.
+    """
+    from memforge.cli.audit import _rollup_readme_gaps
+
+    _seed_rollup_readme_with_body(
+        tmp_path, "topic",
+        "## Members\n\n"
+        "Example of the pointer syntax:\n\n"
+        "```markdown\n- [[topic_a]]\n- [Missing](not_a_member.md)\n```\n\n"
+        "Inline form is `[[topic_a]]` for reference.\n\n"
+        "<!-- - [[topic_a]] was here before the rename -->\n",
+    )
+    _seed_subfolder_detail(tmp_path, "topic", "topic_a.md")
+
+    gaps = _rollup_readme_gaps(tmp_path, {"topic_a.md"})
+    assert gaps == [("topic", ["topic_a.md"], [], False)]
+
+
+def test_rollup_readme_gaps_unreadable_readme_fails_closed(tmp_path: Path) -> None:
+    """An unreadable rollup README is itself a violation, and every sibling is
+    reported unreachable.
+
+    Threat-model BLOCKER (2026-07-30): an earlier draft caught OSError and
+    silently skipped the subfolder, so making a README unreadable (a permissions
+    glitch, or a deliberate chmod 000) SUPPRESSED every finding for that folder.
+    A check whose purpose is finding completeness gaps must never report clean
+    because it could not look.
+    """
+    import os
+    import stat
+
+    from memforge.cli.audit import _rollup_readme_gaps
+
+    _seed_rollup_readme_with_body(tmp_path, "topic", "## Members\n\n- [[topic_a]]\n")
+    _seed_subfolder_detail(tmp_path, "topic", "topic_a.md")
+    readme = tmp_path / "topic" / "README.md"
+    try:
+        os.chmod(readme, 0o000)
+        if os.access(readme, os.R_OK):  # running as root, or a permissive FS
+            import pytest
+            pytest.skip("cannot make a file unreadable in this environment")
+        gaps = _rollup_readme_gaps(tmp_path, {"topic_a.md"})
+    finally:
+        os.chmod(readme, stat.S_IRUSR | stat.S_IWUSR)
+
+    assert gaps == [("topic", ["topic_a.md"], [], True)]
+
+
+def test_rollup_readme_gaps_nul_byte_in_pointer_does_not_crash(tmp_path: Path) -> None:
+    """A NUL byte in a pointer target must not crash the audit.
+
+    A threat-model pass flagged an embedded NUL as an unhandled-exception risk.
+    VERIFIED FALSE before acting on it: `Path(x).name` does not raise on a NUL,
+    and this code never opens a pointer target, it only compares basenames. So
+    no crash is reachable. Kept as a regression test for the real property: a
+    NUL-bearing pointer does not crash, matches no file, and is reported as
+    dangling.
+    """
+    from memforge.cli.audit import _rollup_readme_gaps
+
+    _seed_rollup_readme_with_body(
+        tmp_path, "topic",
+        "## Members\n\n- [[topic_a]]\n- [Bad](bad\x00name.md)\n",
+    )
+    _seed_subfolder_detail(tmp_path, "topic", "topic_a.md")
+
+    gaps = _rollup_readme_gaps(tmp_path, {"topic_a.md"})
+    assert len(gaps) == 1
+    sub_name, unreachable, dangling, unreadable = gaps[0]
+    assert sub_name == "topic"
+    assert unreachable == []
+    assert unreadable is False
+    assert dangling == ["bad\x00name.md"]
 
 
 def test_rollup_readme_gaps_end_to_end_via_audit_target(tmp_path: Path) -> None:
