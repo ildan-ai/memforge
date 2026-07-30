@@ -10,6 +10,48 @@ The version number tracked here is the **package / tooling** version. The on-dis
 
 The Contributor License Agreement infrastructure is counsel-blocked; external pull requests are paused until the CLA flow lands.
 
+### Added
+
+- **`memory-audit` now detects an INCOMPLETE rollup README, not just a missing one.**
+  0.9.1 added a check for a rollup subfolder with NO `README.md`. That check cannot
+  see a subfolder whose `README.md` EXISTS but omits some sibling detail files'
+  pointers, and those siblings are exactly as unreachable from `MEMORY.md` as a
+  parentless subfolder's files are. Two new INTEGRITY VIOLATIONS close that gap:
+  `Rollup README incomplete: <folder>/README.md has no pointer to N file(s): ...`
+  and `Rollup README dangling pointer: <folder>/README.md points at N file(s) that
+  exist nowhere in the store: ...`. Observed in practice: a rollup can omit most of
+  its siblings, or carry pointers left behind by a file rename so that every
+  pointer dangles, while the audit still reports clean. This closes that detector
+  gap.
+
+  Both directions are reported, and the specific slugs are always named in full
+  rather than summarized as a count. The comparison is set-based, never
+  count-based: a duplicate pointer alongside an omission yields a matching count
+  while a memory is still lost, so a count check would pass.
+
+  Parses all three pointer forms real rollups use: wikilinks (`[[slug]]`,
+  `[[slug|label]]`), markdown links (`](slug.md)`, `](./slug.md)`, with an optional
+  trailing `#anchor`), and backtick bare filenames (`` `slug.md` ``). Wikilink and
+  markdown-link extraction is deliberately unanchored to any bullet prefix, because
+  a numbered-prose Members list with the link mid-sentence is a real and common
+  convention, and an earlier bullet-anchored draft of this check produced a false
+  all-unreachable reading against a wikilink-style rollup it could not parse at all.
+
+  A backtick bare filename is only read as a pointer on a Members-style list-item
+  line (bullet or numbered). A backtick citation inside ordinary prose, such as a
+  Why or How-to-apply paragraph naming an old pre-rename filename, is never
+  extracted, so a repair note cannot manufacture a phantom dangling pointer.
+
+  A pointer at a file in a different folder, or at store root, resolves against the
+  whole store and is NOT reported as dangling; only a target matching nothing
+  anywhere is. `archive/`, dot-directories, and symlinked directories are excluded,
+  matching the existing parentless-rollup check.
+
+  This is BREAKING for `memory-audit --strict` on a store that already has an
+  incomplete or stale-pointer rollup README, in the same deliberate way the 0.9.1
+  parentless check was: the condition it now fails on was previously passing while
+  memories were unreachable.
+
 ## [0.9.1] - 2026-07-29
 
 **Patch: closes a class of SILENT memory loss. Package 0.9.1 / spec 0.7.0 (unchanged).**
