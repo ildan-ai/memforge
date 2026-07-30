@@ -1,6 +1,6 @@
 # MemForge spec
 
-Version 0.7.0.
+Version 0.8.0.
 
 ## Goal
 
@@ -1161,7 +1161,7 @@ The `references_global` and `referenced_by_global` fields support cross-folder r
 
 ## Versioning
 
-**Current spec version**: 0.7.0.
+**Current spec version**: 0.8.0.
 
 The spec version lives in `spec/VERSION`. Breaking changes bump per semantic versioning applied to spec semantics:
 
