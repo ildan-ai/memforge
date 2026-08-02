@@ -48,6 +48,7 @@ from memforge.frontmatter import (  # noqa: E402
     parse as _mf_parse,
     has_frontmatter as _mf_has_fm,
     render as _mf_render,
+    VALID_TYPES,
 )
 
 
@@ -173,6 +174,25 @@ def plan_change(path: Path, folder_root: Path) -> Optional[PlannedChange]:
     additions: dict = {}
     mtime_ymd = file_mtime_date(path)
     slug = filename_slug(path)
+
+    # HOIST a nested `metadata.type` to the required TOP-LEVEL `type`.
+    #
+    # This backfill deliberately never INVENTS a `type`: it is a semantic
+    # classification and guessing one would be worse than leaving it absent.
+    # But when a nested `metadata.type` already exists the value is sitting in
+    # the file, so promoting it is lossless and requires no judgement. Some
+    # agent harnesses write `metadata:` / `  type: <x>`, which parses cleanly
+    # and therefore slips past a parse-only write gate, while no tool repairs
+    # it, so those files accumulate silently until an audit finds them.
+    #
+    # Additive by design: the `metadata:` block is left untouched, since it
+    # routinely carries other keys and files with both shapes are common.
+    if "type" not in fm:
+        meta = fm.get("metadata")
+        if isinstance(meta, dict):
+            nested_type = meta.get("type")
+            if isinstance(nested_type, str) and nested_type.strip() in VALID_TYPES:
+                additions["type"] = nested_type.strip()
 
     if "uid" not in fm:
         rel = path.relative_to(folder_root)

@@ -56,7 +56,13 @@ Register under `UserPromptSubmit`.
 
 ### Write-boundary gate hook (spec v0.7.0)
 
-Claude Code is the one adapter that can reject a malformed memory write *before the bytes hit disk* (Tier A in the adapter guide), via a `PreToolUse` hook matching `Write|Edit`. The shim reconstructs the post-write content (Write = the `content` field; Edit = the current file with `old_string` -> `new_string` applied) and pipes it to the `memory-validate` primitive `memforge.frontmatter.validate_frontmatter`; on a frontmatter-parse failure it returns `permissionDecision: deny` with the reason. It MUST fail open on any internal error so the gate never wedges the editor.
+Claude Code is the one adapter that can reject a malformed memory write *before the bytes hit disk* (Tier A in the adapter guide), via a `PreToolUse` hook matching `Write|Edit`. The shim reconstructs the post-write content (Write = the `content` field; Edit = the current file with `old_string` -> `new_string` applied) and pipes it to the `memory-validate` primitives; on failure it returns `permissionDecision: deny` with the reason. It MUST fail open on any internal error so the gate never wedges the editor.
+
+**Shipped as [`hooks/gate-memory-frontmatter.py`](hooks/gate-memory-frontmatter.py).** It runs two checks in order: `validate_frontmatter` (does the block parse) and then `validate_required_fields` (are the non-derivable fields present). Both are needed, and the second is the one that matters in practice: a harness that writes `metadata:` / `  type: <x>` instead of the spec's top-level `type:` produces *valid YAML*, so a parse-only gate accepts it, and no backfill can invent a semantic type to repair it. Such files accumulate silently until an audit finds them.
+
+Scope is `*.md` under a memory root only. `MEMORY.md` is skipped: it is the folder index, not a memory, and carries no frontmatter by spec. Memory roots come from `memforge.paths.default_memory_paths()`, overridable with `MEMFORGE_MEMORY_ROOTS` (a `PATH`-style list); the override takes precedence rather than acting as a fallback, so a non-standard layout is expressible and the gate is testable.
+
+For an `Edit`, the gate validates the *reconstructed* file rather than `new_string` alone. An edit that removes a required field is only visible once the substitution is applied to what is already on disk.
 
 This replaces the interim hand-written CC frontmatter hook: the parsing now lives in the installed package (shared with the git pre-commit gate every other IDE uses), so the rule tracks spec updates. The reference shim + the universal git pre-commit fallback are in [`../../docs/adapter-implementation-guide.md`](../../docs/adapter-implementation-guide.md) §"Write-boundary gate".
 

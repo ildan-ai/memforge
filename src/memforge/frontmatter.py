@@ -189,6 +189,91 @@ def validate_frontmatter(text: str) -> tuple[bool, str | None]:
     return True, None
 
 
+VALID_TYPES: tuple[str, ...] = ("user", "feedback", "project", "reference")
+
+#: Every field the spec requires at v0.4.0 (SPEC.md, "Required in v0.4.0").
+V04_REQUIRED_FIELDS: tuple[str, ...] = (
+    "name", "description", "type", "uid", "tier", "tags", "owner", "status",
+    "created",
+)
+
+#: The subset a write-boundary gate should enforce. Deliberately NARROWER than
+#: V04_REQUIRED_FIELDS: `uid`, `tier`, `tags`, `owner`, `status` and `created`
+#: are all DERIVABLE after the fact by `memory-frontmatter-backfill`, so
+#: rejecting a write for missing them would wedge the editor on every
+#: first-write while buying nothing a later backfill cannot fix. `name`,
+#: `description` and `type` are not derivable by any tool: `type` is a semantic
+#: classification, which is why backfill refuses to invent one, and why
+#: nested-only files accumulate unnoticed.
+NON_DERIVABLE_FIELDS: tuple[str, ...] = ("name", "description", "type")
+
+
+def validate_required_fields(
+    text: str,
+    required: "tuple[str, ...] | list[str]" = NON_DERIVABLE_FIELDS,
+) -> tuple[bool, str | None]:
+    """Check required-field CONFORMANCE, the complement of validate_frontmatter.
+
+    validate_frontmatter() answers "does this block parse"; its docstring is
+    explicit that missing required fields are "a SOFT/audit concern, not a
+    parse-gate failure". Every adapter depends on that contract, so this is a
+    separate primitive rather than a stricter mode of that one.
+
+    Two field sets ship (see the constants above): NON_DERIVABLE_FIELDS, the
+    default and the right choice for a write-boundary gate, and
+    V04_REQUIRED_FIELDS for full spec conformance in audit or CI. The default is
+    the narrow set on purpose: a gate that denies on derivable fields fails
+    noisily for no benefit, and a gate people disable is worth nothing.
+
+    `type` gets a dedicated message because it is the recurring real-world
+    failure: an agent harness may write `metadata:` / `  type: <x>`, which is
+    NOT the spec's top-level `type:`. It parses, so a parse gate passes it, and
+    no backfill can repair it, so it accumulates silently.
+
+    Mirrors validate_frontmatter()'s leniency: a file with no recognized
+    frontmatter is invariant 1's concern, not this gate's, and returns ok.
+
+    Returns (ok, reason); reason names the offending field on failure.
+    """
+    ok, why = validate_frontmatter(text)
+    if not ok:
+        return False, why
+
+    norm = text.replace("\r\n", "\n").replace("\r", "\n")
+    if not has_frontmatter(norm):
+        return True, None
+
+    fm, _ = parse(norm)
+
+    for field in required:
+        value = fm.get(field)
+        if value is None or (isinstance(value, str) and not value.strip()):
+            if field == "type":
+                nested = ""
+                meta = fm.get("metadata")
+                if isinstance(meta, dict) and meta.get("type"):
+                    nested = (
+                        f" A nested `metadata.type: {meta['type']}` IS present; "
+                        "the spec requires `type` as a TOP-LEVEL key. Add "
+                        f"`type: {meta['type']}` at the top level (leaving the "
+                        "nested copy in place is fine)."
+                    )
+                return False, (
+                    "missing required frontmatter field `type` (one of "
+                    f"{', '.join(VALID_TYPES)}).{nested}"
+                )
+            return False, f"missing required frontmatter field `{field}`"
+
+    declared = fm.get("type")
+    if "type" in required and declared not in VALID_TYPES:
+        return False, (
+            f"frontmatter `type: {declared!r}` is not one of "
+            f"{', '.join(VALID_TYPES)}"
+        )
+
+    return True, None
+
+
 def render(frontmatter: dict[str, Any], body: str) -> str:
     """Serialize a frontmatter dict + body back to a memory file string.
 

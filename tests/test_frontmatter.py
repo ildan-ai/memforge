@@ -6,7 +6,15 @@ The contract is documented in src/memforge/frontmatter.py.
 
 from __future__ import annotations
 
-from memforge.frontmatter import has_frontmatter, parse, render
+from memforge.frontmatter import (
+    NON_DERIVABLE_FIELDS,
+    V04_REQUIRED_FIELDS,
+    has_frontmatter,
+    parse,
+    render,
+    validate_frontmatter,
+    validate_required_fields,
+)
 
 
 # ---------- has_frontmatter ----------
@@ -247,3 +255,69 @@ def test_parse_fence_at_eof_without_trailing_newline():
     fm, body = parse(text)
     assert fm.get("name") == "z"
     assert body == ""
+
+
+# ---------- validate_required_fields ----------
+#
+# The complement of validate_frontmatter: that one answers "does the block
+# parse", this one answers "are the required fields there". They are separate
+# primitives because validate_frontmatter's docstring commits to treating
+# missing fields as a soft/audit concern, and every adapter relies on it.
+
+
+def test_required_fields_ok_with_top_level_type():
+    text = "---\nname: x\ndescription: y\ntype: feedback\n---\n\nbody\n"
+    assert validate_required_fields(text) == (True, None)
+
+
+def test_required_fields_rejects_nested_metadata_type():
+    """The real-world regression: `metadata.type` is NOT the spec's `type`.
+
+    This shape parses as valid YAML, so validate_frontmatter passes it, and no
+    backfill can invent a semantic type, so files in this shape accumulate
+    silently. That is precisely what this gate exists to stop.
+    """
+    text = (
+        "---\nname: x\ndescription: y\nmetadata:\n  type: feedback\n---\n\nbody\n"
+    )
+    assert validate_frontmatter(text) == (True, None)  # parses fine
+    ok, why = validate_required_fields(text)
+    assert ok is False
+    assert "type" in why
+    # The message must name the nested value so the fix is mechanical.
+    assert "metadata.type: feedback" in why
+
+
+def test_required_fields_rejects_unknown_type_value():
+    text = "---\nname: x\ndescription: y\ntype: notathing\n---\n\nbody\n"
+    ok, why = validate_required_fields(text)
+    assert ok is False
+    assert "notathing" in why
+
+
+def test_required_fields_lenient_on_plain_markdown():
+    """Mirrors validate_frontmatter: no frontmatter is invariant 1's concern."""
+    assert validate_required_fields("just prose, no fences\n") == (True, None)
+
+
+def test_required_fields_propagates_a_parse_failure():
+    """An unquoted colon-space must surface as the parse error, not as a
+    misleading missing-field error."""
+    text = "---\nname: x\ndescription: broken: value here\ntype: user\n---\n\nb\n"
+    ok, why = validate_required_fields(text)
+    assert ok is False
+    assert "parse" in why.lower()
+
+
+def test_required_fields_default_set_excludes_derivable_fields():
+    """A write gate must not deny on fields a backfill will fill in.
+
+    Denying on uid/tier/tags/owner/status/created would fail every first-write
+    and buy nothing, so the default set is the non-derivable three.
+    """
+    text = "---\nname: x\ndescription: y\ntype: user\n---\n\nb\n"
+    assert validate_required_fields(text) == (True, None)
+    ok, why = validate_required_fields(text, required=V04_REQUIRED_FIELDS)
+    assert ok is False
+    assert "uid" in why
+    assert set(NON_DERIVABLE_FIELDS) < set(V04_REQUIRED_FIELDS)

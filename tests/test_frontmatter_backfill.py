@@ -28,6 +28,7 @@ from memforge.cli.frontmatter_backfill import (
     apply_change,
     plan_change,
 )
+from memforge.frontmatter import parse as _mf_parse
 
 
 # ---------- _frontmatter_present_but_unparseable ----------
@@ -337,3 +338,80 @@ def test_backfill_access_respects_sensitivity_it_adds_in_same_pass(tmp_path):
     # default sensitivity is non-restrictive, so access is still set
     assert add.get("sensitivity") == "internal"
     assert add.get("access") == "internal"
+
+
+# ---------- nested metadata.type hoist ----------
+
+
+def _write_memory(tmp_path, name, text):
+    p = tmp_path / name
+    p.write_text(text, encoding="utf-8")
+    return p
+
+
+def test_backfill_hoists_nested_metadata_type(tmp_path):
+    """Lossless promotion: the value is already in the file, so no guessing.
+
+    The harness-written `metadata.type` shape parses cleanly and therefore
+    survives a parse-only gate, but it is not the spec's top-level `type`.
+    """
+    p = _write_memory(
+        tmp_path,
+        "nested.md",
+        "---\nname: nested\ndescription: d\nmetadata:\n"
+        "  type: feedback\n  node_type: memory\n---\n\nbody\n",
+    )
+    plan = plan_change(p, tmp_path)
+    assert plan is not None
+    assert plan.additions.get("type") == "feedback"
+
+    apply_change(p, plan.additions)
+    fm, _ = _mf_parse(p.read_text(encoding="utf-8"))
+    assert fm["type"] == "feedback"
+    # Additive only: the metadata block and its other keys survive.
+    assert fm["metadata"]["node_type"] == "memory"
+    assert fm["metadata"]["type"] == "feedback"
+
+
+def test_backfill_does_not_invent_a_type_when_none_exists(tmp_path):
+    """`type` is a semantic classification; guessing one is worse than absent.
+
+    Files using a third shape (a metadata block with node_type but no type at
+    all) must stay untouched for operator judgement.
+    """
+    p = _write_memory(
+        tmp_path,
+        "notype.md",
+        "---\nname: notype\ndescription: d\nmetadata:\n  node_type: memory\n---\n\nbody\n",
+    )
+    plan = plan_change(p, tmp_path)
+    additions = plan.additions if plan is not None else {}
+    assert "type" not in additions
+
+
+def test_backfill_ignores_a_non_spec_nested_type(tmp_path):
+    """A nested value outside the spec's four types is not hoisted."""
+    p = _write_memory(
+        tmp_path,
+        "bogus.md",
+        "---\nname: bogus\ndescription: d\nmetadata:\n  type: notathing\n---\n\nbody\n",
+    )
+    plan = plan_change(p, tmp_path)
+    additions = plan.additions if plan is not None else {}
+    assert "type" not in additions
+
+
+def test_backfill_leaves_an_existing_top_level_type_alone(tmp_path):
+    p = _write_memory(
+        tmp_path,
+        "already.md",
+        "---\nname: already\ndescription: d\ntype: project\nmetadata:\n"
+        "  type: feedback\n---\n\nbody\n",
+    )
+    plan = plan_change(p, tmp_path)
+    additions = plan.additions if plan is not None else {}
+    assert "type" not in additions
+    if plan is not None:
+        apply_change(p, plan.additions)
+    fm, _ = _mf_parse(p.read_text(encoding="utf-8"))
+    assert fm["type"] == "project"
