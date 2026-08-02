@@ -10,6 +10,23 @@ The version number tracked here is the **package / tooling** version. The on-dis
 
 The Contributor License Agreement infrastructure is counsel-blocked; external pull requests are paused until the CLA flow lands.
 
+### Added
+
+- `memforge.frontmatter.validate_required_fields(text, required=...)`: required-field conformance checking, the complement of `validate_frontmatter`. Two field sets ship: `NON_DERIVABLE_FIELDS` (`name`, `description`, `type`) as the default, and `V04_REQUIRED_FIELDS` for full spec conformance. The default is the narrow set deliberately, because `uid`, `tier`, `tags`, `owner`, `status` and `created` are all derivable later by `memory-frontmatter-backfill`; a write gate that denies on those fails noisily for no benefit, and a gate people switch off protects nothing.
+- `adapters/claude-code/hooks/gate-memory-frontmatter.py`: the PreToolUse write-boundary gate the Claude Code adapter README has specified but which had never been written. Rejects a malformed memory write before the bytes reach disk, naming the offending field. For an `Edit` it validates the reconstructed post-write file rather than `new_string` alone, so an edit that strips a required field is caught. Fail-open on every error path, unconditionally.
+
+### Changed
+
+- `memory-frontmatter-backfill` now hoists an existing nested `metadata.type` to the required top-level `type`. Lossless and additive: the value is already in the file so nothing is guessed, and the `metadata` block is left intact. It still refuses to invent a `type` where none exists, since that is a semantic classification.
+
+### Why
+
+An agent harness may write `type` nested under a `metadata:` block, which is not the spec's top-level `type:`. That block is valid YAML, so a parse-only gate accepts it; no backfill could repair it, because inventing a semantic type is not safe; and the only component that detected it was `memory-audit`, whose findings land in a log. Files in that shape accumulated unnoticed. These three changes close the loop at each layer: detect at the write, repair what is repairable, and validate conformance separately from parseability.
+
+### Spec compatibility
+
+No spec change. `type` has been a required top-level field since v0.4.0; this release makes the tooling enforce and repair what the spec already stated.
+
 ## [0.9.2] - 2026-07-30
 
 **Minor SPEC bump (0.7.0 -> 0.8.0) shipped in a package patch. Closes a second class of SILENT memory loss.**
