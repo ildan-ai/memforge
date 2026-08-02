@@ -21,7 +21,7 @@ The Contributor License Agreement infrastructure is counsel-blocked; external pu
 
 ### Why
 
-An agent harness may write `metadata:` / `  type: <x>`, which is not the spec's top-level `type:`. That block is valid YAML, so a parse-only gate accepts it; no backfill could repair it, because inventing a semantic type is not safe; and the only component that detected it was `memory-audit`, whose findings land in a log. Files in that shape accumulated unnoticed. These three changes close the loop at each layer: detect at the write, repair what is repairable, and validate conformance separately from parseability.
+An agent harness may write `type` nested under a `metadata:` block, which is not the spec's top-level `type:`. That block is valid YAML, so a parse-only gate accepts it; no backfill could repair it, because inventing a semantic type is not safe; and the only component that detected it was `memory-audit`, whose findings land in a log. Files in that shape accumulated unnoticed. These three changes close the loop at each layer: detect at the write, repair what is repairable, and validate conformance separately from parseability.
 
 ### Spec compatibility
 
