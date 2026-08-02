@@ -10,6 +10,12 @@ The version number tracked here is the **package / tooling** version. The on-dis
 
 The Contributor License Agreement infrastructure is counsel-blocked; external pull requests are paused until the CLA flow lands.
 
+## [0.10.0] - 2026-08-02
+
+**Minor: the write-boundary gate 0.9.0 described, actually shipped. Package 0.10.0 / spec 0.8.0 unchanged. Additive and backward-compatible; no existing well-formed folder breaks.**
+
+0.9.0 added `memory-validate` and named a "Claude Code `PreToolUse` shim = pre-write" as the pre-write half of that gate. The shim was never written, and the check it would have called was parse-only, so the pre-write half did not exist in either sense. This release supplies both.
+
 ### Added
 
 - `memforge.frontmatter.validate_required_fields(text, required=...)`: required-field conformance checking, the complement of `validate_frontmatter`. Two field sets ship: `NON_DERIVABLE_FIELDS` (`name`, `description`, `type`) as the default, and `V04_REQUIRED_FIELDS` for full spec conformance. The default is the narrow set deliberately, because `uid`, `tier`, `tags`, `owner`, `status` and `created` are all derivable later by `memory-frontmatter-backfill`; a write gate that denies on those fails noisily for no benefit, and a gate people switch off protects nothing.
