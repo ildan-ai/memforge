@@ -274,9 +274,9 @@ The Claude Code PostToolUse `memory-auto-commit.sh` hook (operator-side; not shi
 Validate a file (or a batch) directly:
 
 ```bash
-memory-validate ~/.claude/global-memory/some-memory.md       # one file
-memory-validate --path ~/.claude/global-memory               # walk a folder
-memory-validate --path ~/.claude/global-memory --strict      # SOFT findings fail too
+memory-validate ~/.memforge/global-memory/some-memory.md       # one file
+memory-validate --path ~/.memforge/global-memory               # walk a folder
+memory-validate --path ~/.memforge/global-memory --strict      # SOFT findings fail too
 memory-validate --json some-memory.md                        # machine-readable
 ```
 
@@ -404,13 +404,13 @@ As a memory set grows, loading the whole `MEMORY.md` into every session gets exp
 Build the recall index (a derived artifact at `.memforge/recall-index.json`):
 
 ```bash
-memory-index-gen --with-recall-index --path ~/.claude/global-memory
+memory-index-gen --with-recall-index --path ~/.memforge/global-memory
 ```
 
 Query it:
 
 ```bash
-memory-recall "how do I rotate an operator key" --path ~/.claude/global-memory
+memory-recall "how do I rotate an operator key" --path ~/.memforge/global-memory
 ```
 
 Recall surfaces `description` text only (never bodies), honors `sensitivity` / `access`, and is fail-open-empty (it never blocks the caller). Mark a memory `always: true` to surface it on every query; mark it `do_not_inject: true` to exclude it from recall (for example, content already loaded by another path). Explicit `triggers: [...]` refine matching; without them, triggers are derived from the name, tags, and description.
@@ -422,7 +422,7 @@ For Claude Code, register `adapters/claude-code/hooks/memory_recall_hook.py` und
 Recall only works if descriptions are findable. `memory-lint` scores how each memory would fare against the recall trigger model and flags token-cost issues. It is read-only and local-only by default:
 
 ```bash
-memory-lint --path ~/.claude/global-memory
+memory-lint --path ~/.memforge/global-memory
 ```
 
 A memory scores low when its description is contentless ("Notes"), adds no distinctive term the name does not already carry, or shares only common terms with the rest of the corpus. Lint also flags over-budget always-sets, oversized descriptions/bodies, and (with `--injected-file CLAUDE.md`) memories that may already live in an always-loaded file. Pass `--json` for machine output, `--strict` to exit nonzero on weak memories in CI.

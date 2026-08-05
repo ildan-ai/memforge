@@ -160,7 +160,7 @@ Before declaring your adapter v0.4-conformant, run the following test scenarios.
 
 ### T5 — Cross-root members (must error)
 
-1. Place one member in `~/.claude/global-memory/` and one member in `~/.claude/projects/<hash>/memory/`, same `decision_topic`.
+1. Place one member in `~/.memforge/global-memory/` and one member in `~/.memforge/memory/`, same `decision_topic`.
 2. Invoke resolve flow.
 3. **Assert**: adapter errors with "members span multiple memory roots"; cross-root resolution out of scope for v0.4.
 
