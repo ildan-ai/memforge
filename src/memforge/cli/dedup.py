@@ -150,7 +150,10 @@ def collect_catalog(
         type_ = str(fm.get("type", ""))
         desc = str(fm.get("description", ""))
 
-        if len(desc) > warn_threshold:
+        # warn_threshold <= 0 disables the check entirely. Guard explicitly: a bare
+        # `len(desc) > 0` would fire on every non-empty description, which is the
+        # opposite of disabling it.
+        if warn_threshold > 0 and len(desc) > warn_threshold:
             warnings.append(f"  {f.name}: description is {len(desc)} chars (>{warn_threshold}); review for sensitive content")
 
         # Cloud-egress sensitivity/access containment runs BEFORE the redaction
@@ -224,8 +227,15 @@ content. See SPEC.md §sensitivity-and-redaction.
     parser.add_argument("--no-redact-descriptions", action="store_true",
                         help="OPT-IN: send description bodies to the LLM (default: redact). "
                              "Only enable when descriptions are confirmed PII/credential-free.")
-    parser.add_argument("--description-warn-threshold", type=int, default=50,
-                        help="Warn when descriptions exceed this length (default: 50 chars)")
+    parser.add_argument("--description-warn-threshold", type=int, default=0,
+                        help="Warn when descriptions exceed this many characters. "
+                             "Default 0 (disabled). The old default of 50 flagged "
+                             "essentially every file in a real corpus, which is noise, "
+                             "not signal: `description` is the authoritative recall text "
+                             "and is SUPPOSED to be descriptive. The MEMORY.md pointer "
+                             "hook is derived from it by deterministic truncation, so a "
+                             "long description costs nothing at the index. Set a positive "
+                             "value to re-enable the check.")
     parser.add_argument("--json", action="store_true",
                         help="Print the raw JSON verdict from the LLM")
     args = parser.parse_args()
