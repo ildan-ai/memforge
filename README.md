@@ -89,12 +89,18 @@ The same caveat applies on most Linux distributions that mark their
 system Python `EXTERNALLY-MANAGED` (Debian 12+, Ubuntu 23.04+, Fedora
 38+, etc.).
 
-Pick a folder for your memory. The defaults the tooling assumes:
+Pick a folder for your memory. The IDE-neutral default the tooling resolves to:
 
 ```
-~/.claude/global-memory/                          # cross-project rules
-~/.claude/projects/<USER>-claude-projects/memory/ # per-cwd state
+~/.memforge/global-memory/   # cross-project rules
+~/.memforge/memory/          # per-cwd state
 ```
+
+Resolution order is: the `MEMFORGE_PATHS` environment override, then a
+grandfathered Claude Code layout (`~/.claude/global-memory/` plus
+`~/.claude/projects/<USER>-claude-projects/memory/`) **if it already exists**,
+then the `~/.memforge` default above. So an existing Claude Code store keeps
+working untouched, and a fresh install lands under `~/.memforge`.
 
 Other layouts work too; the tooling takes a `--path` argument everywhere.
 

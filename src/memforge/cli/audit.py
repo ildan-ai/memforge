@@ -362,6 +362,20 @@ def _files_to_audit(folder: Path) -> list[str]:
     return out
 
 
+def _has_topic_tag(fm: dict) -> bool:
+    """True when frontmatter carries at least one `topic:` tag.
+
+    Accepts the scalar form (`tags: topic:forge`) as well as the list form,
+    because both parse as valid YAML and both appear in real corpora.
+    """
+    tags = fm.get("tags")
+    if isinstance(tags, str):
+        tags = [tags]
+    if not isinstance(tags, list):
+        return False
+    return any(isinstance(t, str) and t.startswith("topic:") for t in tags)
+
+
 def _file_has_why(body: str) -> bool:
     return "**Why:**" in body
 
@@ -736,6 +750,25 @@ def audit_target(
                 health.append(f"{fname} ({ftype}): missing **Why:** line")
             if not _file_has_apply(body):
                 health.append(f"{fname} ({ftype}): missing **How to apply:** line")
+
+        # Missing topic tag. `tags` is load-bearing in two places: recall folds it
+        # into the trigger set alongside name + description, and index-gen derives
+        # the MEMORY.md topic section from it. A file with no topic: tag is both
+        # harder for recall to surface and lands in a flat "(no topic)" dump.
+        #
+        # This is reported rather than repaired because it cannot be repaired
+        # reliably: `memory-frontmatter-backfill` infers a topic only from a named
+        # subfolder or a filename matching its inline KNOWN_TOPICS set, so a
+        # top-level file with an unrecognized name gets nothing and no tool
+        # notices. That is how 59 untagged files accumulated in a real corpus
+        # before an audit surfaced the class. Choosing the topic is a semantic
+        # call; guessing one is worse than reporting none, because a wrong topic
+        # files the memory where the operator will not look.
+        if not _has_topic_tag(fm):
+            health.append(
+                f"{fname}: no topic: tag "
+                f"(weakens recall triggers; lands in the MEMORY.md '(no topic)' section)"
+            )
 
         # v0.6.0 recall-field shape + v0.6.1 relative-date heuristic (WARN-only).
         for w in _recall_field_warnings(fname, fm):
