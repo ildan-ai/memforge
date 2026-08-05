@@ -10,6 +10,28 @@ The version number tracked here is the **package / tooling** version. The on-dis
 
 The Contributor License Agreement infrastructure is counsel-blocked; external pull requests are paused until the CLA flow lands.
 
+## [0.11.0] - 2026-08-05
+
+**Minor: two signal-quality fixes to the diagnostic surface. Package 0.11.0 / spec 0.8.0 unchanged. No format change; no folder migration.**
+
+Both changes come out of a full audit of an 834-memory two-root corpus. Neither is a correctness fix. Both target the same failure mode: a diagnostic that fires so often, or so silently, that the operator stops reading it.
+
+### Changed
+
+- `memory-dedup --description-warn-threshold` now defaults to `0`, which disables the length warning. The previous default of `50` flagged 101 of 101 top-level files in a real corpus. `description` is the authoritative recall text and is supposed to be descriptive: recall matches against it, and the `MEMORY.md` pointer hook is derived from it by deterministic truncation, so a long `description` costs nothing at the index. A check that fires on essentially every file is noise, and noise trains operators to skip the output that also carries the cloud-egress and sensitivity warnings. Pass a positive value to re-enable it.
+
+### Added
+
+- `memory-audit` now emits a HEALTH warning for a `MEMORY.md` pointer that carries no hook text because the `- [title](path):` prefix exhausted `POINTER_LINE_BYTE_CAP`. `memory-index-gen` has always degraded gracefully here (omit the hook rather than emit an over-cap line), but it did so silently, so the one line in the index with no relevance cue was also the one line nothing reported. The warning names the prefix byte count and the remediations: shorten the title, shorten the path, or move the memory behind a rollup README.
+
+### Why not a hard failure
+
+Failing `memory-index-gen` on this condition was considered and rejected. It has zero occurrences in the corpus that motivated the work, and hard-failing would trade a cosmetic loss for an availability one: a single over-long title would stop the index regenerating entirely. A generated artifact should degrade with observability rather than block. The emitted line remains a correct link, and truncation is lossless for recall because recall reads the frontmatter `description` and never the `MEMORY.md` hook.
+
+### Spec compatibility
+
+No spec change. Both the `180`-byte pointer cap and the hook-omission rule are unchanged behavior from spec v0.6.3 and v0.7.0; this release reports what the generator was already doing.
+
 ## [0.10.0] - 2026-08-02
 
 **Minor: the write-boundary gate 0.9.0 described, actually shipped. Package 0.10.0 / spec 0.8.0 unchanged. Additive and backward-compatible; no existing well-formed folder breaks.**

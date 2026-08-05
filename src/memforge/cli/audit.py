@@ -44,6 +44,9 @@ def _default_paths() -> list[Path]:
 
 _POINTER_RE = re.compile(r"\[[^\]]+\]\(([^)]+\.md)\)")
 _BULLET_POINTER_RE = re.compile(r"^- \[")
+# A pointer emitted with NO hook text: `- [title](path.md)` and nothing after it.
+# index_gen produces this shape when the title+path prefix exhausts the byte cap.
+_BARE_POINTER_RE = re.compile(r"^- \[([^\]]+)\]\(([^)]+\.md)\)\s*$")
 
 
 def _extract_pointers(memory_md: Path) -> list[str]:
@@ -558,6 +561,30 @@ def audit_target(
                 f"[convention-drift] MEMORY.md has {long_pointer_lines} pointer "
                 f"lines >{POINTER_LINE_BYTE_CAP} bytes "
                 f"(spec SHOULD stay under the {POINTER_LINE_BYTE_CAP}-byte cap; em-dashes cost 3 bytes each)"
+            )
+        # Bare-pointer tripwire. index_gen omits the hook entirely when the
+        # `- [title](path): ` prefix leaves <= 3 bytes of the cap (see index_gen
+        # `_bullet`). The line stays a correct, recall-lossless link, but it carries
+        # no relevance text, so a reader loses its only in-index cue. That is
+        # graceful degradation, not a build failure: hard-failing the generator over
+        # one long title would trade a cosmetic loss for an availability loss. So it
+        # is reported here with the byte accounting needed to fix it at the source.
+        for line in index_text.splitlines():
+            m = _BARE_POINTER_RE.match(line)
+            if not m:
+                continue
+            title, rel = m.group(1), m.group(2)
+            prefix_bytes = len(f"- [{title}]({rel}): ".encode("utf-8"))
+            if prefix_bytes <= POINTER_LINE_BYTE_CAP - 3:
+                # Room existed for a hook, so the omission means an empty
+                # description: a different defect, already covered by the
+                # frontmatter checks.
+                continue
+            health.append(
+                f"[convention-drift] MEMORY.md pointer for '{title}' has no hook text: "
+                f"the title+path prefix costs {prefix_bytes} bytes of the "
+                f"{POINTER_LINE_BYTE_CAP}-byte cap, leaving no room. Shorten the title, "
+                f"shorten the path, or move the memory behind a rollup README."
             )
 
     # ---- pointer / disk-file set comparison ----

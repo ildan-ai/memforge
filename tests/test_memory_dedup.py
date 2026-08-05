@@ -143,6 +143,53 @@ def test_collect_catalog_warns_on_long_descriptions(tmp_path, memory_dedup_modul
     assert "80 chars" in warnings[0]
 
 
+def test_warn_threshold_zero_disables_the_check(tmp_path, memory_dedup_module):
+    """threshold 0 means OFF, not "warn on everything".
+
+    The CLI default moved 50 -> 0 because 50 flagged essentially every file in a
+    real corpus (101 of 101 top-level files in the 2026-08-05 audit), which is
+    noise rather than signal: `description` is the authoritative recall text and is
+    supposed to be descriptive. Guarding on `warn_threshold > 0` matters because a
+    bare `len(desc) > 0` would fire on every non-empty description, i.e. the exact
+    inverse of disabling the check.
+    """
+    _seed(tmp_path, "rule-a", "x" * 80)
+    _seed(tmp_path, "rule-b", "short")
+
+    _, _, warnings = memory_dedup_module.collect_catalog(
+        tmp_path, redact_descriptions=True, warn_threshold=0
+    )
+    assert warnings == [], f"threshold 0 should emit no length warnings, got: {warnings}"
+
+
+def test_cli_default_threshold_is_zero(memory_dedup_module):
+    """The shipped default must be the disabled one."""
+    import argparse
+    import contextlib
+    import io
+
+    parser_holder = {}
+    real_parse = argparse.ArgumentParser.parse_args
+
+    def _capture(self, *a, **kw):
+        parser_holder["p"] = self
+        raise SystemExit(0)
+
+    argparse.ArgumentParser.parse_args = _capture
+    try:
+        with contextlib.redirect_stderr(io.StringIO()), contextlib.suppress(SystemExit):
+            memory_dedup_module.main()
+    finally:
+        argparse.ArgumentParser.parse_args = real_parse
+
+    parser = parser_holder.get("p")
+    assert parser is not None, "did not capture the argument parser"
+    default = next(
+        a.default for a in parser._actions if a.dest == "description_warn_threshold"
+    )
+    assert default == 0, f"shipped default should be 0 (disabled), got {default}"
+
+
 # ---------- cloud-egress sensitivity/access containment (dedup-sensitivity-02) ----------
 
 
