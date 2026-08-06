@@ -10,6 +10,33 @@ The version number tracked here is the **package / tooling** version. The on-dis
 
 The Contributor License Agreement infrastructure is counsel-blocked; external pull requests are paused until the CLA flow lands.
 
+## [0.12.0] - 2026-08-05
+
+**Minor: two new audit checks for defect classes that accumulated silently. Package 0.12.0 / spec 0.8.0 unchanged. No format change; no folder migration.**
+
+Both come from auditing an 842-memory two-root corpus, and both share a shape: a real defect that every existing check passed over, so it grew unopposed until something looked for it directly.
+
+### Added
+
+- `memory-audit` reports a memory carrying no `topic:` tag. `tags` is load-bearing twice: recall folds it into the trigger set alongside `name` and `description`, and `memory-index-gen` derives the `MEMORY.md` topic section from it. So an untagged memory is both harder for recall to surface and lands in a flat `(no topic)` dump. Nothing detected it, because `memory-frontmatter-backfill` infers a topic only from a named subfolder or a filename matching its inline `KNOWN_TOPICS` set: a top-level file with an unrecognized name gets nothing, silently. 59 files had accumulated that way, putting 46 of 87 per-cwd pointers into `(no topic)`.
+- `memory-audit` reports a memory whose top-level frontmatter disagrees with a nested `metadata:` block, naming each diverging field and both values. Some agent harnesses write their own canonical shape, nesting the prior frontmatter under `metadata:` and synthesizing fresh top-level fields. Nothing is lost, but every memforge tool reads only the top level, so the nested copy becomes invisible truth and the two drift apart. Measured: 460 of 842 files carried the nested block and 74 of those had at least one identity or lifecycle field disagreeing, while `--strict` exited 0 on all of it.
+
+### Why these are HEALTH and not violations
+
+Both files are well-formed and parse. An untagged memory is still reachable, just harder to find; a divergent one still loads. More to the point, a corpus that adopted a harness shape can carry many divergences through no fault of its own, and a check that fails `--strict` on that becomes a flag operators switch off. A disabled check protects nothing.
+
+### Calibration
+
+Fire rates were measured against the real corpus before shipping, not assumed. Missing-topic fires on 15 of 842 files (1.8%); divergence on 74 of 842 (8.8%). This project disabled a warning in 0.11.0 precisely because it fired on 101 of 101 files, and the same standard was applied here.
+
+### Neither check repairs
+
+Choosing a topic is a semantic call, and a wrong topic is worse than none because it files the memory where the operator will not look. Reconciling a divergence means deciding which level is authoritative, which is the operator's call, not a default. Both report and stop.
+
+### Spec compatibility
+
+No spec change. `spec/VERSION` stays 0.8.0. Both checks describe existing behavior rather than adding requirements, so every conformant folder stays conformant.
+
 ## [0.11.0] - 2026-08-05
 
 **Minor: two signal-quality fixes to the diagnostic surface. Package 0.11.0 / spec 0.8.0 unchanged. No format change; no folder migration.**
