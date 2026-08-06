@@ -37,6 +37,19 @@ Choosing a topic is a semantic call, and a wrong topic is worse than none becaus
 
 No spec change. `spec/VERSION` stays 0.8.0. Both checks describe existing behavior rather than adding requirements, so every conformant folder stays conformant.
 
+### Pre-ship review
+
+**This release shipped before its review ran.** The package was tagged and published to PyPI without the pre-ship gate, and the review below was run afterward against the shipped diff. Recording that plainly, because a review section that does not say when it ran implies a gate that held.
+
+- **What ran before the tag:** the full test suite (627 passing) and CI across three operating systems and three Python versions. Every new test was verified to fail on the unfixed code.
+- **What did not run before the tag:** the cross-family voice panel and the judge pass.
+- **Retroactive panel.** Architect (grok-reasoning) and adversarial critic (different family), plus an independent judge pass. **No BLOCKER, no MAJOR, and no 0.12.1 warranted.** Three MINOR findings, all noise-quality issues in a report-never-repair HEALTH feature that cannot corrupt data, change exit semantics, or fail a build. They ride along in the next scheduled release.
+  - MINOR: `_metadata_divergence` compares with `!=`, so a value equal in meaning but not in type (an unquoted `created: 2026-07-17` parsed to a date against a quoted string) would be reported as diverging. Measured against the real corpus: 0 of 881 files hit this, and all 74 flagged divergences are genuine, so the class is real but currently unrealized. The published fire rate is unaffected.
+  - MINOR: `_has_topic_tag` accepts a bare `topic:` with an empty suffix, which satisfies the check while still producing a degenerate topic section.
+  - MINOR: a no-op f-string in one health message.
+- **Refuted, with evidence.** The critic raised the case-sensitivity of `topic:` as a robustness gap. It is not: `recall`, `index_gen`, `cluster_suggest`, `query`, `rollup`, and `frontmatter_backfill` all match the exact lowercase literal, and the taxonomy states one canonical lowercase name per value. Matching case-insensitively would report `Topic:forge` as tagged while recall fails to strip the prefix and the index files it under `(no topic)`, hiding the very defect the check exists to surface. The check is correct as written.
+- **Threat-modeler gate: does not apply.** Recorded as a deliberate determination rather than an omission, which is what was actually missing the first time. The gate triggers on new public modules, subprocess calls, file I/O, or cryptographic primitives. The release adds two private pure helpers to an existing module that read an already-parsed dict; zero of the four triggers fire, and all three reviewers reached that answer independently.
+
 ## [0.11.0] - 2026-08-05
 
 **Minor: two signal-quality fixes to the diagnostic surface. Package 0.11.0 / spec 0.8.0 unchanged. No format change; no folder migration.**
