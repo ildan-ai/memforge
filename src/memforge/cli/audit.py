@@ -362,6 +362,41 @@ def _files_to_audit(folder: Path) -> list[str]:
     return out
 
 
+#: Fields compared between the top level and a nested `metadata:` block.
+#: Restricted to identity and lifecycle fields whose divergence changes how a
+#: tool treats the memory. `description` and free-form fields are excluded: a
+#: reworded description is normal editing, not a defect.
+_DIVERGENCE_FIELDS: tuple[str, ...] = (
+    "uid", "type", "tier", "status", "created", "sensitivity", "access",
+)
+
+
+def _metadata_divergence(fm: dict) -> list[str]:
+    """Fields present BOTH at the top level and under `metadata:` with different
+    values, as `field (top=X, metadata=Y)` strings.
+
+    Some agent harnesses write their own canonical frontmatter shape, nesting the
+    prior block under `metadata:` and synthesizing fresh top-level fields. The
+    old values survive in the nested block, so nothing is lost, but every
+    memforge tool reads ONLY the top level. The nested copy becomes invisible
+    truth and the two can drift apart silently.
+
+    That matters most for `uid`, which is the key `mem:uid` links resolve
+    against: a regenerated top-level uid orphans every inbound reference while
+    the original sits one level down, unread. `tier` divergence changes whether
+    the memory appears in `MEMORY.md` at all, and `status` divergence can mean a
+    memory reports itself active while the nested record says otherwise.
+    """
+    md = fm.get("metadata")
+    if not isinstance(md, dict):
+        return []
+    out: list[str] = []
+    for key in _DIVERGENCE_FIELDS:
+        if key in fm and key in md and fm[key] != md[key]:
+            out.append(f"{key} (top={fm[key]!r}, metadata={md[key]!r})")
+    return out
+
+
 def _has_topic_tag(fm: dict) -> bool:
     """True when frontmatter carries at least one `topic:` tag.
 
@@ -768,6 +803,23 @@ def audit_target(
             health.append(
                 f"{fname}: no topic: tag "
                 f"(weakens recall triggers; lands in the MEMORY.md '(no topic)' section)"
+            )
+
+        # Top-level vs nested `metadata:` divergence. Reported once per file with
+        # every diverging field named, rather than once per field, so a corpus
+        # carrying the nested shape does not drown the rest of the output.
+        #
+        # HEALTH, not an integrity violation, deliberately: the file is still
+        # well-formed and still parses, and a corpus that adopted an agent
+        # harness's shape can carry many of these through no fault of its own.
+        # Failing --strict on that would make the flag something operators
+        # disable, which protects nothing.
+        diverged = _metadata_divergence(fm)
+        if diverged:
+            health.append(
+                f"{fname}: top-level frontmatter disagrees with nested metadata: "
+                + "; ".join(diverged)
+                + ". Tools read the TOP LEVEL; the nested copy is invisible to them."
             )
 
         # v0.6.0 recall-field shape + v0.6.1 relative-date heuristic (WARN-only).
