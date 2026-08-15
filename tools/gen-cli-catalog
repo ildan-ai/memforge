@@ -1,0 +1,15 @@
+#!/usr/bin/env python3
+"""Shim: see memforge.cli._gen_cli_catalog for the implementation and
+tests/test_gen_cli_catalog.py for coverage. Mirrors the tools/README.md
+convention -- this repo's install path is the pip-installed package; this
+shim is the source-of-truth implementation visible at one path per tool.
+
+    tools/gen-cli-catalog            regenerate docs/cli-reference.md
+    tools/gen-cli-catalog --check    exit 1 if the committed file is stale
+"""
+import sys
+
+from memforge.cli._gen_cli_catalog import main
+
+if __name__ == "__main__":
+    sys.exit(main())

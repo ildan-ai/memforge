@@ -10,6 +10,10 @@ The version number tracked here is the **package / tooling** version. The on-dis
 
 The Contributor License Agreement infrastructure is counsel-blocked; external pull requests are paused until the CLA flow lands.
 
+### Added
+
+- `tools/gen-cli-catalog` generates `docs/cli-reference.md` from the live `--help` output of every installed `console_scripts` entry point. `tools/gen-cli-catalog --check` is a new CI job (`cli-docs-check`) that fails the build when the committed file drifts from the installed CLI, so a renamed flag or changed help string cannot ship undocumented.
+
 ## [0.12.0] - 2026-08-05
 
 **Minor: two new audit checks for defect classes that accumulated silently. Package 0.12.0 / spec 0.8.0 unchanged. No format change; no folder migration.**
