@@ -5,6 +5,13 @@ on:
     branches: [main]
   pull_request:
     branches: [main]
+  # Lets a PR whose base is a long-lived feature branch (not main) get a
+  # real CI run on demand without changing the push/pull_request triggers
+  # above. push/pull_request stay scoped to main by design (stacked
+  # in-flight branches are not meant to auto-trigger on every commit);
+  # workflow_dispatch is the escape hatch for verifying one of those
+  # branches before it lands.
+  workflow_dispatch:
 
 permissions:
   contents: read
@@ -171,6 +178,24 @@ jobs:
           pip install -e '.[dev,dlp]'
       - name: Run pytest
         run: pytest -q
+
+  cli-docs-check:
+    name: CLI reference doc-sync check
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97  # v7.0.0
+        with:
+          python-version: "3.11"
+      - name: Install package
+        run: |
+          python -m pip install --upgrade pip
+          pip install -e '.[dev,dlp]'
+      - name: Verify docs/cli-reference.md matches the installed CLI
+        # Fails loud when a --help string, a flag, or a whole command drifts
+        # from docs/cli-reference.md. Regenerate with tools/gen-cli-catalog
+        # and commit the result when this fails on a legitimate CLI change.
+        run: python tools/gen-cli-catalog --check
 
   # NOTE: a DCO job previously lived here. It was removed because external
   # PRs are paused pending CLA infrastructure. Once the CLA flow lands, a

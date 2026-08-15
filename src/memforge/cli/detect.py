@@ -531,8 +531,14 @@ def main(argv: list[str] | None = None) -> int:
              "Auto-detects ollama, llama-cli, or llamafile on PATH.",
     )
     p.add_argument(
+        # --help prints the literal '~/...' form rather than DEFAULT_QUEUE
+        # expanded: argparse bakes whatever the help string contains verbatim
+        # into --help output, and DEFAULT_QUEUE resolves through Path.home(),
+        # so the expanded form put the invoking operator's absolute home
+        # directory into --help text (surfaced by the doc-sync generator's
+        # public-repo leak scan; the runtime default below is unaffected).
         "--queue", type=Path, default=DEFAULT_QUEUE,
-        help=f"Path to the findings queue file (default: {DEFAULT_QUEUE}).",
+        help="Path to the findings queue file (default: ~/.claude/memforge-hygiene-queue.json).",
     )
     p.add_argument(
         "--dry-run", action="store_true",
