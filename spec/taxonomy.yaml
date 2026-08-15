@@ -1,5 +1,5 @@
 # MemForge example taxonomy
-# Spec version: 0.6.1
+# Spec version: 0.8.0
 #
 # This is a STARTER taxonomy meant to be replaced with your project's
 # own controlled vocabulary. The goal of this file is to demonstrate the
@@ -17,9 +17,33 @@
 # Updates require explicit revision; new tags should not appear in the
 # wild without first being added here. Audit tools warn on out-of-
 # vocabulary tags.
+#
+# version / spec_compatible note (2026-08-15): this file's own `version`
+# and `spec_compatible` range are revised on an independent cadence from
+# the spec (SPEC.md, "Tag taxonomy"), by design. But an independent
+# cadence still means the range must COVER whichever spec version is
+# actually current; a range that excludes it is not "independent," it is
+# stale. This revision corrects a range (">=0.3.0,<0.7.0") that excluded
+# the then-current spec 0.8.0 -- a genuine defect, not an instance of the
+# by-design independence. It also adds the `relations` predicate
+# vocabulary consumed by SPEC.md's v0.9.0-pending "Typed relations"
+# section.
+#
+# RELEASE-GATE REMINDER: the upper bound below (<0.9.0) is correct for
+# TODAY, because spec/VERSION is still 0.8.0 (the v0.9.0 bump is
+# deliberately deferred to the eventual joint release; see SPEC.md's
+# "Typed relations" section header). It will be WRONG the moment that
+# release actually ships spec/VERSION 0.9.0: this exact vocabulary
+# (`relations`) is the one v0.9.0 introduces, so a taxonomy that still
+# excludes 0.9.0 at that point would declare itself incompatible with the
+# very spec version its own content was written for -- precisely the
+# defect this revision corrects for 0.8.0, recurring one version later if
+# nobody widens this range. Whoever lands the joint v0.9.0 release commit
+# MUST widen `spec_compatible`'s upper bound (to at least <0.10.0, or
+# open-ended) in that same commit, not as a follow-up.
 
-version: 0.3.1
-spec_compatible: ">=0.3.0,<0.7.0"
+version: 0.4.0
+spec_compatible: ">=0.3.0,<0.9.0"
 
 namespaces:
 
@@ -162,3 +186,32 @@ statuses:
 tiers:
   index: { description: Surfaces in MEMORY.md. Loaded at session start. }
   detail: { description: Inside a rollup subfolder. Read on demand. }
+
+# Relation predicates (v0.9.0+, pending release).
+# Controlled vocabulary for the `relations:` frontmatter field (see
+# SPEC.md, "Typed relations"). A predicate names the semantic
+# relationship a WRITER IS ASSERTING between two memories -- it is a
+# claim, not a fact independently verified by the format (see SPEC.md,
+# "A relation is an assertion, not a fact"). This is a namespace of edge
+# TYPES, not a `<namespace>:<value>` memory tag, so it lives as its own
+# top-level key rather than under `namespaces:` above.
+#
+# A predicate outside this vocabulary is a HARD write-boundary rejection
+# (SPEC.md, "Validation posture"), stricter than the WARN-only posture
+# `topic:` / `area:` tags get above, because a relation edge is queryable
+# structure, not categorization.
+relations:
+  supersedes:
+    description: The source memory is presented as a durable replacement for the target. Does NOT itself set status:superseded; that remains the resolve operation's job (SPEC.md, "Multi-agent concurrency").
+  contradicts:
+    description: The source memory's writer perceives tension between the source and the target. Adjudicates nothing; both memories remain independently readable and neither is implied wrong.
+  caused-by:
+    description: The source memory records an effect and the target records (or is believed to record) its cause.
+  derived-from:
+    description: The source memory's content was produced by processing, summarizing, or extracting from the target.
+  applies-to:
+    description: The source memory (commonly a feedback or project memory) states a rule or fact whose scope is the target (commonly a project, system, or component memory).
+  refines:
+    description: The source memory narrows, corrects a detail in, or adds precision to the target without presenting itself as a replacement (contrast supersedes).
+  evidences:
+    description: The source memory is offered as supporting evidence, an example, or a concrete instance for a claim made in the target.

@@ -211,6 +211,7 @@ Run `--help` on any of them.
 | `memory-cluster-suggest` | Suggest rollup subfolders when a topic accumulates five or more memories. |
 | `memory-dlp-scan` | Pre-commit scanner for secrets, credentials, and PII in memory bodies. |
 | `memory-link-rewriter` | UID-based cross-folder link integrity (`check`, `rename`, `rename-batch`, `upgrade`). `rename`/`rename-batch` also rewrite `[[wikilinks]]` (including `[[token\|display]]`) so a rename does not orphan inbound wikilinks. |
+| `memory-link-upgrade` | (v0.9.0, pending release) Promotes untyped `[[wikilinks]]` to typed `relations` frontmatter entries (`scan`, `promote`). Additive-only, dry-run by default, requires explicit `--predicate` (never inferred) and `--write`. See spec/SPEC.md §"Typed relations" and the tool's module docstring for the full safety-property list. |
 | `memory-audit-log` | Append-only tamper-evident hash chain. JSONL on disk, exports CEF for SIEM. |
 | `memory-dedup` | LLM-backed near-duplicate detection. Local-only by default; reports candidates, never writes. |
 | `memory-rollup` | Bulk-move primitive: create / undo / list. Maintains an undo ledger. |
