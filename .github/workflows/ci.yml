@@ -5,6 +5,13 @@ on:
     branches: [main]
   pull_request:
     branches: [main]
+  # Lets a PR whose base is a long-lived feature branch (not main) get a
+  # real CI run on demand without changing the push/pull_request triggers
+  # above. push/pull_request stay scoped to main by design (stacked
+  # in-flight branches are not meant to auto-trigger on every commit);
+  # workflow_dispatch is the escape hatch for verifying one of those
+  # branches before it lands.
+  workflow_dispatch:
 
 permissions:
   contents: read
