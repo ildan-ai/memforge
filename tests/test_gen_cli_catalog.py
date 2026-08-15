@@ -1,8 +1,8 @@
 """Tests for memforge.cli._gen_cli_catalog (tools/gen-cli-catalog's implementation).
 
-Regression coverage driven by an adversarial-review REJECT (dsh-incorporation
-Lane E, doc-sync generator). Each test below maps to a specific finding from
-that pass:
+Regression coverage driven by an adversarial review that rejected an earlier
+draft of this generator. Each test below maps to a specific finding from that
+review:
 
 - test_get_help_ignores_path_shadow: a same-named console script earlier on
   PATH must NOT be invoked in place of the real, metadata-registered target.
