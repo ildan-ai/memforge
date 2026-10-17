@@ -160,6 +160,54 @@ def test_merge_priority_sort() -> None:
     assert categories.index("recall-weakness") < categories.index("lessons")
 
 
+def test_merge_resolves_open_item_absent_from_collected_category() -> None:
+    """An open item whose condition no longer holds is resolved, not left open."""
+    stale = _make_open("integrity", "violation A")
+    merged, _, _ = _merge_into_queue([stale], [], collected={"integrity"})
+    assert merged[0]["status"] == "resolved"
+    assert merged[0]["resolved_by"]
+
+
+def test_merge_keeps_open_item_in_uncollected_category() -> None:
+    """A category this run skipped (no dispatcher, --no-lessons) is never auto-resolved."""
+    dup = _make_open("duplicates", "ids=[a, b] reason=same")
+    lesson = _make_open("lessons", "lesson 1")
+    merged, _, _ = _merge_into_queue(
+        [dup, lesson], [], collected={"integrity", "convention-drift"}
+    )
+    assert {m["status"] for m in merged} == {"open"}
+
+
+def test_merge_keeps_done_item_done_when_absent() -> None:
+    done_item = _make_done("integrity", "violation A")
+    merged, _, _ = _merge_into_queue([done_item], [], collected={"integrity"})
+    assert merged[0]["status"] == "done"
+    assert "resolved_by" not in merged[0]
+
+
+def test_merge_keeps_open_item_found_again() -> None:
+    item = _make_open("integrity", "violation A")
+    finding = {k: v for k, v in item.items() if k != "status"}
+    merged, added, skipped = _merge_into_queue(
+        [item], [finding], collected={"integrity"}
+    )
+    assert (added, skipped) == (0, 1)
+    assert merged[0]["status"] == "open"
+
+
+def test_merge_reopens_resolved_item_found_again() -> None:
+    """A resolved item whose condition returns is open again, not hidden."""
+    item = {
+        **_make_open("integrity", "violation A"),
+        "status": "resolved",
+        "resolved_by": "memforge-detect: condition no longer present",
+    }
+    finding = {"id": item["id"], "category": "integrity", "detail": "violation A"}
+    merged, _, _ = _merge_into_queue([item], [finding], collected={"integrity"})
+    assert merged[0]["status"] == "open"
+    assert "resolved_by" not in merged[0]
+
+
 # ---------- lessons parsing ----------
 
 def test_parse_lessons_empty(tmp_path: Path) -> None:
