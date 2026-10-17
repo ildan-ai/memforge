@@ -29,7 +29,7 @@ import re
 import subprocess
 import sys
 from pathlib import Path
-from typing import Optional
+from typing import Iterable, Optional
 
 from memforge.cli._llm_dispatch import is_local_dispatcher
 from memforge.cli.audit import audit_target
@@ -81,19 +81,39 @@ def _load_queue(queue_path: Path) -> list[dict]:
 def _merge_into_queue(
     existing: list[dict],
     new_findings: list[dict],
+    collected: Iterable[str] = (),
 ) -> tuple[list[dict], int, int]:
     """Merge new_findings into existing queue.
 
     - Items already present (by id) and already done are left as done.
-    - Items already present and open are left as open (no re-open).
+    - Items already present and open are left as open.
+    - Items already present and resolved are re-opened: the condition is back.
     - New items not in the queue are added with status 'open'.
+    - Open items in a category listed in `collected` that this run did not
+      find are marked 'resolved'. Categories the run skipped are left alone,
+      because absence there means "not checked", not "fixed".
 
     Returns (merged_queue, added_count, skipped_count).
     """
+    collected_set = set(collected)
+    found_ids = {finding["id"] for finding in new_findings}
     existing_ids = {item["id"]: item for item in existing}
     added = 0
     skipped = 0
-    merged = list(existing)
+    merged = []
+    for item in existing:
+        status = item.get("status")
+        fid = item["id"]
+        if status == "open" and item.get("category") in collected_set and fid not in found_ids:
+            item = {
+                **item,
+                "status": "resolved",
+                "resolved_by": "memforge-detect: condition no longer present",
+            }
+        elif status == "resolved" and fid in found_ids:
+            item = {k: v for k, v in item.items() if k != "resolved_by"}
+            item["status"] = "open"
+        merged.append(item)
     for finding in new_findings:
         fid = finding["id"]
         if fid in existing_ids:
@@ -583,6 +603,10 @@ def main(argv: list[str] | None = None) -> int:
     new_findings.extend(_collect_dedup_findings(targets, dispatcher))
     new_findings.extend(_collect_recall_weakness_findings(targets))
     new_findings.extend(_collect_cluster_findings(targets))
+    # Only categories actually checked this run may auto-resolve stale items.
+    collected = {"integrity", "convention-drift", "recall-weakness"}
+    if dispatcher:
+        collected.add("duplicates")
 
     if not args.no_lessons:
         lessons_path = args.lessons
@@ -603,6 +627,7 @@ def main(argv: list[str] | None = None) -> int:
             new_findings.extend(
                 _collect_lessons_findings(lessons_path, targets, dispatcher)
             )
+            collected.add("lessons")
         else:
             print(
                 "[memforge-detect] lessons.md not found; "
@@ -620,7 +645,7 @@ def main(argv: list[str] | None = None) -> int:
     existing = _load_queue(queue_path)
     done_in_existing = sum(1 for item in existing if item.get("status") == "done")
 
-    merged, added, skipped = _merge_into_queue(existing, new_findings)
+    merged, added, skipped = _merge_into_queue(existing, new_findings, collected)
 
     open_count = sum(1 for item in merged if item.get("status") == "open")
     categories: dict[str, int] = {}
