@@ -10,6 +10,10 @@ The version number tracked here is the **package / tooling** version. The on-dis
 
 The Contributor License Agreement infrastructure is counsel-blocked; external pull requests are paused until the CLA flow lands.
 
+## [0.12.1] - 2026-11-13
+
+**Patch: `memforge-detect` stops growing its open count forever. Package 0.12.1 / spec 0.8.0 unchanged. No format change; no folder migration.**
+
 ### Fixed
 
 - `memforge-detect` now resolves stale findings. Before, a re-run only added items, so an open finding stayed open after its condition was fixed and the open count only grew. An open item in a category the run checked, and did not find again, is now marked `resolved` with a `resolved_by` note. Categories the run skipped (duplicates with no local dispatcher, lessons under `--no-lessons` or with no lessons file) are never auto-resolved. Done items stay done, and a resolved item that is found again is re-opened.
