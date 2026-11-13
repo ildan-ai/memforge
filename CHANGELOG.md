@@ -12,7 +12,7 @@ The Contributor License Agreement infrastructure is counsel-blocked; external pu
 
 ## [0.12.1] - 2026-11-13
 
-**Patch: `memforge-detect` stops growing its open count forever. Package 0.12.1 / spec 0.8.0 unchanged. No format change; no folder migration.**
+**Patch: `memforge-detect` resolves findings whose condition is gone. Package 0.12.1 / spec 0.8.0 unchanged. No format change; no folder migration.**
 
 ### Fixed
 
