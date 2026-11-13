@@ -8,7 +8,9 @@ The version number tracked here is the **package / tooling** version. The on-dis
 
 ## [Unreleased]
 
-The Contributor License Agreement infrastructure is counsel-blocked; external pull requests are paused until the CLA flow lands.
+### Changed
+
+- External pull requests are open. Contributions come in under Apache-2.0 (inbound equals outbound) with a Developer Certificate of Origin sign-off on every commit; the planned Contributor License Agreement is dropped. A new `DCO sign-off` check fails a PR when any commit, merge commits included, lacks a `Signed-off-by:` line matching its author. It runs on `pull_request_target` from `main`'s copy of the workflow and checker, so the PR under check cannot edit them, and it reads the PR's commits as data without checking out or running PR code. Dependabot PRs are exempt. `.github/CODEOWNERS` assigns CI, release config, packaging, the spec, governance records and the policy files (LICENSE, CONTRIBUTING, SECURITY, CODE_OF_CONDUCT) to the maintainer.
 
 ## [0.12.1] - 2026-11-13
 

@@ -1,0 +1,36 @@
+name: DCO
+
+# pull_request_target runs main's copy of this workflow and of the checker, so
+# the PR under check cannot edit either. The PR's commits are fetched as data
+# and never checked out or executed; keep it that way (tests/test_check_dco.py
+# asserts it).
+on:
+  pull_request_target:
+    types: [opened, synchronize, reopened]
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  dco:
+    name: DCO sign-off
+    # Dependabot PRs are exempt. The `[bot]` login suffix is reserved by GitHub,
+    # so no user account can claim this exemption.
+    if: github.event.pull_request.user.login != 'dependabot[bot]'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          ref: ${{ github.event.pull_request.base.sha }}
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Fetch the PR commits as data
+        env:
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+        run: git fetch --no-tags origin "refs/pull/${PR_NUMBER}/head"
+      - name: Check every PR commit is signed off by its author
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        run: python3 .github/scripts/check_dco.py "$BASE_SHA" "$HEAD_SHA"

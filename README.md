@@ -6,7 +6,7 @@
 
 Docs: [PyPI](https://pypi.org/project/ildan-memforge/) | [CHANGELOG](./CHANGELOG.md) | [spec](./spec/SPEC.md) | [examples](./examples/)
 
-> **Status: pre-1.0; external PRs paused.** Issues and Discussions are open. External pull requests are paused until the Contributor License Agreement infrastructure lands. See [CONTRIBUTING.md](./CONTRIBUTING.md). Security reports go through the private channel in [SECURITY.md](./SECURITY.md).
+> **Status: pre-1.0; contributions welcome.** Issues and pull requests are open. Every commit needs a DCO sign-off (`git commit -s`). See [CONTRIBUTING.md](./CONTRIBUTING.md). Security reports go through the private channel in [SECURITY.md](./SECURITY.md).
 
 ## Quickstart (v0.5+, ~3 minutes)
 
@@ -272,4 +272,4 @@ The "MemForge" name and logo are subject to pending trademark filings; the Apach
 
 ## Contributing
 
-External pull requests are paused. Issues and Discussions are open. See [CONTRIBUTING.md](./CONTRIBUTING.md) for the current model and the post-CLA contributor flow.
+Pull requests are open. Contributions come in under Apache-2.0 with a DCO sign-off on every commit. See [CONTRIBUTING.md](./CONTRIBUTING.md).

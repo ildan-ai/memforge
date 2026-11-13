@@ -171,8 +171,3 @@ jobs:
           pip install -e '.[dev,dlp]'
       - name: Run pytest
         run: pytest -q
-
-  # NOTE: a DCO job previously lived here. It was removed because external
-  # PRs are paused pending CLA infrastructure. Once the CLA flow lands, a
-  # CLA-bot status check replaces this; do not reintroduce the DCO job,
-  # which would contradict the CLA decision.
