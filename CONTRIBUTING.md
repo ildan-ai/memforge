@@ -7,7 +7,7 @@ Thanks for considering a contribution. This project is early; the scope is narro
 Pull requests are open. Contributions come in under the Apache License 2.0, the same license the project ships under, with a Developer Certificate of Origin (DCO) sign-off on every commit.
 
 1. Fork the repo and branch from `main`.
-2. Sign off every commit: `git commit -s`. This adds a `Signed-off-by: Your Name <you@example.org>` line, which certifies the [Developer Certificate of Origin 1.1](https://developercertificate.org/): you wrote the change, or have the right to submit it under the project's license. The email must match the commit's author email. CI fails a PR with any commit that is not signed off. To fix one, amend with `git commit --amend -s` or rebase with `git rebase --signoff main`, then push again.
+2. Sign off every commit: `git commit -s`. This adds a `Signed-off-by: Your Name <you@example.org>` line, which certifies the [Developer Certificate of Origin 1.1](https://developercertificate.org/): you wrote the change, or have the right to submit it under the project's license. The email must match the commit's author email. Merge commits count too: merge with `git merge --signoff`. CI fails a PR with any commit that is not signed off. To fix one, amend with `git commit --amend -s` or rebase with `git rebase --signoff main`, then push again.
 3. Open the PR against `main` and fill in the template.
 
 A maintainer approves CI runs on PRs from outside contributors before they execute, then reviews and merges. Changes to CI, release config, packaging, the spec, or governance records are owned by the maintainer (see `.github/CODEOWNERS`) and get a closer look.

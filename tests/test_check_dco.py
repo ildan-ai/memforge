@@ -12,6 +12,7 @@ import sys
 from pathlib import Path
 
 import pytest
+import yaml
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 SCRIPT = REPO_ROOT / ".github" / "scripts" / "check_dco.py"
@@ -76,14 +77,41 @@ def test_signoff_text_mid_line_does_not_count(repo):
     assert _check(repo, base, head).returncode == 1
 
 
-def test_merge_commits_are_skipped(repo):
-    base = _git(repo, "rev-parse", "HEAD")
+def _branch_then_merge(repo: Path, *merge_args: str) -> str:
     _git(repo, "switch", "-q", "-c", "side")
     _commit(repo, "side\n\nSigned-off-by: Dev <dev@example.org>", name="side.txt")
     _git(repo, "switch", "-q", "main")
     _commit(repo, "main\n\nSigned-off-by: Dev <dev@example.org>")
-    _git(repo, "merge", "-q", "--no-ff", "-m", "Merge side", "side")
-    assert _check(repo, base, _git(repo, "rev-parse", "HEAD")).returncode == 0
+    _git(repo, "merge", "-q", "--no-ff", "-m", "Merge side", *merge_args, "side")
+    return _git(repo, "rev-parse", "HEAD")
+
+
+def test_unsigned_merge_commit_fails(repo):
+    base = _git(repo, "rev-parse", "HEAD")
+    assert _check(repo, base, _branch_then_merge(repo)).returncode == 1
+
+
+def test_signed_merge_commit_passes(repo):
+    base = _git(repo, "rev-parse", "HEAD")
+    assert _check(repo, base, _branch_then_merge(repo, "--signoff")).returncode == 0
+
+
+def test_dco_workflow_never_checks_out_pr_code():
+    """pull_request_target runs with base-repo trust; it must only read PR commits as data."""
+    workflow = yaml.safe_load((REPO_ROOT / ".github" / "workflows" / "dco.yml").read_text())
+    triggers = workflow[True]  # PyYAML reads the bare `on:` key as boolean True
+    assert set(triggers) == {"pull_request_target"}
+    assert workflow["permissions"] == {"contents": "read"}
+    steps = workflow["jobs"]["dco"]["steps"]
+    checkouts = [s for s in steps if str(s.get("uses", "")).startswith("actions/checkout@")]
+    assert checkouts and all(
+        s["with"]["ref"] == "${{ github.event.pull_request.base.sha }}"
+        and s["with"]["persist-credentials"] is False
+        for s in checkouts
+    )
+    runs = " ".join(s.get("run", "") for s in steps)
+    assert "${{" not in runs  # event data reaches shell only through env
+    assert "check_dco.py" in runs and "pip install" not in runs
 
 
 def test_wrong_argument_count_is_usage_error(repo):

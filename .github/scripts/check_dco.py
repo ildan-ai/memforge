@@ -2,7 +2,8 @@
 """Fail a pull request when any of its commits lacks a matching DCO sign-off.
 
 A commit passes when its message carries a `Signed-off-by:` trailer whose email
-matches the commit author's email (case-insensitive). Merge commits are skipped.
+matches the commit author's email (case-insensitive). Merge commits are checked
+too, because a merge can carry conflict-resolution changes of its own.
 
 Usage: check_dco.py <base-sha> <head-sha>
 Exit 0 when every commit in base..head is signed off, 1 otherwise, 2 on usage error.
@@ -36,7 +37,7 @@ def unsigned(commits: list[Commit]) -> list[Commit]:
 
 def read_commits(base: str, head: str) -> list[Commit]:
     out = subprocess.run(
-        ["git", "log", "--no-merges", f"--format=%H{FIELD}%ae{FIELD}%B{RECORD}", f"{base}..{head}"],
+        ["git", "log", f"--format=%H{FIELD}%ae{FIELD}%B{RECORD}", f"{base}..{head}"],
         check=True, capture_output=True, text=True,
     ).stdout
     commits = []

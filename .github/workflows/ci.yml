@@ -152,23 +152,6 @@ jobs:
       - run: pip install 'check-jsonschema==0.37.1'
       - run: check-jsonschema --builtin-schema github-workflows .github/workflows/*.yml
 
-  dco:
-    name: DCO sign-off
-    # Contributions come in under Apache-2.0 with a DCO sign-off on every commit.
-    # Bot-authored PRs (Dependabot) are exempt; the PR author type is set by GitHub.
-    if: github.event_name == 'pull_request' && github.event.pull_request.user.type != 'Bot'
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
-        with:
-          fetch-depth: 0
-          persist-credentials: false
-      - name: Check every PR commit is signed off by its author
-        env:
-          BASE_SHA: ${{ github.event.pull_request.base.sha }}
-          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
-        run: python3 .github/scripts/check_dco.py "$BASE_SHA" "$HEAD_SHA"
-
   pytest:
     name: Pytest (${{ matrix.os }} / Python ${{ matrix.python-version }})
     runs-on: ${{ matrix.os }}
