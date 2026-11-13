@@ -1,6 +1,10 @@
-# Changes to CI, release, packaging, the spec and governance records need the
-# maintainer's review. See CONTRIBUTING.md.
-/.github/            @mike-ildan
-/pyproject.toml      @mike-ildan
-/spec/               @mike-ildan
-/governance/         @mike-ildan
+# Changes to CI, release config, packaging, the spec, governance records and
+# project policy files need the maintainer's review. See CONTRIBUTING.md.
+/.github/              @mike-ildan
+/pyproject.toml        @mike-ildan
+/spec/                 @mike-ildan
+/governance/           @mike-ildan
+/LICENSE               @mike-ildan
+/CONTRIBUTING.md       @mike-ildan
+/SECURITY.md           @mike-ildan
+/CODE_OF_CONDUCT.md    @mike-ildan

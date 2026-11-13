@@ -102,7 +102,9 @@ def test_dco_workflow_never_checks_out_pr_code():
     triggers = workflow[True]  # PyYAML reads the bare `on:` key as boolean True
     assert set(triggers) == {"pull_request_target"}
     assert workflow["permissions"] == {"contents": "read"}
-    steps = workflow["jobs"]["dco"]["steps"]
+    job = workflow["jobs"]["dco"]
+    assert job["if"] == "github.event.pull_request.user.login != 'dependabot[bot]'"
+    steps = job["steps"]
     checkouts = [s for s in steps if str(s.get("uses", "")).startswith("actions/checkout@")]
     assert checkouts and all(
         s["with"]["ref"] == "${{ github.event.pull_request.base.sha }}"

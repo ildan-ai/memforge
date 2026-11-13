@@ -15,8 +15,9 @@ permissions:
 jobs:
   dco:
     name: DCO sign-off
-    # Bot-authored PRs (Dependabot) are exempt; the PR author type is set by GitHub.
-    if: github.event.pull_request.user.type != 'Bot'
+    # Dependabot PRs are exempt. The `[bot]` login suffix is reserved by GitHub,
+    # so no user account can claim this exemption.
+    if: github.event.pull_request.user.login != 'dependabot[bot]'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
