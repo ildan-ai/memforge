@@ -18,9 +18,9 @@ Security reports go through the private channel in `SECURITY.md`, never a public
 
 MemForge is a spec-first standards project. Inbound equals outbound: every contribution is licensed under Apache-2.0, including its patent terms, and nobody assigns copyright. A DCO sign-off records that you have the right to make that contribution. There is no separate agreement to sign.
 
-## Before opening an Issue or Discussion
+## Before opening an Issue
 
-- Search [open issues](https://github.com/ildan-ai/memforge/issues), [closed issues](https://github.com/ildan-ai/memforge/issues?q=is%3Aissue+is%3Aclosed), and [Discussions](https://github.com/ildan-ai/memforge/discussions) first.
+- Search [open issues](https://github.com/ildan-ai/memforge/issues) and [closed issues](https://github.com/ildan-ai/memforge/issues?q=is%3Aissue+is%3Aclosed) first.
 - Read the relevant section of `spec/SPEC.md` if your topic touches on-disk format behavior.
 - For security-sensitive concerns, follow `SECURITY.md` and do **not** open a public issue.
 

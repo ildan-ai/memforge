@@ -28,9 +28,9 @@
 - [ ] **License compatibility:** any new runtime dependency is permissively licensed (MIT / Apache-2.0 / BSD); no GPL/AGPL/SSPL/BSL transitives.
 - [ ] **Sensitive content excluded:** the diff contains no memory files with an `access:` label narrower than `public`, no `sensitivity:` higher than `internal`, and nothing your project's own scrubber policy would block from a public repo.
 
-## Linked Issue / Discussion
+## Linked Issue
 
-<!-- e.g. "Closes #123" or "Continues discussion in #456". -->
+<!-- e.g. "Closes #123". -->
 
 ## Reviewer notes
 
