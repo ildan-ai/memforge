@@ -1,14 +1,6 @@
 <!--
-  External PRs are currently paused.
-
-  MemForge is a single-corporate-steward open-core project. The Contributor License Agreement (CLA)
-  infrastructure is counsel-blocked. Until the CLA flow is live, external pull
-  requests cannot be merged.
-
-  Please open an Issue or a Discussion instead. The CLA flow will land in a v0.3.x patch release once
-  counsel clears the template; this notice will go away at that point.
-
-  This template is in place for the internal team and for the future post-CLA contributor flow.
+  Thanks for contributing. Every commit must be signed off (`git commit -s`);
+  CI fails the PR otherwise. See CONTRIBUTING.md.
 -->
 
 ## Summary
@@ -29,6 +21,7 @@
 - [ ] **Agent-neutrality:** if this touches `spec/` or `tools/`, no single agent (Claude Code, Cursor, Aider, Codex, Copilot, etc.) is referenced in the contract surface. Agent-specific work lives in `adapters/<agent>/`.
 - [ ] **Spec version:** if `spec/SPEC.md` or `spec/taxonomy.yaml` changed, `spec/VERSION` is bumped accordingly (SemVer track).
 - [ ] **CHANGELOG:** an entry exists under `## [Unreleased]` describing the user-visible change.
+- [ ] **DCO:** every commit carries a `Signed-off-by:` line matching its author (`git commit -s`).
 - [ ] **Tests:** `pytest` passes locally. New behavior has matching tests.
 - [ ] **Audit clean:** `tools/memory-audit --strict` passes against the test fixtures.
 - [ ] **No secrets / PII:** no credentials, tokens, or personal data in the diff or in test fixtures.

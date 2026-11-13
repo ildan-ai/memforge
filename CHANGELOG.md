@@ -8,7 +8,9 @@ The version number tracked here is the **package / tooling** version. The on-dis
 
 ## [Unreleased]
 
-The Contributor License Agreement infrastructure is counsel-blocked; external pull requests are paused until the CLA flow lands.
+### Changed
+
+- External pull requests are open. Contributions come in under Apache-2.0 (inbound equals outbound) with a Developer Certificate of Origin sign-off on every commit; the planned Contributor License Agreement is dropped. CI gains a required `DCO sign-off` check that fails a PR when any commit lacks a `Signed-off-by:` line matching its author. `.github/CODEOWNERS` assigns CI, release config, packaging, the spec and governance records to the maintainer.
 
 ## [0.12.1] - 2026-11-13
 

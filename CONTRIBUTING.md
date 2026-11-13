@@ -2,20 +2,21 @@
 
 Thanks for considering a contribution. This project is early; the scope is narrow on purpose.
 
-## External PRs are paused
+## How to contribute
 
-> **External pull requests are currently paused** pending the Contributor License Agreement (CLA) infrastructure. The CLA template is counsel-blocked. The CLA flow will land in a future release once counsel clears the template; until then external PRs stay paused (the project is pre-1.0). Watch the repo or the GitHub release feed for the announcement.
->
-> **In the meantime:**
-> - **Issues are open.** File bug reports and feature requests via the templates in `.github/ISSUE_TEMPLATE/`.
-> - **Discussions are open.** Use the [Discussions](https://github.com/ildan-ai/memforge/discussions) tab for design conversations, spec interpretation, and "is this a bug" triage.
-> - **Security reports** go through the private channel in `SECURITY.md`, not via public issues or PRs.
->
-> If you want to be notified when the CLA flow opens, watch the repo or subscribe to the GitHub release feed. The pinned issue + release notes will both call it out.
+Pull requests are open. Contributions come in under the Apache License 2.0, the same license the project ships under, with a Developer Certificate of Origin (DCO) sign-off on every commit.
 
-## Why a CLA and not DCO
+1. Fork the repo and branch from `main`.
+2. Sign off every commit: `git commit -s`. This adds a `Signed-off-by: Your Name <you@example.org>` line, which certifies the [Developer Certificate of Origin 1.1](https://developercertificate.org/): you wrote the change, or have the right to submit it under the project's license. The email must match the commit's author email. CI fails a PR with any commit that is not signed off. To fix one, amend with `git commit --amend -s` or rebase with `git rebase --signoff main`, then push again.
+3. Open the PR against `main` and fill in the template.
 
-A Developer Certificate of Origin alone does not grant the relicense rights or the patent grant that an open-core project with a single corporate steward needs. This is not a values judgment about DCO-only projects; it is a structural fit decision for MemForge specifically.
+A maintainer approves CI runs on PRs from outside contributors before they execute, then reviews and merges. Changes to CI, release config, packaging, the spec, or governance records are owned by the maintainer (see `.github/CODEOWNERS`) and get a closer look.
+
+Security reports go through the private channel in `SECURITY.md`, never a public issue or PR.
+
+## Why DCO
+
+MemForge is a spec-first standards project. Inbound equals outbound: every contribution is licensed under Apache-2.0, including its patent terms, and nobody assigns copyright. A DCO sign-off records that you have the right to make that contribution. There is no separate agreement to sign.
 
 ## Before opening an Issue or Discussion
 
@@ -23,11 +24,12 @@ A Developer Certificate of Origin alone does not grant the relicense rights or t
 - Read the relevant section of `spec/SPEC.md` if your topic touches on-disk format behavior.
 - For security-sensitive concerns, follow `SECURITY.md` and do **not** open a public issue.
 
-## Internal contributor / future external-PR checklist
+## Checklist for every change
 
-For internal-team commits today, and for external PRs once the CLA flow is live, every change must:
+Every change, internal or external, must:
 
 - Run `memory-audit --strict` (the installed console script; after `pip install -e .`) against the test fixtures and pass.
+- Sign off every commit (`git commit -s`).
 - Run `pytest` and pass. The full test suite ships with the package (unit + conformance fixtures under `tests/`); keep it green and add coverage for any new behavior.
 - Add or update a CHANGELOG entry under `## [Unreleased]`.
 - If `spec/SPEC.md` or `spec/taxonomy.yaml` changes, bump `spec/VERSION` accordingly (SemVer track).
@@ -54,4 +56,4 @@ Participation in this project is governed by `CODE_OF_CONDUCT.md` (Contributor C
 
 ## License
 
-MemForge is released under the Apache License 2.0 (see `LICENSE`). Once the CLA flow is live, accepted contributions will be licensed under the same terms via the CLA grant.
+MemForge is released under the Apache License 2.0 (see `LICENSE`). Contributions are accepted under the same license, with a DCO sign-off.

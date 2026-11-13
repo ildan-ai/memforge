@@ -10,7 +10,7 @@ body:
       value: |
         Thanks for proposing a feature. A few things to keep in mind:
 
-        - **External PRs are paused** until the CLA infrastructure lands (see the banner in [README.md](../../README.md) and `CONTRIBUTING.md`). Discussions and feature issues are open and welcome in the meantime.
+        - **Pull requests are welcome.** For a larger change, open this issue first so the design can be agreed before you write code. See `CONTRIBUTING.md`.
         - **Spec additions must stay agent-neutral.** Anything that couples to a single agent (Claude Code, Cursor, Aider, Codex, Copilot, etc.) belongs in `adapters/<agent>/`, not in `spec/` or `tools/`.
         - **Search first.** Check open and closed issues, plus the open [Discussions](../../discussions) thread, for existing context.
 
@@ -67,7 +67,5 @@ body:
     attributes:
       label: Confirmations
       options:
-        - label: I understand external PRs are currently paused; this is a feature *issue*, not a PR.
-          required: true
         - label: I have searched existing issues and Discussions.
           required: true
