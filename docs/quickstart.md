@@ -2,13 +2,15 @@
 
 Single-operator setup for the v0.5+ identity + signing flow. Walks from a fresh `pip install` to a signed operator-registry + a verified agent-session attestation in about 5 minutes.
 
+**Scope of the reference package.** It creates the registry, attestation, rotation and revocation records, and verifies the registry signature. It does not yet sign memories on a normal write or verify another operator's memory on read. See [Implementation status](./team-bootstrap.md#implementation-status).
+
 If you are a single developer running one or more coding agents on your own machine and you do NOT need to share memory with other developers, you can skip directly to the v0.3 / v0.4 memory-format flow (`memory-audit`, `memory-watch`, etc.) without touching any of the v0.5+ commands. The v0.5 identity surface is mandatory only when:
 
 - You are coordinating with at least one other developer's agent writes (multi-operator).
-- You want cryptographic provenance on every memory write.
-- You are integrating with a tool that requires v0.5+ attestation (the messaging adapter for real-time team sync).
+- You want the identity and registry foundation for cryptographic provenance. The package does not sign normal memory writes yet.
+- You are integrating with a tool that requires v0.5+ attestation. The package ships no messaging adapter for real-time team sync.
 
-For pure single-developer use, v0.4 frontmatter is still valid; v0.5 readers tag unsigned v0.4 memories as `(v0.4: unsigned)` read-only-untrusted but do not reject them.
+For pure single-developer use, v0.4 frontmatter is still valid; the spec has v0.5 readers tag unsigned v0.4 memories as `(v0.4: unsigned)` read-only-untrusted but not reject them. The reference package does not apply that tag; it reads v0.4 memories as they are.
 
 ## Supported platforms
 
@@ -350,7 +352,7 @@ git add .memforge/agent-sessions/cc-2026-05-10-aaaa1234bbbb5678.yaml
 git commit -m "memforge: attest-agent cc-2026-05-10-aaaa1234bbbb5678"
 ```
 
-The agent now writes memory under `identity: agent:<operator-uuid>:<agent-session-id>` and signs each write with the ephemeral key. Receivers verify the write signature against the attestation's `agent_pubkey` (NOT the operator-registry, since agent keys are ephemeral and never registry-listed).
+Under the spec, the agent writes memory under `identity: agent:<operator-uuid>:<agent-session-id>`, signs each write with the ephemeral key, and receivers verify the write signature against the attestation's `agent_pubkey` (NOT the operator-registry, since agent keys are ephemeral and never registry-listed). The reference package does not do the signing or the receiver check yet; it issues and verifies the attestation record only.
 
 To grant broader capability:
 
@@ -368,7 +370,7 @@ If you ever need to retire your long-lived key (machine replacement, security po
 memforge rotate-key
 ```
 
-This generates a new Ed25519 keypair, cross-signs both keys, lands a registry update signed by the OLD key, and starts a mandatory 24-hour cool-down during which receivers will reject writes signed by the new key. The cool-down gives you a window to detect an unauthorized rotation before the new key is honored.
+This generates a new Ed25519 keypair, cross-signs both keys, lands a registry update signed by the OLD key, and starts a 24-hour cool-down. Under the spec, receivers reject writes signed by the new key during it; the package does not check that on memory reads yet. The cool-down is meant to give you a window to detect an unauthorized rotation before the new key is honored; because the package does not enforce it on memory reads yet, the window protects you only where a spec-conformant receiver enforces it.
 
 After 24 hours, the new key is fully active. Commit the registry update:
 
@@ -390,7 +392,7 @@ git commit --allow-empty -F /tmp/revoke-msg.txt
 git push
 ```
 
-Receivers walking the revocation set will pick up the event on next adapter startup or on next `revoke-cache-refresh` (sparse / shallow-clone deployments). Memories signed by the revoked key continue to verify ONLY for signatures dated BEFORE `revoked_at` (signing-time-aware verification per the spec). To bulk-supersede memories signed under the revoked key:
+The package's `revoke-cache-refresh` command refreshes the local revocation set. A spec-conformant receiver walking that set would pick up the event on next adapter startup or on next `revoke-cache-refresh` (sparse / shallow-clone deployments). Under the spec, memories signed by the revoked key continue to verify ONLY for signatures dated BEFORE `revoked_at` (signing-time-aware verification). The package records the revocation but does not verify memory signatures on read yet. To bulk-supersede memories signed under the revoked key:
 
 ```bash
 memforge memories-by-key ABCD1234...                   # dry-run list first

@@ -21,7 +21,7 @@ memforge recovery-backup-confirm --i-have-backed-up-the-secret
 memforge messaging-doctor           # verify v0.5 posture: ALL CHECKS PASSED
 ```
 
-Full quickstart at [`docs/quickstart.md`](./docs/quickstart.md) (includes a section on commit hygiene + the signed `memforge:` commit-prefix grammar that audit / resolve / revoke parse). Multi-operator team bootstrap at [`docs/team-bootstrap.md`](./docs/team-bootstrap.md) (includes "Pick your transport: git-only or WebSocket?" decision-framing for teams sizing the v0.5 messaging adapter).
+Full quickstart at [`docs/quickstart.md`](./docs/quickstart.md) (includes a section on commit hygiene + the signed `memforge:` commit-prefix grammar that audit / resolve / revoke parse). **What the package implements today:** operator identity, the signed operator-registry, key rotation, revocation and agent-session attestation. It does not yet sign a memory on a normal write or verify another operator's memory on read, and it ships no WebSocket client or relay. See [Implementation status](./docs/team-bootstrap.md#implementation-status). Multi-operator team bootstrap at [`docs/team-bootstrap.md`](./docs/team-bootstrap.md) (includes "Pick your transport: git-only or WebSocket?" decision-framing for teams weighing the spec's messaging substrates).
 
 ## Cite this work
 

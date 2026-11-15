@@ -1,8 +1,33 @@
 # Multi-operator team bootstrap
 
-Walks two developers (Operator A and Operator B) through setting up a shared MemForge store so each can write under their own cryptographic identity and verify the other's writes. Assumes both have completed the single-operator [quickstart](./quickstart.md) on their own machines.
+Walks two developers (Operator A and Operator B) through setting up a shared MemForge store so each has their own cryptographic identity and both are listed in a signed operator-registry. Assumes both have completed the single-operator [quickstart](./quickstart.md) on their own machines.
+
+Read [Implementation status](#implementation-status) first. The spec describes per-memory signing and cross-operator verification, but the reference package does not do either on a normal write or read today.
 
 The trust-bootstrap procedure is **operator-mediated out-of-band**: MemForge does not invent a new key-distribution primitive. You exchange GPG fingerprints through a channel you both trust (Signal, phone, in-person, verified email), then add each other to the registry.
+
+## Implementation status
+
+This guide mixes what the spec defines with what the reference package (`ildan-memforge`) does today. They differ. Check the call site, not the spec, before you rely on a security property.
+
+**The spec defines** signed memories, sender-uid and monotonic sequence numbers, signed checkpoints, receiver-side verification of every memory against the registry, cool-down and revocation, and a WebSocket relay contract.
+
+**The reference package implements today:**
+
+- Operator identity (`init-operator`) and the signed operator-registry (`init-store`, `operator-registry add|verify|remove|fresh-start`).
+- Key rotation with the 24-hour cool-down, revocation commits and snapshots (`rotate-key`, `revoke`, `revocation-snapshot`, `revoke-cache-refresh`).
+- Agent-session attestation (`attest-agent`) and `messaging-doctor`.
+- `upgrade-v04-memories`, a one-time command that adds an `identity` and `signature` block to existing v0.4 memories (with an empty `sender_uid` and `sequence_number` 0).
+
+**The reference package does not implement yet:**
+
+- Signing a memory on a normal write. No write path attaches a signature.
+- Sender sequence numbers and signed checkpoints on writes. The helper functions exist in `src/memforge/sender_sequence.py`, but nothing calls them.
+- Verifying another operator's memory on read. No code checks a memory's signature, so a `verify-memory` command does not exist (see `spec/known-limitations.md`). The registry-signature check and the key-acceptability helper (`verify_signing_key_acceptable`, which carries the cool-down rule) exist, but nothing calls the helper on a memory read.
+- Receiver state and a `sync` command.
+- A WebSocket client or relay. See [`examples/websocket/`](../examples/websocket/).
+
+**What this means for a shared store.** Until those pieces ship, a shared memory-root relies on git access control (who can push) and review of changes, not on per-memory signatures. The signed registry tells you who the team's operators are and which keys they hold. It does not make a memory file in the shared repo provably written by the operator it names. Where the sections below say a write is "signed", "verified" or "rejected" by a receiver, read that as the spec's contract, not as behavior of the current package.
 
 ## Prerequisites
 
@@ -13,11 +38,11 @@ The trust-bootstrap procedure is **operator-mediated out-of-band**: MemForge doe
 
 ## Pick your transport: git-only or WebSocket?
 
-MemForge v0.5 ships two messaging substrates. The decision is operational, not normative: the same memory verifies identically through either path (see SPEC.md §"Messaging adapters" for the substrate-independent envelope contract).
+The spec defines two messaging substrates; only git-only has a working path in the reference package (see Implementation status). The decision is operational, not normative: the spec says the same memory verifies identically through either path (see SPEC.md §"Messaging adapters" for the substrate-independent envelope contract).
 
 ### git-only (default)
 
-The default adapter writes a signed memory file to disk, commits it to the local repo, and pushes to the shared remote. Other operators pick up new writes on their next `git pull`. The substrate is the same git repo everyone already runs.
+The default path writes a memory file to disk, commits it to the local repo, and pushes to the shared remote. The spec calls for that file to be signed; the reference package does not sign it today. Other operators pick up new writes on their next `git pull`. The substrate is the same git repo everyone already runs.
 
 **Use git-only when:**
 
@@ -34,7 +59,7 @@ This is the right default for almost every team starting out.
 
 ### WebSocket
 
-The WebSocket adapter adds a real-time relay between operators. Each operator's MemForge client opens an authenticated `wss://` connection to a relay server; signed memory envelopes broadcast to all connected operators within seconds. The local-first invariant still holds (every write lands in the local git repo first; relay propagation is best-effort), but cross-claim detection latency drops from "next pull" to "next message frame."
+The WebSocket adapter adds a real-time relay between operators. Under the spec, each operator's MemForge client opens an authenticated `wss://` connection to a relay server, and signed memory envelopes broadcast to all connected operators within seconds. The reference package ships no such client or relay. The spec's local-first invariant is that every write lands in the local git repo first; relay propagation is best-effort; with a relay, cross-claim detection latency would drop from "next pull" to "next message frame."
 
 **Use WebSocket when:**
 
@@ -48,7 +73,7 @@ The WebSocket adapter adds a real-time relay between operators. Each operator's 
 - Every operator's `.memforge/config.yaml` gets a `messaging.adapter: websocket` block plus the relay URL + auth credentials.
 - TLS terminates at the relay. The relay is in your trust boundary; the spec contract treats it as untrusted (signed envelopes, per-operator auth, circuit-breakers), but operationally you own its uptime.
 
-WebSocket is opt-in. The git-only path remains a fully-supported v0.5 substrate; pick WebSocket only when the latency math actually matters for your team. The signed-envelope contract (sender_uid + sequence_number + checkpoints) is identical across both, so a team can start on git-only and flip to WebSocket later without re-keying or losing audit continuity.
+WebSocket is opt-in. The git-only path is the only substrate with a working path in the reference package; pick WebSocket only when the latency math actually matters for your team. The spec's signed-envelope contract (sender_uid + sequence_number + checkpoints) is identical across both. Because the package does not yet write those fields, do not assume audit continuity across a later switch.
 
 ### When in doubt
 
@@ -178,7 +203,7 @@ operator-registry signature OK (2 operator(s) listed).
   - <B's operator-UUID> <B's name> status=active active_keys=1
 ```
 
-Both operators can now write memories under their own identity. Each write is signed by the writer's long-lived key (operator-identity write) or by the writer's agent-session ephemeral key (agent write, with the attestation signed by the operator's long-lived key).
+Both operators are now in the registry and can hold agent-session attestations. The spec has each write signed by the writer's long-lived key (operator-identity write) or by the writer's agent-session ephemeral key (agent write, with the attestation signed by the operator's long-lived key). The reference package does not sign normal writes yet; see Implementation status.
 
 ## Step 7: Both operators issue agent-session attestations
 
@@ -194,14 +219,14 @@ memforge attest-agent --memory-root . --adapter-prefix cursor
 # attestation file at .memforge/agent-sessions/cursor-2026-05-10-bbbb....yaml
 ```
 
-Both attestation files commit + push to the shared repo so receivers on either side can verify writes signed under those agent sessions.
+Both attestation files commit + push to the shared repo. Under the spec, receivers use them to verify writes signed under those agent sessions; the package has no receiver-side verification yet.
 
 ## What you have at the end
 
 - A shared memory-root with a signed operator-registry listing both A and B.
 - Each operator's long-lived GPG public key in the registry + in the other's local GPG keyring.
 - Active agent-session attestations for each operator's coding-agent sessions.
-- A path for either operator to verify the other's writes cryptographically without any central authority.
+- A signed registry and attestations that a spec-conformant receiver can use to verify the other operator's writes. The reference package does not verify memory signatures yet, so today the shared repo's access control and review are what protect it.
 
 ## Adding a third operator (C)
 
@@ -220,9 +245,9 @@ git commit -m "memforge: operator-registry remove <name>"
 git push origin main
 ```
 
-The departing operator's entry is marked `status: superseded`. Their historical writes remain verifiable for signatures dated before the removal commit (signing-time-aware verification). Future writes signed by their key will fail verification at the registry-lookup step.
+The departing operator's entry is marked `status: superseded`. Under the spec, their historical writes remain verifiable for signatures dated before the removal commit (signing-time-aware verification) and future writes signed by their key fail verification at the registry-lookup step. The package does not run that check on memories yet. Also remove their push access to the shared remote.
 
-If their key was compromised (not just retired), additionally run `memforge revoke <key_id> --reason "compromise"` so receivers stop trusting the key as of `revoked_at`, regardless of the registry entry's status.
+If their key was compromised (not just retired), additionally run `memforge revoke <key_id> --reason "compromise"` so a spec-conformant receiver stops trusting the key as of `revoked_at`, regardless of the registry entry's status.
 
 ## Key rotation in a multi-operator setup
 
@@ -232,9 +257,9 @@ When an operator rotates their long-lived key:
 memforge rotate-key
 ```
 
-This generates a new keypair, cross-signs both, lands the registry update signed by the OLD key, and starts the 24-hour cool-down. During the cool-down, receivers reject writes signed by the new key. After 24 hours, the new key is fully active.
+This generates a new keypair, cross-signs both, lands the registry update signed by the OLD key, and starts the 24-hour cool-down. Under the spec, receivers reject writes signed by the new key during the cool-down; the package does not check this on memory reads yet. After 24 hours, the new key is fully active.
 
-The cool-down is the protection against a compromised-key-as-rotation-attack: an attacker who compromised the old key cannot use it to rotate to a new key under their control and immediately sign with the new key . they have to wait 24 hours, during which the legitimate operator detects the unauthorized rotation and initiates `memforge: key-compromise`.
+The cool-down is the spec's protection against a compromised-key-as-rotation-attack: an attacker who compromised the old key cannot use it to rotate to a new key under their control and immediately sign with the new key . they have to wait 24 hours, during which the legitimate operator detects the unauthorized rotation and initiates `memforge: key-compromise`. The package does not enforce the cool-down when memories are read, so today that protection depends on a spec-conformant receiver.
 
 ## Troubleshooting
 

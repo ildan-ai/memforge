@@ -1,6 +1,6 @@
 # MemForge known limitations
 
-**Updated:** 2026-06-27 (covers v0.6.2 ship state)
+**Updated:** 2026-11-15 (covers spec v0.8.0; reference package 0.12.1)
 **Status:** Living document. Each spec release updates this file; the file ships with the Zenodo deposit for that release as a versioned snapshot.
 
 ---
@@ -94,6 +94,20 @@ Still v0.5.x scope:
 - `memforge resolve <topic>` integration into the top-level dispatcher (currently shipping as the standalone `memforge-resolve` console script; the spec describes the resolve operation by post-conditions, so the standalone script is conformant, but the dispatcher subcommand is the intended ergonomic form).
 - `memforge migrate-claim-block` integration into the top-level dispatcher (currently shipping as a standalone console script).
 - `memforge verify-memory <path>`: CLI helper that runs the canonical verify-flow (registry-membership + cool-down + revocation + signature). Spec mandates the contract via `memforge.registry.verify_signing_key_acceptable`; CLI delivery is a v0.5.x ergonomics improvement.
+
+---
+
+## Reference-implementation gaps (team path)
+
+The spec defines these behaviors. The reference package (`ildan-memforge`) does not implement them yet. A shared store using the package today relies on git access control and review, not on per-memory signatures.
+
+- **No signature on a normal write.** The only code that writes a memory `signature` is the one-time `memforge upgrade-v04-memories`, which leaves `sender_uid` empty and `sequence_number` at 0.
+- **No sender sequence or checkpoints on writes.** `increment_sequence` and `publish_checkpoint` in `src/memforge/sender_sequence.py` have no callers.
+- **No verification of another operator's memory on read.** No code verifies a memory signature. `verify_signing_key_acceptable` (registry membership, cool-down, revocation) has no caller on a memory read. The `memforge verify-memory` command above is not delivered.
+- **No receiver state and no `sync` command.**
+- **No WebSocket client or relay.** The spec contract exists; `examples/websocket/` is a probe and scaffold only.
+
+What is built and tested: operator identity, the signed operator-registry, key rotation with cool-down, revocation and snapshots, agent-session attestation, and `messaging-doctor`.
 
 ---
 
