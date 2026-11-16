@@ -34,7 +34,7 @@ v0.5.2+ supports macOS, Linux, and native Windows. POSIX implementations enforce
 ```bash
 pip install ildan-memforge
 memforge --version
-# memforge 0.8.0
+# prints the installed package version
 ```
 
 On macOS / Homebrew Python or any system with `EXTERNALLY-MANAGED` Python, prefer:
