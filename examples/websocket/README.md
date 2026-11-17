@@ -6,6 +6,7 @@ Starter material for operators standing up the WebSocket messaging substrate. **
 
 - The MemForge spec (`spec/SPEC.md`) defines the WebSocket relay contract normatively: TLS-only (`wss://`), per-operator strong auth (mTLS OR per-operator bearer tokens; static / shared / no-auth rejected), signed-envelope schema, sender-uid + sequence + signed checkpoints, circuit-breaker on local-queue exhaustion, single-server-only in v0.5.0 (multi-server deferred to v0.5.x / v0.6+).
 - The `ildan-memforge` reference CLI **does NOT yet ship a WebSocket adapter** in `src/`. Today's reference implementation operates over the git-only substrate (default; works out of the box for solo + low-cadence teams).
+- Per-memory signing and receiver-side verification are not implemented in the reference package either; see `docs/team-bootstrap.md` §"Implementation status".
 - Teams who need real-time cross-operator sync (see `docs/team-bootstrap.md` §"Pick your transport: git-only or WebSocket?" for the decision-framing) implement the relay side themselves OR contract for one. Your relay must conform to the spec contract; mismatches will be visible to receivers in the form of envelope-validation failures.
 
 ## What's in this folder
