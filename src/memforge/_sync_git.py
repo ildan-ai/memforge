@@ -101,7 +101,10 @@ def _version(name: str, path: str) -> str:
         # ssh-keygen has no version flag; the sibling ssh from the same install reports it.
         sibling = Path(path).with_name("ssh" + Path(path).suffix)
         if sibling.is_file():
-            return "sibling ssh: " + _first_line(run([str(sibling), "-V"], env=env, timeout=10))
+            # OpenSSH for Windows exits silently without PROGRAMDATA; an empty folder is enough.
+            with tempfile.TemporaryDirectory(prefix="memforge-sync-") as empty:
+                env["PROGRAMDATA"] = empty
+                return "sibling ssh: " + _first_line(run([str(sibling), "-V"], env=env, timeout=10))
         return "unknown"
     return _first_line(run([path, "--version"], env=env, timeout=10))
 
@@ -165,7 +168,7 @@ class Isolation:
         self.root = tempfile.mkdtemp(prefix="memforge-sync-")
         try:
             root = Path(self.root)
-            for sub in ("home", "tmp"):
+            for sub in ("home", "tmp", "programdata"):
                 (root / sub).mkdir()
             (root / "empty.conf").write_text("", encoding="utf-8")
             self.gitdir = str(root / "git")
@@ -197,6 +200,9 @@ class Isolation:
             "GIT_CONFIG_GLOBAL": str(root / "empty.conf"),
             "GIT_CONFIG_SYSTEM": str(root / "empty.conf"),
             "GIT_CONFIG_NOSYSTEM": "1",
+            # OpenSSH for Windows exits silently without PROGRAMDATA. An empty
+            # folder of our own satisfies it and keeps the machine's ssh config out.
+            "PROGRAMDATA": str(root / "programdata"),
         }
         env.update(self._extra)
         env.update(extra or {})

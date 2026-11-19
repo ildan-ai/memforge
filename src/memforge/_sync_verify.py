@@ -193,7 +193,8 @@ def _verify_ssh(iso: Isolation, tools: dict[str, Tool], commit: str, data: bytes
         ("gpg.ssh.allowedSignersFile", allowed),
     ))
     if result.rc != 0:
-        raise Fail("ssh_not_verified", result.err.strip())
+        raise Fail("ssh_not_verified",
+                   result.err.strip() or f"git verify-commit exited {result.rc} and said nothing")
 
 
 def _verify_gpg(iso: Isolation, tools: dict[str, Tool], commit: str, entries: tuple) -> None:

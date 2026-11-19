@@ -15,6 +15,7 @@ from pathlib import Path
 import pytest
 
 from memforge import sync as sync_mod
+from memforge import _sync_git as sync_git
 from memforge._sync_git import SyncError
 from memforge.cli._dispatch import main
 from tests.sync_support import (  # noqa: F401  (lab is a fixture)
@@ -345,6 +346,34 @@ def test_unreadable_objects_are_git_failed_not_diverged(lab, keys, monkeypatch, 
     assert run_sync(recv) == 1
     err = capsys.readouterr().err
     assert "git_failed" in err and "diverged" not in err
+    assert verified_head(recv) == base
+
+
+def test_verifier_gets_an_empty_programdata_of_its_own(monkeypatch, tmp_path):
+    monkeypatch.setenv("PROGRAMDATA", str(tmp_path / "planted"))
+    objects = tmp_path / "objects"
+    objects.mkdir()
+    with sync_git.Isolation("git", str(objects), None) as iso:
+        folder = Path(iso.env()["PROGRAMDATA"])
+        assert folder.parent == Path(iso.root) and list(folder.iterdir()) == []
+
+
+def test_a_silent_verifier_failure_still_names_the_exit_code(lab, keys, monkeypatch, capsys):
+    alice, _, _ = keys
+    base, recv = pinned(lab, keys)
+    lab.commit({"a.md": "a\n"}, key=alice)
+    lab.push()
+
+    class Silent(sync_mod.Isolation):
+        def git(self, *args, **kwargs):
+            if args[0] == "verify-commit":
+                return sync_git.Result(3, b"", "")
+            return super().git(*args, **kwargs)
+
+    monkeypatch.setattr(sync_mod, "Isolation", Silent)
+    capsys.readouterr()
+    assert run_sync(recv) == 2
+    assert "git verify-commit exited 3 and said nothing" in capsys.readouterr().err
     assert verified_head(recv) == base
 
 
