@@ -321,3 +321,97 @@ def test_required_fields_default_set_excludes_derivable_fields():
     assert ok is False
     assert "uid" in why
     assert set(NON_DERIVABLE_FIELDS) < set(V04_REQUIRED_FIELDS)
+
+
+# ---------- render(original=...): legacy fields ----------
+
+LEGACY_FIELDS_TEXT = (
+    "identity: operator:0191d4a2-7c3e-7a10-9f00-aabbccddeeff\n"
+    "signature:\n"
+    "  algo: gpg-ed25519\n"
+    "  signing_time: 2026-05-01T12:00:00Z\n"
+    "  value: iQIzBAABCgAd+/==\n"
+    "  key_id: ABCDEF0123456789\n"
+)
+
+
+def test_render_keeps_legacy_fields_as_written():
+    text = "---\nname: x\ndescription: y\ntype: user\n" + LEGACY_FIELDS_TEXT + "---\n\nbody\n"
+    fm, body = parse(text)
+    fm["status"] = "superseded"
+    out = render(fm, body, original=text)
+    assert LEGACY_FIELDS_TEXT in out
+    assert parse(out)[0]["status"] == "superseded"
+
+
+def test_render_keeps_legacy_fields_between_other_fields():
+    text = "---\nname: x\n" + LEGACY_FIELDS_TEXT + "tags:\n- a\n- b\n---\nbody\n"
+    fm, body = parse(text)
+    assert render(fm, body, original=text) == text
+
+
+def test_render_keeps_a_block_scalar_signature_as_written():
+    legacy = "signature: |\n  line one\n\n  line three\n"
+    text = "---\nname: x\n" + legacy + "type: user\n---\nbody\n"
+    fm, body = parse(text)
+    assert render(fm, body, original=text) == text
+
+
+def test_render_does_not_bring_back_a_legacy_field_the_caller_removed():
+    text = "---\nname: x\n" + LEGACY_FIELDS_TEXT + "---\nbody\n"
+    fm, body = parse(text)
+    del fm["signature"]
+    out = render(fm, body, original=text)
+    assert "signature" not in out
+    assert "identity: operator:0191d4a2-7c3e-7a10-9f00-aabbccddeeff\n" in out
+
+
+def test_render_keeps_a_quoted_legacy_key_as_written():
+    text = "---\nname: x\n'identity': operator:abc\n\"signature\": 2026-05-01T12:00:00Z\ntype: user\n---\nbody\n"
+    fm, body = parse(text)
+    assert render(fm, body, original=text) == text
+
+
+def test_render_keeps_a_multiline_flow_signature_as_written():
+    legacy = "signature: {algo: gpg-ed25519,\n  signing_time: 2026-05-01T12:00:00Z,\n  value: abc}\n"
+    text = "---\nname: x\n" + legacy + "type: user\n---\nbody\n"
+    fm, body = parse(text)
+    fm["status"] = "active"
+    out = render(fm, body, original=text)
+    assert legacy in out
+    assert parse(out)[0] == fm
+
+
+def test_render_keeps_legacy_fields_when_identity_grows_or_shrinks():
+    """Two legacy fields whose re-rendered line counts differ from the original's."""
+    legacy = "identity:\n  kind: operator\n  id: abc\nsignature: {algo: x,\n  value: y}\n"
+    text = "---\n" + legacy + "name: x\n---\nbody\n"
+    fm, body = parse(text)
+    assert render(fm, body, original=text) == text
+
+
+def test_render_keeps_a_flow_signature_that_continues_at_column_zero():
+    legacy = "signature: {algo: gpg-ed25519,\nvalue: abc}\n"
+    text = "---\nname: x\n" + legacy + "type: user\n---\nbody\n"
+    fm, body = parse(text)
+    out = render(fm, body, original=text)
+    assert out == text
+    assert parse(out)[0] == fm
+
+
+def test_render_keeps_values_when_the_whole_frontmatter_is_flow_style():
+    """A flow-style frontmatter has no line that belongs to one field, so
+    there are no lines to keep: the values survive and the output is block style."""
+    text = "---\n{name: x, identity: 'operator:abc', signature: {algo: y}}\n---\nbody\n"
+    fm, body = parse(text)
+    out = render(fm, body, original=text)
+    assert parse(out)[0] == fm
+    assert out.startswith("---\nname: x\n")
+
+
+def test_render_keeps_an_anchored_legacy_value_and_valid_yaml():
+    text = "---\nname: x\nidentity: &who {a: b}\nother: *who\n---\nbody\n"
+    fm, body = parse(text)
+    out = render(fm, body, original=text)
+    assert "identity: &who {a: b}\n" in out
+    assert parse(out)[0] == fm

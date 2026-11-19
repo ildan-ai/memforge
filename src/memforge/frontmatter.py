@@ -274,8 +274,55 @@ def validate_required_fields(
     return True, None
 
 
-def render(frontmatter: dict[str, Any], body: str) -> str:
+#: Frontmatter fields from the retired per-memory signing scheme. A rewrite
+#: keeps their text as written; nothing verifies or writes them.
+LEGACY_FIELDS = ("identity", "signature")
+
+
+def _legacy_spans(block: str) -> dict[str, tuple[int, int]]:
+    """Line span [start, end) of each legacy field in a block-style frontmatter mapping.
+
+    Spans come from the YAML parser's own key positions, so a quoted key or a
+    flow-style value is found the same way the loader finds it.
+    """
+    try:
+        node = yaml.compose(block, Loader=yaml.SafeLoader)
+    except yaml.YAMLError:
+        return {}
+    if not isinstance(node, yaml.MappingNode) or node.flow_style:
+        return {}
+    lines = block.split("\n")
+    starts = [key.start_mark.line for key, _ in node.value] + [len(lines)]
+    spans: dict[str, tuple[int, int]] = {}
+    for (key, _), start, end in zip(node.value, starts, starts[1:]):
+        if key.value in LEGACY_FIELDS:
+            while end > start + 1 and not lines[end - 1].strip():
+                end -= 1
+            spans[key.value] = (start, end)
+    return spans
+
+
+def _restore_legacy_fields(yaml_text: str, original: str) -> str:
+    """Put each legacy field's lines from `original` back in place of its re-rendered lines."""
+    if not has_frontmatter(original):
+        return yaml_text
+    original = original.replace("\r\n", "\n").replace("\r", "\n")
+    block = original[len(_OPEN):_close_fence_index(original)]
+    source, rendered = block.split("\n"), yaml_text.split("\n")
+    old, new = _legacy_spans(block), _legacy_spans(yaml_text)
+    # Last field first, so an earlier span's line numbers stay valid.
+    for key in sorted(old.keys() & new.keys(), key=lambda k: new[k][0], reverse=True):
+        rendered[new[key][0]:new[key][1]] = source[old[key][0]:old[key][1]]
+    return "\n".join(rendered)
+
+
+def render(frontmatter: dict[str, Any], body: str, *, original: str | None = None) -> str:
     """Serialize a frontmatter dict + body back to a memory file string.
+
+    Pass the file's current text as `original` when rewriting an existing
+    file: the legacy `identity` and `signature` fields then keep their lines
+    exactly as written instead of being re-serialized (a YAML round trip
+    requotes timestamps and may rewrap long values).
 
     YAML emitted with sort_keys=False, allow_unicode=True, and
     default_flow_style=False so the top-level mapping is ALWAYS block style
@@ -293,4 +340,6 @@ def render(frontmatter: dict[str, Any], body: str) -> str:
         default_flow_style=False,
         width=10_000,
     )
+    if original is not None:
+        yaml_text = _restore_legacy_fields(yaml_text, original)
     return f"---\n{yaml_text}---\n{body}"

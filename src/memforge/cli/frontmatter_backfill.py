@@ -325,7 +325,7 @@ def apply_change(path: Path, additions: dict) -> None:
     for key in field_order:
         if key in additions and key not in merged:
             merged[key] = additions[key]
-    new_text = _mf_render(merged, body)
+    new_text = _mf_render(merged, body, original=text)
     path.write_text(new_text, encoding="utf-8")
 
 

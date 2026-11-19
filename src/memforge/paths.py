@@ -12,7 +12,7 @@ Resolution order:
      used ONLY when it already exists on disk, so existing installs keep working
      with zero config. This is the one adapter layout the core grandfathers.
   3. IDE-neutral default under the memforge home (~/.memforge/{memory,
-     global-memory}): same root as ~/.memforge/operator-identity.yaml.
+     global-memory}).
 """
 
 from __future__ import annotations

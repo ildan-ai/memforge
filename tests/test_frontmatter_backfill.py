@@ -415,3 +415,22 @@ def test_backfill_leaves_an_existing_top_level_type_alone(tmp_path):
         apply_change(p, plan.additions)
     fm, _ = _mf_parse(p.read_text(encoding="utf-8"))
     assert fm["type"] == "project"
+
+
+def test_apply_change_keeps_legacy_signature_fields_as_written(tmp_path):
+    legacy = (
+        "identity: operator:0191d4a2-7c3e-7a10-9f00-aabbccddeeff\n"
+        "signature:\n"
+        "  algo: gpg-ed25519\n"
+        "  signing_time: 2026-05-01T12:00:00Z\n"
+        "  value: iQIzBAABCgAd+/==\n"
+    )
+    p = _write_memory(
+        tmp_path,
+        "legacy.md",
+        "---\nname: legacy\ndescription: d\ntype: user\n" + legacy + "---\n\nbody\n",
+    )
+    apply_change(p, {"uid": "mem-legacy", "status": "active"})
+    out = p.read_text(encoding="utf-8")
+    assert legacy in out
+    assert _mf_parse(out)[0]["uid"] == "mem-legacy"
