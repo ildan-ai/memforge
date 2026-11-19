@@ -812,3 +812,31 @@ def test_rollup_readme_gaps_end_to_end_via_audit_target(tmp_path: Path) -> None:
         "1 file(s): topic_b.md"
     ) in output
     assert violations >= 1
+
+
+def test_legacy_signature_fields_raise_no_finding(tmp_path: Path) -> None:
+    import io
+    from contextlib import redirect_stdout
+
+    from memforge.cli.audit import audit_target
+
+    head = "---\nname: Seed\ndescription: Seed memory\ntype: user\n"
+    legacy = (
+        "identity: operator:0191d4a2-7c3e-7a10-9f00-aabbccddeeff\n"
+        "signature:\n  algo: gpg-ed25519\n  value: iQIzBAABCgAd+/==\n"
+    )
+    results = []
+    for name, extra in (("plain", ""), ("legacy", legacy)):
+        folder = tmp_path / name
+        folder.mkdir()
+        (folder / "seed.md").write_text(head + extra + "---\n\nBody.\n", encoding="utf-8")
+        (folder / "MEMORY.md").write_text("# Memory Index\n\n- [Seed](seed.md): Seed memory\n", encoding="utf-8")
+        with redirect_stdout(io.StringIO()):
+            count, blob = audit_target(
+                folder, stale_days=9999, fix=False, add_defaults=False, json_out=True
+            )
+        assert blob is not None
+        findings = {key: blob[key] for key in ("violations", "stale", "orphan_files", "orphan_pointers")}
+        health = [line.replace(str(folder), "<root>") for line in blob["health"]]
+        results.append((count, findings, health))
+    assert results[0] == results[1]

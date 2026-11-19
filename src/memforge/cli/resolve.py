@@ -52,6 +52,10 @@ def _default_paths() -> list[Path]:
     return default_memory_paths()
 
 
+def _read(path: Path) -> str:
+    return path.read_text(encoding="utf-8")
+
+
 def _walk_memory(root: Path) -> list[tuple[Path, dict[str, Any], str]]:
     """Yield (path, frontmatter, body) for every .md file under root,
     excluding MEMORY.md and archive/."""
@@ -236,7 +240,7 @@ def _apply_mutations(
     new_winner_fm["ever_multi_member"] = True
     if new_winner_fm.get("status") != "active":
         new_winner_fm["status"] = "active"
-    new_winner_text = render(new_winner_fm, winner_body)
+    new_winner_text = render(new_winner_fm, winner_body, original=_read(winner_path))
 
     writes: list[tuple[Path, str]] = []
     # Current losers: status -> superseded, superseded_by -> [winner_uid].
@@ -245,7 +249,7 @@ def _apply_mutations(
         new_fm["status"] = "superseded"
         new_fm["superseded_by"] = [winner_uid]
         new_fm["ever_multi_member"] = True
-        writes.append((path, render(new_fm, body)))
+        writes.append((path, render(new_fm, body, original=_read(path))))
     # Prior-superseded members: re-point superseded_by at the new winner so the
     # audit symmetry check (each superseded member points to the sole active
     # winner, and the winner's replaces lists it) holds after a re-resolve.
@@ -254,7 +258,7 @@ def _apply_mutations(
         new_fm["status"] = "superseded"
         new_fm["superseded_by"] = [winner_uid]
         new_fm["ever_multi_member"] = True
-        writes.append((path, render(new_fm, body)))
+        writes.append((path, render(new_fm, body, original=_read(path))))
 
     if dry_run:
         print("dry-run: would write the following:")

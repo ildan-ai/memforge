@@ -313,3 +313,26 @@ def test_reresolve_carries_prior_superseded_into_winner_replaces(tmp_path: Path)
     blockers, majors, _warns = run_concurrency_audit(memory, skip_tier2=True)
     assert blockers == [], f"unexpected BLOCKER findings: {blockers}"
     assert majors == [], f"unexpected MAJOR findings: {majors}"
+
+
+def test_resolve_keeps_legacy_signature_fields_as_written(two_member_repo):
+    repo, memory, (a, b) = two_member_repo
+    legacy = (
+        "identity: operator:0191d4a2-7c3e-7a10-9f00-aabbccddeeff\n"
+        "signature:\n"
+        "  algo: gpg-ed25519\n"
+        "  signing_time: 2026-05-01T12:00:00Z\n"
+        "  value: iQIzBAABCgAd+/==\n"
+    )
+    for path in (a, b):
+        text = path.read_text(encoding="utf-8")
+        path.write_text(text.replace("\n---\n", "\n" + legacy + "---\n", 1), encoding="utf-8")
+    _git(repo, "add", "-A")
+    _git(repo, "commit", "-q", "-m", "legacy fields")
+
+    rc = resolve.main(["the-topic", "--memory-root", str(memory), "--winner-uid", "mem-b"])
+    assert rc == 0
+
+    for path in (a, b):
+        assert legacy in path.read_text(encoding="utf-8")
+    assert parse(a.read_text(encoding="utf-8"))[0]["status"] == "superseded"
