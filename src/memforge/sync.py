@@ -88,6 +88,14 @@ def _upstream(store: Store) -> tuple[str, str]:
     return remote.out.decode().strip(), merge.out.decode().strip()
 
 
+def _is_ancestor(iso: Isolation, ancestor: str, descendant: str) -> bool:
+    """git exits 1 for "no"; any other failure is an error, never a verdict."""
+    result = iso.git("merge-base", "--is-ancestor", ancestor, descendant)
+    if result.rc not in (0, 1):
+        raise SyncError("git_failed", f"git merge-base --is-ancestor: {result.err.strip()}")
+    return result.rc == 0
+
+
 def _verify_range(iso: Isolation, tools, released: frozenset[str],
                   commits: list[CommitInfo]) -> None:
     verifier = Verifier(iso, tools, released)
@@ -147,9 +155,9 @@ def _sync(root: Path, trust_head: str | None, adopt_local: bool, check: bool,
     shallow_file = store.must("rev-parse", "--path-format=absolute", "--git-path", "shallow") if shallow else None
     with Isolation(tools["git"].path, objects, shallow_file) as iso:
         # 3. Target.
-        if iso.git("merge-base", "--is-ancestor", local, fetched).rc == 0:
+        if _is_ancestor(iso, local, fetched):
             head = fetched
-        elif iso.git("merge-base", "--is-ancestor", fetched, local).rc == 0:
+        elif _is_ancestor(iso, fetched, local):
             head = local
         else:
             raise SyncError("diverged", f"local {local} and fetched {fetched} have diverged; sync never merges")

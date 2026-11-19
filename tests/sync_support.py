@@ -26,6 +26,9 @@ needs_ssh = pytest.mark.skipif(
     reason="needs git and ssh-keygen",
 )
 
+# A stand-in tool here is an sh script, which Windows cannot execute as a program.
+needs_sh = pytest.mark.skipif(os.name == "nt", reason="fakes a tool with an sh script")
+
 
 def git(cwd: Path, *args: str, check: bool = True) -> str:
     proc = subprocess.run(
@@ -87,7 +90,7 @@ class Lab:
                 path.unlink()
                 continue
             path.parent.mkdir(parents=True, exist_ok=True)
-            path.write_text(text)
+            path.write_bytes(text.encode())     # the same bytes on every platform
         git(repo, "add", "-A")
         env = dict(os.environ)
         if date:

@@ -99,7 +99,7 @@ def _version(name: str, path: str) -> str:
     env = _plain_env()
     if name == "ssh-keygen":
         # ssh-keygen has no version flag; the sibling ssh from the same install reports it.
-        sibling = Path(path).with_name("ssh")
+        sibling = Path(path).with_name("ssh" + Path(path).suffix)
         if sibling.is_file():
             return "sibling ssh: " + _first_line(run([str(sibling), "-V"], env=env, timeout=10))
         return "unknown"
@@ -175,7 +175,8 @@ class Isolation:
                 raise SyncError("isolation_failed", init.err.strip())
             info = Path(self.gitdir) / "objects" / "info"
             info.mkdir(parents=True, exist_ok=True)
-            (info / "alternates").write_text(self._objects + "\n", encoding="utf-8")
+            # Bytes, not text: git reads a carriage return as part of the path.
+            (info / "alternates").write_bytes((self._objects + "\n").encode("utf-8"))
             if self._shallow:
                 shutil.copyfile(self._shallow, Path(self.gitdir) / "shallow")
         except BaseException:

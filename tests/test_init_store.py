@@ -9,6 +9,7 @@ import textwrap
 import pytest
 
 from memforge.cli import _dispatch
+from tests.sync_support import needs_sh
 
 PUB = "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIFakeKeyMaterialForTestsOnly000000000000"
 
@@ -110,6 +111,7 @@ def _fake_gpg(tmp_path, monkeypatch, body):
     monkeypatch.setenv("PATH", f"{bindir}{os.pathsep}{os.environ['PATH']}")
 
 
+@needs_sh
 def test_gpg_writes_the_primary_fingerprint(root, tmp_path, monkeypatch):
     _git(root, "config", "user.signingkey", "DEADBEEFCAFEF00D")
     _fake_gpg(
@@ -130,6 +132,7 @@ def test_gpg_writes_the_primary_fingerprint(root, tmp_path, monkeypatch):
     assert text == FPR + "\n"
 
 
+@needs_sh
 def test_gpg_ambiguous_key_id_writes_comments_only(root, tmp_path, monkeypatch):
     _git(root, "config", "user.signingkey", "DEADBEEF")
     _fake_gpg(
@@ -147,6 +150,7 @@ def test_gpg_ambiguous_key_id_writes_comments_only(root, tmp_path, monkeypatch):
     assert all(line.startswith("#") for line in text.splitlines())
 
 
+@needs_sh
 def test_gpg_failure_writes_comments_only(root, tmp_path, monkeypatch):
     _git(root, "config", "user.signingkey", "DEADBEEFCAFEF00D")
     _fake_gpg(tmp_path, monkeypatch, "exit 2\n")
@@ -155,6 +159,7 @@ def test_gpg_failure_writes_comments_only(root, tmp_path, monkeypatch):
     assert all(line.startswith("#") for line in text.splitlines())
 
 
+@needs_sh
 def test_gpg_rejects_an_option_like_key_id(root, tmp_path, monkeypatch):
     marker = tmp_path / "called"
     _git(root, "config", "user.signingkey", "--export")

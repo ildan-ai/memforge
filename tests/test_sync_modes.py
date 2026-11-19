@@ -15,7 +15,7 @@ from memforge._sync_git import Fail
 from memforge._sync_git import SyncError
 from memforge._sync_verify import classify_gpg_status, parse_commit
 from tests.sync_support import (  # noqa: F401  (lab is a fixture)
-    ALL_MODES, git, install_stub, lab, make_ssh_key, needs_ssh, run_sync,
+    ALL_MODES, git, install_stub, lab, make_ssh_key, needs_sh, needs_ssh, run_sync,
     signers_text, verified_head,
 )
 
@@ -52,6 +52,7 @@ def test_unreleased_mode_is_refused_without_verifying(lab, key, tmp_path, monkey
 
 # ---- keyless against the stub -------------------------------------
 
+@needs_sh
 @needs_ssh
 def test_keyless_calls_gitsign_with_exact_arguments_in_order_and_stops_at_the_first_pass(
         lab, key, tmp_path, monkeypatch):
@@ -69,6 +70,7 @@ def test_keyless_calls_gitsign_with_exact_arguments_in_order_and_stops_at_the_fi
     assert verified_head(recv) == one
 
 
+@needs_sh
 @needs_ssh
 @pytest.mark.parametrize("body", [None, "#!/bin/sh\nexit 3\n"])
 def test_keyless_refusals(lab, key, tmp_path, monkeypatch, capsys, body):
@@ -83,6 +85,7 @@ def test_keyless_refusals(lab, key, tmp_path, monkeypatch, capsys, body):
     assert head(recv) == base
 
 
+@needs_sh
 @needs_ssh
 def test_keyless_unknown_subcommand_is_keyless_not_verified(lab, key, tmp_path, monkeypatch, capsys):
     install_stub(tmp_path, monkeypatch, "#!/bin/sh\necho 'unknown command' >&2\nexit 2\n")
@@ -122,6 +125,7 @@ def test_gitsign_missing_only_when_the_executable_is_not_found(lab, key, tmp_pat
     assert "(gitsign_missing)" in capsys.readouterr().err
 
 
+@needs_sh
 @needs_ssh
 def test_keyless_self_authorizing_edit_is_refused(lab, key, tmp_path, monkeypatch, capsys):
     stub = install_stub(tmp_path, monkeypatch)
@@ -135,6 +139,7 @@ def test_keyless_self_authorizing_edit_is_refused(lab, key, tmp_path, monkeypatc
     assert "(keyless_not_verified)" in capsys.readouterr().err
 
 
+@needs_sh
 @needs_ssh
 def test_keyless_list_edit_by_a_listed_identity_passes_and_the_new_identity_follows(
         lab, key, tmp_path, monkeypatch):
@@ -165,6 +170,7 @@ def test_keyless_malformed_list_is_invalid(lab, key, tmp_path, monkeypatch, caps
 
 # ---- mode migration ----------------------------------------------
 
+@needs_sh
 @needs_ssh
 def test_mode_migration_is_judged_under_the_old_mode_and_descendants_under_the_new(
         lab, tmp_path, monkeypatch):

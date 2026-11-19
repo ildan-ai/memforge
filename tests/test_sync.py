@@ -18,7 +18,7 @@ from memforge import sync as sync_mod
 from memforge._sync_git import SyncError
 from memforge.cli._dispatch import main
 from tests.sync_support import (  # noqa: F401  (lab is a fixture)
-    git, lab, make_ssh_key, needs_ssh, run_sync, signers_text, verified_head,
+    git, lab, make_ssh_key, needs_sh, needs_ssh, run_sync, signers_text, verified_head,
 )
 
 pytestmark = needs_ssh
@@ -331,6 +331,23 @@ def test_diverged_changes_nothing(lab, keys, capsys):
     assert head(recv) == local and verified_head(recv) == base
 
 
+def test_unreadable_objects_are_git_failed_not_diverged(lab, keys, monkeypatch, capsys):
+    base, recv = pinned(lab, keys)
+
+    class Blind(sync_mod.Isolation):
+        def __enter__(self):
+            super().__enter__()
+            (Path(self.gitdir) / "objects" / "info" / "alternates").write_bytes(b"")
+            return self
+
+    monkeypatch.setattr(sync_mod, "Isolation", Blind)
+    capsys.readouterr()
+    assert run_sync(recv) == 1
+    err = capsys.readouterr().err
+    assert "git_failed" in err and "diverged" not in err
+    assert verified_head(recv) == base
+
+
 def test_local_commits_ahead_of_the_remote_are_verified_and_recorded(lab, keys):
     alice, _, _ = keys
     base, recv = pinned(lab, keys)
@@ -391,7 +408,7 @@ def test_shallow_clone_crossing_the_boundary_is_refused(lab, keys, capsys):
         lab.commit({f"{i}.md": "x\n"}, key=alice)
     lab.push()
     recv = lab.root / "shallow"
-    git(lab.root, "clone", "-q", "--depth", "2", f"file://{lab.origin}", str(recv))
+    git(lab.root, "clone", "-q", "--depth", "2", lab.origin.as_uri(), str(recv))
     capsys.readouterr()
     assert run_sync(recv, trust_head=base) == 2
     assert "(shallow_range)" in capsys.readouterr().err
@@ -509,6 +526,7 @@ def _fake_ssh_keygen(tmp_path, monkeypatch, body):
     return directory, script
 
 
+@needs_sh
 def test_verdict_comes_from_the_printed_absolute_path(lab, keys, tmp_path, monkeypatch, capsys):
     alice, _, _ = keys
     base, recv = pinned(lab, keys)
@@ -522,6 +540,7 @@ def test_verdict_comes_from_the_printed_absolute_path(lab, keys, tmp_path, monke
     assert "(ssh_not_verified)" in captured.err and "fake" in captured.err
 
 
+@needs_sh
 def test_tool_paths_are_pinned_into_the_git_call(lab, keys, tmp_path, monkeypatch):
     alice, _, _ = keys
     base, recv = pinned(lab, keys)
@@ -543,8 +562,10 @@ def test_each_run_prints_the_mode_line_and_verifier_hashes(lab, keys, capsys):
     assert run_sync(recv) == 0
     out = capsys.readouterr().out
     assert "mode ssh: verdict has no receiver-local input except the git and ssh-keygen executables" in out
-    assert re.search(r"verifier git: path=/\S+ version=git version \S+ sha256=[0-9a-f]{64}", out)
-    assert re.search(r"verifier ssh-keygen: path=/\S+ .* sha256=[0-9a-f]{64}", out)
+    for pattern in (r"verifier git: path=(.+) version=git version \S+ sha256=[0-9a-f]{64}",
+                    r"verifier ssh-keygen: path=(.+) version=.+ sha256=[0-9a-f]{64}"):
+        found = re.search(pattern, out)
+        assert found and os.path.isabs(found[1])
 
 
 # ---- misc -----------------------------------------------------------------------
