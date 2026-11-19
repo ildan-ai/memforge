@@ -29,13 +29,9 @@ $Root = (Resolve-Path -LiteralPath $Root).Path
 Set-Location -LiteralPath $Root
 
 function Test-ScopedPath([string]$rel) {
-  if ($rel -eq '.memforge/operator-registry.yaml') { return $true }
   if ($rel -eq '.memforge/config.yaml') { return $true }
   $scopedPrefixes = @(
-    '.memforge/snoozes/',
-    '.memforge/revocations/',
-    '.memforge/sender-sequence/',
-    '.memforge/agent-sessions/'
+    '.memforge/snoozes/'
   )
   foreach ($prefix in $scopedPrefixes) {
     if ($rel.StartsWith($prefix)) { return $true }

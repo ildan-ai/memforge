@@ -1,121 +1,58 @@
 # MemForge known limitations
 
-**Updated:** 2026-11-15 (covers spec v0.8.0; reference package 0.12.1)
-**Status:** Living document. Each spec release updates this file; the file ships with the Zenodo deposit for that release as a versioned snapshot.
-
----
+**Status:** Living document. It covers spec v1.0.0 and reference package 1.0.0. Each release updates it.
 
 ## Why this document exists
 
-Tracks residual non-BLOCKER refinements queued for future patches. A BLOCKER would block the release; anything tracked here is by definition a refinement that the release ships with.
+It lists what the release does not do and what it has not yet proven, so a deployer decides with the facts in view. Where a mechanism has not been run against the real tool, this file says so.
 
-**What this document is NOT.** This document tracks issues surfaced by the project's internal multi-voice review panel (architect + critic + threat-modeler). It is not a substitute for independent red-teaming, third-party pentest, or a formal security audit. Independent review may surface findings the internal panel did not. The "no residual BLOCKERs" status reflects the panel's review scope, not an external attestation.
+This is not an external audit. The project's own review does not replace independent red-teaming or a third-party penetration test, and neither has been performed.
 
----
+## Commit trust: residual risks
 
-## Closed since v0.5.0
+These are the residuals of the trust model in `SPEC.md` §"Commit trust (v1.0.0+)". They are not defects. They are the edges of the design.
 
-The following items were tracked as residuals in the v0.5.0 known-limitations document and have since been closed in normative spec text. Listed for historical clarity.
+- **Unverified content reaches agents by any path other than `memforge sync`.** Plain `git pull`, `git merge` or `git checkout`, edits or new files in the work tree, and never running `sync` all put unverified content in front of an agent. No other MemForge command checks verified state, warns or refuses. The control for that path is the git host's branch protection and required signed commits. `sync` is a detective check for people who run it.
+- **A listed key is trusted completely.** There is no revocation, no reach-back and no second approval inside MemForge. Removing a key from the list stops later commits only. Any listed signer can add another signer.
+- **The host and the people who can merge are in the trust base.** A compromised host, a host admin, or anyone the host lets merge can put content on the branch. Hosts enforce signed commits and registered keys, not membership in the committed list, so an unlisted but registered signer can reach the branch. `sync` then refuses it for everyone.
+- **Agents commit under a person's signature.** An agent that runs in a listed person's session produces commits that carry that person's signature. Per-agent attribution is advisory only (`agent_session`, `on_behalf_of`). Attribution does not survive a squash merge or a copy.
+- **A trusted signer can write a prompt injection.** Signing proves who committed, not that the content is safe.
+- **`gpg` and `keyless` verdicts can differ between receivers.** They depend on each receiver's keyring, revocation certificates, clock, trust roots and network. Two receivers can disagree on one commit. In `ssh` mode verdicts agree only across receivers whose `git` and `ssh-keygen` executables behave the same; versions and SHA-256 values are printed, not pinned.
+- **A refused commit blocks everyone.** Until the remote's owner removes it, every receiver who runs `sync` is refused. There is no override flag. `keyless` also refuses every commit during an outage of its trust roots or log.
+- **A pin vouches for history it does not check.** A pin from a compromised teammate pins a compromised history. A local user can clone again and pin past a refused commit, or edit local configuration. MemForge offers no command for it and cannot prevent it.
+- **Verification costs one `verify-commit` per commit** in the range being checked.
+- **The store must be the top level of its git repository.** `memforge.verifiedHead` is one key per repository, so `sync` refuses a memory root that is not the repository top level (`root_not_toplevel`). A store that lives in a subfolder of a larger repository cannot use `sync` until it moves.
+- **A listed signer can block later syncs on purpose,** with a valid list of keys nobody holds or a switch to a mode receivers refuse.
 
-| Item | Closed in | Spec section |
-| ---- | --------- | ------------ |
-| Agent session attestation content scope (MAJOR) | v0.5.1 | §"Agent session attestation content scope (v0.5.1+)" |
-| Cross-cutting fail-closed posture documentation (MINOR) | v0.5.1 | §"Cross-cutting fail-closed posture (v0.5.1+)" |
-| Privacy considerations subsection (MINOR) | v0.5.1 | §"Privacy considerations (v0.5.1+)" |
-| Agent-session-id format guidance (MINOR) | v0.5.1 | §"Frontmatter additions (v0.5.0+)" |
-| Canonical-form Unicode normalization MUST on signed envelopes (BLOCKER from v0.5.2 retrospective) | v0.5.2 | §"Signed envelope scope (normative)" |
-| TOCTOU on file create in write_secure_yaml / write_secure_bytes (BLOCKER from v0.5.2 retrospective) | v0.5.2 | code change in `src/memforge/identity.py` |
-| Seen-nonce set bounding (MAJOR; MAY -> SHOULD with explicit GC contract) | v0.5.2 | §"Agent session attestation content scope" |
-| Native Windows support (POSIX-mode-only contract was a no-op on NTFS) | v0.5.2 | §"Operator-identity file (per-machine)" + integrity invariant 21 restated platform-agnostically |
-| Registry-layer cool-down enforcement (MAJOR; CLI-only was a bypass surface) | v0.5.3 | §"Mandatory cool-down period" registry-layer mandate; `memforge.registry.verify_signing_key_acceptable` |
-| Bounded git-log walk in `walk_revocation_set` (MAJOR; unbounded walk was a DoS surface) | v0.5.3 | §"Reader-side revocation walk" bounded-walk mandate; default caps 100k commits / 100 MB |
-| TOCTOU between path-level mode-check and file read (MAJOR) | v0.5.3 | Integrity invariant 21 TOCTOU-safe-read addendum; `_security.secure_read_text` + `secure_read_bytes` |
+## Commit trust: mechanisms not yet proven with the real tools
 
-The v0.5.3 ship closes the BLOCKER and security-relevant MAJOR residuals surfaced by the project's internal multi-voice review panel to date. Independent red-teaming or third-party pentest has not been performed.
+- **`keyless` has not been run.** Every statement about the `gitsign` interface is unrun: the exact `verify` arguments, exact-match behavior for identity and issuer, and what `gitsign` returns for each failure. It is exit-code only by design, so the contract is small, but it is unproven. The reference implementation refuses the mode until a run against the real `gitsign` and a test certificate and log instance passes.
+- **`gpg` was observed in a scratch setup, not proven in CI.** The status-line rules were observed on one GnuPG and git version with a scratch keyring. The nine-argument `VALIDSIG` form comes from the GnuPG documentation and is tested from a fixture only. The reference implementation refuses the mode until its proofs pass, including a run against the real `gpg`.
+- **Host-generated commits are unverified.** What a host signs on a web merge or squash merge has not been checked against any mode. No web-merge workflow is promised. Until a real host commit is verified against a mode, the supported path is a locally signed merge. An `ssh` store cannot accept a GPG-signed host commit.
+- **The environment passed to `gitsign` has not been run.** The declared pass-through list (`HOME`, `GITSIGN_*`, `SIGSTORE_*`, the proxy variables and `SSL_CERT_FILE` and `SSL_CERT_DIR`) is a design choice that has not been tried against a real `gitsign` with a real organizational trust configuration. It must be confirmed before `keyless` is released.
+- **Environment injection through `GIT_CONFIG_COUNT` was not tested.** The cleared environment used for verification is the mechanism that is relied on.
+- **The first-sync pin is a statement, not a check.** `--adopt-local` and `--trust-head` record trust a human established.
 
----
+A mode that is refused because its proofs have not passed is the release gate working. It is not a defect.
 
-## v0.6.0 (query-triggered recall)
+## Removed in 1.0.0
 
-v0.6.0 adds query-triggered recall (three optional frontmatter fields + the §"Recall operation" contract + the `memory-recall` reader and `memory-index-gen --with-recall-index`). It ships with **no BLOCKER-class known limitations**: the internal spec-delta panel and code threat-model panel (two model families each) returned zero residual BLOCKERs. The threat-model fixes (symlink-safe walk, load-time index hardening plus an untrusted-context injection preamble, fail-closed sensitivity check, bounded file reads) landed in the v0.6.0 commit.
+Per-memory signatures, the operator registry, agent attestations, sender sequences, key rotation, revocation and recovery, the messaging adapter contract, and the 13 commands that implemented them are removed. See `docs/migrating-to-1.0.md`. Legacy `identity` and `signature` frontmatter is preserved and ignored.
 
-Deferred refinements (not gaps):
+## Other deferred refinements
 
-- **Embedding / semantic ranking.** v0.6.0 matching is deterministic keyword + light-stem + synonym expansion. Embedding-based ranking remains out of scope (it was already deferred under the reserved `dynamic_supplement` field); promote if recall miss-rate data justifies it.
-- **Per-file incremental index build.** The reference build recompiles the whole index and records per-file mtimes; it skips a rebuild when nothing changed, but does not yet do per-file incremental updates. Adequate for typical folder sizes; a v0.6.x optimization for very large folders.
-
----
-
-## v0.6.2 (wikilink rewriting, pointer-line cap, tier warning)
-
-v0.6.2 is a patch bump shipping with package 0.8.0. Three additive changes: `memory-link-rewriter rename`/`rename-batch` now rewrite `[[wikilinks]]` (`[[token]]` and `[[token|display]]`) so a rename no longer orphans inbound wikilinks; the pointer-line and `MEMORY.md` `SHOULD` length caps relax from 150 to 180 (bytes/lines) to accommodate descriptive filename slugs; and `memory-audit` emits an advisory warning on non-spec `tier` values (spec tiers are `index`/`detail` only). No frontmatter or normative-contract change, so every prior-version folder remains conformant. The pre-ship spec-delta panel (architect + adversarial critic) returned no BLOCKER-class known limitations. Known scope limit: the wikilink rewriter restricts rewrites to the rename alias set (old stem / name / uid); a uid-only strict mode for short-stem collision safety is deferred to a future major version.
-
-## v0.6.1 (recall-readiness lint)
-
-v0.6.1 is a patch bump: it adds the §"Recall-readiness lint" spec section and the §"Tier and recall (clarification, v0.6.1+)" note, the `memory-lint` reader, and a set of WARN-only `memory-audit` recall-field + always-set budget checks. No frontmatter or normative-contract change, so every v0.6.0 folder remains conformant. The internal spec-delta panel and code threat-model panel returned **no BLOCKER-class known limitations**.
-
-Deferred refinements (not gaps):
-
-- **Lint scoring algorithm is non-normative.** The spec defines lint by the dimensions it scores and the safety posture it MUST observe, not by a scoring algorithm, numeric threshold, or model prompt. The reference implementation's collision-based recall score and its default thresholds (`--min-score`, description/body length cutoffs) are implementation choices that MAY change between patch releases without a spec bump; do not treat a specific numeric score as a conformance signal.
-- **Always-set budget is advisory only.** The `memory-audit` always-set budget check (configurable count + combined-description-char budget under `recall.*` in `.memforge/config.yaml`) is WARN-only health, never an integrity violation, so `--strict` is unaffected and existing stores never fail on upgrade. A hard budget gate is not in scope for v0.6.x.
-- **Lint never mutates and never gates.** Lint is read-only and its model-assisted suggestion layer is off by default (local-only when enabled; metadata-only cloud payload unless `--allow-cloud-body`; deterministic secret pre-scan fail-closed). Auto-applying a suggested description / trigger set is out of scope; the operator edits files.
-
----
-
-## Residual MINORs (v0.5.x patch targets)
-
-These are refinements / nice-to-haves; not security gaps and not gating release rigor.
-
-### MINOR 1: Cache TTL semantics for revocation cache in remote-fetch fallback
-
-Document TTL semantics + edge cases for revocation cache in remote-fetch fallback mode. Includes what happens on TTL=0, on TTL > snooze-horizon, etc.
-
-### MINOR 2: Unbounded key rotation chain length guidance
-
-Spec recommends fresh-start every 10 rotations (operator discretion). v0.5.x adds adapter-side `max_rotation_chain_length` config (default 20) with persistent MAJOR audit warning when exceeded.
-
-### MINOR 3: Operator name homograph audit
-
-`memory-audit` SHOULD warn on new operator-registry additions whose `operator_name` has Levenshtein distance <= 2 from any existing operator's name. Defends against visually-similar Unicode substitutions in trust-bootstrap step. v0.5.x patch.
-
-### MINOR 4: v0.4 memory flooding audit MAJOR rate-limit
-
-Audit emits a one-time MAJOR per unsigned v0.4 memory under v0.5 readers. An attacker with write access could flood the repository with thousands of valid v0.4 memories, generating audit noise. v0.5.x adds `audit.v04_unsigned_memories_rate_limit` config to cap the count of such MAJORs reported per audit run (default 10; rest are summarized).
-
----
+- **Embedding or semantic ranking in recall.** Matching is deterministic keyword, light-stem and synonym expansion. Embedding ranking is out of scope; promote it if recall miss-rate data justifies it.
+- **Per-file incremental recall index build.** The reference build recompiles the whole index and skips a rebuild when nothing changed. Adequate for typical folder sizes.
+- **Lint scoring is non-normative.** The spec defines lint by the dimensions it scores and the safety posture it observes, not by a scoring algorithm. Do not treat a numeric score as a conformance signal.
+- **The always-set budget is advisory.** It is a warning, never an integrity violation, so `--strict` is unaffected.
+- **Wikilink rewriting is limited to the rename alias set** (old stem, name, uid). A uid-only strict mode for short-stem collision safety is deferred to a future major version.
 
 ## Reference CLI status
 
-v0.5.1 shipped 14 subcommands under a single `memforge` dispatcher (init-operator, init-store, operator-registry add/verify/remove/fresh-start, rotate-key, revoke, revocation-snapshot, memories-by-key, revoke-memories, upgrade-v04-memories, revoke-cache-refresh, messaging-doctor, recovery-init, recovery-backup-confirm, attest-agent).
-
-Still v0.5.x scope:
-
-- `memforge recovery-init --hardware <yubikey|secure-enclave|tpm>`: hardware-backed recovery-secret install.
-- `memforge resolve <topic>` integration into the top-level dispatcher (currently shipping as the standalone `memforge-resolve` console script; the spec describes the resolve operation by post-conditions, so the standalone script is conformant, but the dispatcher subcommand is the intended ergonomic form).
-- `memforge migrate-claim-block` integration into the top-level dispatcher (currently shipping as a standalone console script).
-- `memforge verify-memory <path>`: CLI helper that runs the canonical verify-flow (registry-membership + cool-down + revocation + signature). Spec mandates the contract via `memforge.registry.verify_signing_key_acceptable`; CLI delivery is a v0.5.x ergonomics improvement.
-
----
-
-## Reference-implementation gaps (team path)
-
-The spec defines these behaviors. The reference package (`ildan-memforge`) does not implement them yet. A shared store using the package today relies on git access control and review, not on per-memory signatures.
-
-- **No signature on a normal write.** The only code that writes a memory `signature` is the one-time `memforge upgrade-v04-memories`, which leaves `sender_uid` empty and `sequence_number` at 0.
-- **No sender sequence or checkpoints on writes.** `increment_sequence` and `publish_checkpoint` in `src/memforge/sender_sequence.py` have no callers.
-- **No verification of another operator's memory on read.** No code verifies a memory signature. `verify_signing_key_acceptable` (registry membership, cool-down, revocation) has no caller on a memory read. The `memforge verify-memory` command above is not delivered.
-- **No receiver state and no `sync` command.**
-- **No WebSocket client or relay.** The spec contract exists; `examples/websocket/` is a probe and scaffold only.
-
-What is built and tested: operator identity, the signed operator-registry, key rotation with cool-down, revocation and snapshots, agent-session attestation, and `messaging-doctor`.
-
----
+- `memforge resolve <topic>` is shipped as the standalone `memforge-resolve` console script. The spec defines the resolve operation by post-conditions, so the standalone script is conformant. Integration into the `memforge` dispatcher is the intended form and is not done.
+- `memforge migrate-claim-block` is shipped as the standalone `memforge-migrate-claim-block` console script, with the same status.
 
 ## How this document is published
 
-- SPEC.md cross-references this file as a sibling file.
-- Each Zenodo deposit includes a snapshot of this file (renamed to `vX.Y.Z-known-limitations.md` inside the deposit) as a top-level artifact.
-- GitHub release notes for each version enumerate the v0.5.x patch targets.
-- The living version in this repo (`spec/known-limitations.md`) reflects the latest spec state; git history captures per-release snapshots.
-
-Operators who deploy a given version encounter this document via any of these surfaces; surprise is mitigated.
+- `SPEC.md` cross-references this file as a sibling.
+- The living version in this repository reflects the latest spec state. Git history keeps per-release snapshots.

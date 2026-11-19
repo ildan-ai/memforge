@@ -3,6 +3,8 @@
 # PowerShell users. Enforces the `memforge:` prefix grammar for scoped
 # Tier-2 paths per the spec. Reject = exit 1; staged changes are
 # preserved so the operator can fix the message and try again.
+# Signed commits and the signer list are separate from this hook: set
+# `commit.gpgsign true` in git and let `memforge sync` check signatures.
 #
 # Install (Windows PowerShell or pwsh 7+ on any platform):
 #   Copy-Item examples\git-hooks\commit-msg.ps1 .git\hooks\commit-msg.ps1
@@ -43,16 +45,6 @@ function Stop-Commit([string]$problem, [string]$hint) {
   exit 1
 }
 
-# .memforge/operator-registry.yaml -> memforge: operator-registry OR memforge: rotate-key
-if (Test-TouchesExact '.memforge/operator-registry.yaml') {
-  if (-not (Test-StartsWith 'memforge: operator-registry') -and `
-      -not (Test-StartsWith 'memforge: rotate-key')) {
-    Stop-Commit `
-      "operator-registry.yaml staged but commit prefix is not 'memforge: operator-registry' or 'memforge: rotate-key'." `
-      "Run the corresponding memforge CLI command and use the message it prints."
-  }
-}
-
 # .memforge/config.yaml -> memforge: config (Tier 2 BLOCKER per spec)
 if (Test-TouchesExact '.memforge/config.yaml') {
   if (-not (Test-StartsWith 'memforge: config')) {
@@ -68,16 +60,6 @@ if (Test-TouchesPattern '^\.memforge/snoozes/.*\.yaml$') {
     Stop-Commit `
       "Snooze file staged but commit prefix is not 'memforge: snooze <topic>'." `
       "Snooze edits MUST land in 'memforge: snooze <topic>' commits."
-  }
-}
-
-# Revocation events -> memforge: revoke OR memforge: revocation-snapshot
-if (Test-TouchesPattern '^\.memforge/revocations?/') {
-  if (-not (Test-StartsWith 'memforge: revoke') -and `
-      -not (Test-StartsWith 'memforge: revocation-snapshot')) {
-    Stop-Commit `
-      "Revocation artifact staged but commit prefix is not 'memforge: revoke' or 'memforge: revocation-snapshot'." `
-      "Run 'memforge revoke <key_id>' or 'memforge revocation-snapshot' and use the printed message."
   }
 }
 
