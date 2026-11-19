@@ -1,269 +1,158 @@
-# Multi-operator team bootstrap
+# Team setup: shared memory with commit trust
 
-Walks two developers (Operator A and Operator B) through setting up a shared MemForge store so each has their own cryptographic identity and both are listed in a signed operator-registry. Assumes both have completed the single-operator [quickstart](./quickstart.md) on their own machines.
+How to share one MemForge store between people and agents. Trust comes from signed git commits and a signer list the store commits. MemForge holds no keys. Your organization's identity, signing and git host controls decide who can sign.
 
-Read [Implementation status](#implementation-status) first. The spec describes per-memory signing and cross-operator verification, but the reference package does not do either on a normal write or read today.
-
-The trust-bootstrap procedure is **operator-mediated out-of-band**: MemForge does not invent a new key-distribution primitive. You exchange GPG fingerprints through a channel you both trust (Signal, phone, in-person, verified email), then add each other to the registry.
+Read the [Implementation status](#implementation-status) and the [limits](#what-commit-trust-does-not-protect) before you rely on it.
 
 ## Implementation status
 
-This guide mixes what the spec defines with what the reference package (`ildan-memforge`) does today. They differ. Check the call site, not the spec, before you rely on a security property.
+This guide describes what the 1.0 package does.
 
-**The spec defines** signed memories, sender-uid and monotonic sequence numbers, signed checkpoints, receiver-side verification of every memory against the registry, cool-down and revocation, and a WebSocket relay contract.
+**It implements:**
 
-**The reference package implements today:**
+- `memforge sync`: fetch the shared branch, check every first-parent commit against the committed signer list, then fast-forward and record where verification stopped. It has `--check`, `--trust-head <commit>` and `--adopt-local`.
+- `memforge init-store`: create the `.memforge/` layout and, with `--mode`, a signer list for that mode.
+- The `ssh` mode, which has no receiver-local input except the installed `git` and `ssh-keygen`.
 
-- Operator identity (`init-operator`) and the signed operator-registry (`init-store`, `operator-registry add|verify|remove|fresh-start`).
-- Key rotation with the 24-hour cool-down, revocation commits and snapshots (`rotate-key`, `revoke`, `revocation-snapshot`, `revoke-cache-refresh`).
-- Agent-session attestation (`attest-agent`) and `messaging-doctor`.
-- `upgrade-v04-memories`, a one-time command that adds an `identity` and `signature` block to existing v0.4 memories (with an empty `sender_uid` and `sequence_number` 0).
+**It refuses until their proofs pass:** the `gpg` and `keyless` modes. A commit whose parent holds a `gpg` or `keyless` list is refused with `mode_unreleased` until the mode is released. Check the release notes before you plan around either.
 
-**The reference package does not implement yet:**
+**It does not do:**
 
-- Signing a memory on a normal write. No write path attaches a signature.
-- Sender sequence numbers and signed checkpoints on writes. The helper functions exist in `src/memforge/sender_sequence.py`, but nothing calls them.
-- Verifying another operator's memory on read. No code checks a memory's signature, so a `verify-memory` command does not exist (see `spec/known-limitations.md`). The registry-signature check and the key-acceptability helper (`verify_signing_key_acceptable`, which carries the cool-down rule) exist, but nothing calls the helper on a memory read.
-- Receiver state and a `sync` command.
-- A WebSocket client or relay. See [`examples/websocket/`](../examples/websocket/).
+- Check anything outside `memforge sync`. Plain `git pull`, `git merge`, `git checkout`, and edits in your work tree are not checked. No other MemForge command is gated on verified state.
+- Sign or verify a memory file. Trust is on the commit, not the file.
+- Manage keys, rotation, revocation, recovery or a registry. Those belong to your organization.
+- Prove which person or agent wrote a memory after a squash merge or a copy. `agent_session` and `on_behalf_of` are advisory text.
 
-**What this means for a shared store.** Until those pieces ship, a shared memory-root relies on git access control (who can push) and review of changes, not on per-memory signatures. The signed registry tells you who the team's operators are and which keys they hold. It does not make a memory file in the shared repo provably written by the operator it names. Where the sections below say a write is "signed", "verified" or "rejected" by a receiver, read that as the spec's contract, not as behavior of the current package.
+Upgrading from an older version? See [Migrating to 1.0](./migrating-to-1.0.md).
 
-## Prerequisites
+## How it works
 
-- Both operators have completed [`quickstart.md`](./quickstart.md) on their own machines.
-- Both operators have a populated operator-UUID + a registered long-lived GPG key.
-- Both operators have the `recovery-secret` installed + backup acknowledged.
-- A shared git repo for the memory-root that both can push to + pull from.
+The store must be the top level of its git repository. Run `memforge sync` from there, or pass `--memory-root` with that top level. Anywhere else it exits 1 with `root_not_toplevel`.
 
-## Pick your transport: git-only or WebSocket?
+1. The store holds one signer list under `.memforge/`: `allowed_signers` (`ssh`), `allowed_gpg_fingerprints` (`gpg`) or `allowed_identities` (`keyless`).
+2. Every commit on the shared branch's first-parent chain must be signed by someone the list named in the commit before it. A commit cannot add its own signer. A merge is checked as one commit: its signer vouches for what it merged in, and the commits on the merged side are not checked one by one.
+3. `memforge sync` checks that for every new commit. If one fails, sync refuses. There is no override flag.
+4. The first time, you tell sync where to start with a pin. The pin is a commit you trust. Older commits are not checked.
+5. Sync records where it stopped in your local `.git/config` (`memforge.verifiedHead`), so it does not start over.
 
-The spec defines two messaging substrates; only git-only has a working path in the reference package (see Implementation status). The decision is operational, not normative: the spec says the same memory verifies identically through either path (see SPEC.md §"Messaging adapters" for the substrate-independent envelope contract).
+## Case 1: two people, a private GitHub repository (`ssh`)
 
-### git-only (default)
-
-The default path writes a memory file to disk, commits it to the local repo, and pushes to the shared remote. The spec calls for that file to be signed; the reference package does not sign it today. Other operators pick up new writes on their next `git pull`. The substrate is the same git repo everyone already runs.
-
-**Use git-only when:**
-
-- One operator on the store. The substrate is solo; there is no second reader to race against.
-- Two or more operators, but write cadence is slow (a handful of memory writes per day total across the team) and the cost of a missed-cross-claim being caught at next pull (minutes to hours later) is acceptable.
-- You want zero infrastructure beyond the git remote you already have.
-
-**Limits:**
-
-- Cross-claim detection is bounded by pull cadence. Operator B will not see Operator A's competing claim until B pulls. Two agents writing under their respective operators within the same pull-cycle window can produce a momentarily-silent overwrite locally, surfaced only at the next pull or audit.
-- Local writes that the writer has not yet pushed are invisible to other operators. Standard git eventual-consistency.
-
-This is the right default for almost every team starting out.
-
-### WebSocket
-
-The WebSocket adapter adds a real-time relay between operators. Under the spec, each operator's MemForge client opens an authenticated `wss://` connection to a relay server, and signed memory envelopes broadcast to all connected operators within seconds. The reference package ships no such client or relay. The spec's local-first invariant is that every write lands in the local git repo first; relay propagation is best-effort; with a relay, cross-claim detection latency would drop from "next pull" to "next message frame."
-
-**Use WebSocket when:**
-
-- Two or more operators on the store with high write cadence (dozens to hundreds of memory writes per day across the team) where minute-scale conflict-detection windows would let stale-consensus build up between pulls.
-- A central audit / governance surface needs to see every memory write as it happens (regulated environments, customer-side agents pushing into an operator-side audit chain).
-- You already operate one of the supported substrate options (Kafka, NATS JetStream, Redis Streams, MCP-streaming) and want to layer MemForge on top.
-
-**What it costs:**
-
-- You stand up a WebSocket relay. Reference contract is in SPEC.md §"Messaging adapter contract (WebSocket reference; v0.5.0+)" (TLS-only `wss://` transport, per-operator authentication, circuit-breaker on local-queue exhaustion, signed-checkpoint cadence).
-- Every operator's `.memforge/config.yaml` gets a `messaging.adapter: websocket` block plus the relay URL + auth credentials.
-- TLS terminates at the relay. The relay is in your trust boundary; the spec contract treats it as untrusted (signed envelopes, per-operator auth, circuit-breakers), but operationally you own its uptime.
-
-WebSocket is opt-in. The git-only path is the only substrate with a working path in the reference package; pick WebSocket only when the latency math actually matters for your team. The spec's signed-envelope contract (sender_uid + sequence_number + checkpoints) is identical across both. Because the package does not yet write those fields, do not assume audit continuity across a later switch.
-
-### When in doubt
-
-Stay on git-only. Reconsider when you can name a specific minute-scale-latency cost that the team is paying.
-
-### Starter material for standing up a relay
-
-When you do decide to bring up WebSocket, the [`examples/websocket/`](../examples/websocket/) folder is a scaffold. It includes a reference `messaging:` config block, a Python probe for verifying relay reachability + auth, and a README that names what's stub vs production. The MemForge reference CLI does not yet ship a WebSocket adapter; teams who need the substrate today implement the relay side themselves OR contract for one. The spec at `spec/SPEC.md` §"Messaging adapter contract (WebSocket reference; v0.5.0+)" is the normative contract.
-
-## Step 1: Operator A initializes the store
-
-Operator A bootstraps the memory-root + commits the initial operator-registry:
+Each person:
 
 ```bash
-# On Operator A's machine, in the shared memory-root
-cd /path/to/shared-memory-root
-memforge init-store
-git add .memforge/operator-registry.yaml
-git commit -m "memforge: operator-registry init"
-git push origin main
+git config gpg.format ssh
+git config user.signingkey ~/.ssh/id_ed25519.pub
+git config commit.gpgsign true
 ```
 
-At this point the registry contains exactly one operator (A) and is signed by A's key.
+Put both public keys in `.memforge/allowed_signers`, one line each. The name is only a label. Use one name per person.
 
-## Step 2: Operator B clones + reads the registry
+```text
+alice namespaces="git" ssh-ed25519 AAAA...
+bob namespaces="git" ssh-ed25519 AAAA...
+```
+
+Do not use `valid-after`, `valid-before` or `cert-authority` on a line. They make the whole list invalid.
+
+The creator commits the list in a signed commit and pushes. Then the creator runs:
 
 ```bash
-# On Operator B's machine
-git clone <repo-url> /path/to/local/copy
-cd /path/to/local/copy
-memforge operator-registry verify
+memforge sync --adopt-local
 ```
 
-Expected output:
+This pins your local `HEAD`. It is a statement that you vouch for this clone, not a check, and the command says so.
 
-```
-operator-registry signature OK (1 operator(s) listed).
-  - <A's operator-UUID> <A's name> status=active active_keys=1
-```
-
-If the verify fails: do not proceed. Investigate the registry state with A out-of-band.
-
-## Step 3: Exchange fingerprints out-of-band
-
-This is the security-critical step. Do NOT rely on the git repo or any in-band channel for this:
-
-- Use Signal / phone / in-person / verified email to exchange the 40-character GPG primary key fingerprints.
-- Verify the fingerprint matches the public key material via at least TWO independent channels for adversarial-environment deployments (spec recommends; does not mandate).
-
-A reads:
-```bash
-# On Operator A's machine
-gpg --fingerprint <A's UID>
-# pub   ed25519 ...
-#       ABCD 1234 ABCD 1234 ABCD 1234 ABCD 1234 ABCD 1234
-```
-
-A sends the fingerprint to B (Signal / phone / in-person).
-
-B reads:
-```bash
-# On Operator B's machine
-gpg --fingerprint <B's UID>
-```
-
-B sends the fingerprint to A (Signal / phone / in-person).
-
-## Step 4: Operator B imports Operator A's public key (already in their GPG keyring)
-
-Operator A's public key is already in the operator-registry as base64-encoded armored material. Operator B's local GPG keyring may not have it; import it:
+The other person clones and runs the sync with the full commit id the creator gives them (usually the head of the creator's last sync):
 
 ```bash
-# On Operator B's machine
-python3 -c "
-import yaml, base64, subprocess
-reg = yaml.safe_load(open('.memforge/operator-registry.yaml').read())
-for op in reg['operators']:
-    for k in op['public_keys']:
-        if k.get('status', 'active') == 'active':
-            armored = base64.b64decode(k['public_material'])
-            subprocess.run(['gpg', '--import'], input=armored, check=True)
-            print(f'imported {k[\"key_id\"]}')
-"
+git clone <repo-url> memory && cd memory
+memforge sync --trust-head <commit>
 ```
 
-Verify B's keyring now lists A's public key with the expected fingerprint from Step 3:
+From then on, both people use `memforge sync` to take in new history. Merge locally and push.
+
+Host enforcement depends on your plan. Branch protection on private repositories can need a paid plan. Without it, the only control is each person's `sync`.
+
+## Case 2: a company with single sign-on and required signed commits
+
+- The host requires signed commits on the shared branch.
+- A code owners rule covers `.memforge/`, so changes to the signer list need review.
+- The list (`allowed_signers` or `allowed_gpg_fingerprints`) is generated from your identity provider's key records.
+- In `gpg` mode each receiver's keyring must hold the signers' public keys.
+- Each receiver runs `memforge sync --trust-head <commit>` once.
+
+The host enforces signing. `sync` enforces the committed list. Hosts check that a commit is signed with a registered key. They do not check that the key is on the list. An unlisted but registered signer can reach the branch, and `sync` then refuses it for everyone until the remote's owner removes the commit.
+
+If you merge through the host's web page, the host signs the merge with its own key. A list that holds the host key trusts everyone the host lets merge. Which host merge styles work with which mode has not been verified. Until it is, merge locally with a signed merge commit.
+
+## Case 3: keyless signing (`gitsign`)
+
+`.memforge/allowed_identities` lists each certificate identity and issuer, one pair per line:
+
+```text
+<certificate-identity> <oidc-issuer-url>
+```
+
+Matching is exact. Receivers install `gitsign` with their organization's trust configuration and run `memforge sync --trust-head <commit>`. It needs network access to the trust roots and the log, and an outage refuses every commit.
+
+This mode has not been run against the real tool, and it is refused until its proofs pass.
+
+## Daily use
 
 ```bash
-gpg --list-keys
+memforge sync --check   # fetch and verify, change nothing local
+memforge sync           # verify, fast-forward, record
 ```
 
-If the fingerprint does NOT match what A sent out-of-band: stop. Someone is in the middle. Investigate before continuing.
+`--check` fetches like any run, so the one remote-tracking ref for your upstream branch and its objects may update. It does not move your branch, change your work tree or write `verifiedHead`. It prints whether `HEAD` equals `verifiedHead`.
 
-## Step 5: Operator A adds Operator B to the registry
+Each run prints one line per tool, `verifier <name>: path=... version=... sha256=...`, for `git`, `ssh-keygen`, `gpg` and `gitsign`. After verification it prints a mode line, for example `mode ssh: verdict has no receiver-local input except the git and ssh-keygen executables`. For `gpg` and `keyless` the text is `verdict depends on this receiver's keyring, configuration and clock`. With `--check` it also prints `HEAD equals verifiedHead: yes` or `no` (with `(verifiedHead is unset)` on a first sync).
 
-Operator B sends A their operator-UUID + GPG fingerprint (the same fingerprint A verified in Step 3).
+## Sync exit codes and reasons
 
-Operator A then imports B's public key + adds B to the registry:
+| Exit | Meaning |
+| --- | --- |
+| 0 | Verified and recorded. With `--check`: verified, nothing recorded. |
+| 2 | Refused by verification, history or shallow rules. The first failing commit and its reason are named. |
+| 1 | Any other error. |
 
-```bash
-# On Operator A's machine
-# (Operator A must have imported B's public key into their GPG keyring; same import flow as Step 4 in reverse)
-memforge operator-registry add \
-    --operator-uuid <B's-uuid> \
-    --operator-name "Operator B" \
-    --pubkey-fingerprint <B's-fingerprint>
-git add .memforge/operator-registry.yaml
-git commit -m "memforge: operator-registry add Operator B"
-git push origin main
-```
+Other exit-1 errors you may see: `root_not_toplevel` (the memory root is not the repository top level), `fetch_failed`, `no_branch` (detached `HEAD`), `no_upstream`, `pin_invalid` (`--trust-head` needs the full commit id), `bad_arguments` (both pin flags), `state_invalid`, `git_missing`, `not_a_repository`, `object_missing`, `bad_commit`, `isolation_failed`, `git_failed`.
 
-The registry is now signed by A and lists both A and B.
+Reasons you may see: `no_pin`, `pin_refused`, `diverged`, `history_rewrite`, `shallow_range`, `ff_failed`, `state_write_failed`, `mode_unreleased`, `ambiguous_list`, `list_missing`, `list_invalid`, `list_removed`, `unsigned`, `ssh_not_verified`, and for `gpg` and `keyless` `bad_signature`, `no_key`, `expired`, `revoked`, `signer_not_listed`, `verifier_failed`, `gitsign_missing`, `keyless_not_verified`. The spec defines each one.
 
-## Step 6: Operator B pulls + verifies
+When sync refuses a commit, your local branch, work tree and recorded state do not move. Fetched objects and the one remote-tracking ref may have been updated, and are never used. The way out is the remote's owner removing the commit. In `gpg` and `keyless`, a refusal can be local (a missing key, no network). Fix your keyring or network and run it again.
 
-```bash
-# On Operator B's machine
-git pull origin main
-memforge operator-registry verify
-```
+## Adding and removing a signer
 
-Expected output:
+Add a signer: a listed signer edits the list and commits it in a signed commit. Receivers pick it up on the next sync.
 
-```
-operator-registry signature OK (2 operator(s) listed).
-  - <A's operator-UUID> <A's name> status=active active_keys=1
-  - <B's operator-UUID> <B's name> status=active active_keys=1
-```
+Remove a signer: a listed signer deletes the line in a signed commit. This stops that key's later commits only. It does not undo what the key already signed. If the key was stolen, also rotate it in your own identity system and review what it signed.
 
-Both operators are now in the registry and can hold agent-session attestations. The spec has each write signed by the writer's long-lived key (operator-identity write) or by the writer's agent-session ephemeral key (agent write, with the attestation signed by the operator's long-lived key). The reference package does not sign normal writes yet; see Implementation status.
+Change mode: a listed signer deletes the old list and adds the new one in one commit. That commit is judged under the old mode and later commits under the new one.
 
-## Step 7: Both operators issue agent-session attestations
+## What commit trust does not protect
 
-Each operator runs `attest-agent` on their own machine for their local coding-agent session:
+- Content that reaches an agent by any path other than `sync`.
+- A stolen or misused listed key. There is no revocation and no reach-back.
+- Anyone who holds a listed key or can merge. Any listed signer can add another.
+- A compromised host, a host admin, and everyone the host lets merge.
+- An agent running in a listed person's session. The commit that holds its memory carries that person's signature.
+- Prompt injection written by a trusted signer.
+- Rollback or deletion by a listed signer.
+- A host with branch protection off.
 
-```bash
-# On Operator A's machine
-memforge attest-agent --memory-root . --adapter-prefix cc
-# attestation file at .memforge/agent-sessions/cc-2026-05-10-aaaa....yaml
+A pin vouches for earlier history without checking it. A pin from a compromised teammate pins a compromised history.
 
-# On Operator B's machine (separate session)
-memforge attest-agent --memory-root . --adapter-prefix cursor
-# attestation file at .memforge/agent-sessions/cursor-2026-05-10-bbbb....yaml
-```
-
-Both attestation files commit + push to the shared repo. Under the spec, receivers use them to verify writes signed under those agent sessions; the package has no receiver-side verification yet.
-
-## What you have at the end
-
-- A shared memory-root with a signed operator-registry listing both A and B.
-- Each operator's long-lived GPG public key in the registry + in the other's local GPG keyring.
-- Active agent-session attestations for each operator's coding-agent sessions.
-- A signed registry and attestations that a spec-conformant receiver can use to verify the other operator's writes. The reference package does not verify memory signatures yet, so today the shared repo's access control and review are what protect it.
-
-## Adding a third operator (C)
-
-Either A or B can add C to the registry. The same out-of-band fingerprint-exchange discipline applies between the adder and C. Order of trust: A trusts C because A verified C's fingerprint out-of-band; B trusts C because B trusts the registry (signed by A) which now lists C with C's fingerprint anchored.
-
-If B does NOT trust A enough to inherit A's vetting of C, B should do their own out-of-band fingerprint exchange with C as a sanity check before relying on registry entries that A added.
-
-## Removing an operator
-
-If an operator leaves the team or their key is compromised:
-
-```bash
-# On any operator who is still trusted
-memforge operator-registry remove --operator-uuid <departing-uuid>
-git commit -m "memforge: operator-registry remove <name>"
-git push origin main
-```
-
-The departing operator's entry is marked `status: superseded`. Under the spec, their historical writes remain verifiable for signatures dated before the removal commit (signing-time-aware verification) and future writes signed by their key fail verification at the registry-lookup step. The package does not run that check on memories yet. Also remove their push access to the shared remote.
-
-If their key was compromised (not just retired), additionally run `memforge revoke <key_id> --reason "compromise"` so a spec-conformant receiver stops trusting the key as of `revoked_at`, regardless of the registry entry's status.
-
-## Key rotation in a multi-operator setup
-
-When an operator rotates their long-lived key:
-
-```bash
-memforge rotate-key
-```
-
-This generates a new keypair, cross-signs both, lands the registry update signed by the OLD key, and starts the 24-hour cool-down. Under the spec, receivers reject writes signed by the new key during the cool-down; the package does not check this on memory reads yet. After 24 hours, the new key is fully active.
-
-The cool-down is the spec's protection against a compromised-key-as-rotation-attack: an attacker who compromised the old key cannot use it to rotate to a new key under their control and immediately sign with the new key . they have to wait 24 hours, during which the legitimate operator detects the unauthorized rotation and initiates `memforge: key-compromise`. The package does not enforce the cool-down when memories are read, so today that protection depends on a spec-conformant receiver.
+See [known limitations](../spec/known-limitations.md) and the "Commit trust" section of [the spec](../spec/SPEC.md).
 
 ## Troubleshooting
 
-- **`operator <uuid> already present in registry`** . you tried to `add` an operator who's already there. Use `rotate-key` or `fresh-start` to update their keys instead.
-- **`fingerprint <fpr> not found in local gpg secret keyring`** . you tried to `init-operator --gpg-fingerprint` with a key you have only the public half of. Import the secret half first or use `--gen-key`.
-- **Verify fails after pull with "registry signature did not verify"** . possible registry corruption or unauthorized edit. Compare the current registry against the previous git revision (`git show HEAD~1:.memforge/operator-registry.yaml`) and reconstruct from the last known-good state with the affected operator out-of-band.
-- **Adapter HALTs with `revocation history divergence`** . sparse / shallow-clone mode detected a non-fast-forward divergence in the remote ref. Either switch to full-clone mode OR investigate the remote with the other operators.
+- **`no_pin`**: this is a first sync. Pass `--trust-head <commit>` or `--adopt-local`.
+- **`pin_refused`**: sync already has a starting point. Drop the pin flag. To start again, make a fresh clone.
+- **`diverged`**: your local branch and the remote each have commits the other lacks. Sync never merges. Most often you have local commits: merge or rebase with git, sign the result, then sync. If you have none, the remote may have been rewritten. Treat that as an incident and ask the remote's owner.
+- **`history_rewrite`**: the remote no longer contains a commit you verified. Treat it as an incident. Local files are untouched.
+- **`shallow_range`**: your clone is shallow and does not hold the range. Deepen it with `git fetch --unshallow`.
+- **`ff_failed`**: local work-tree changes block the fast-forward. Commit or discard them and run sync again.
+- **`ssh_not_verified`**: a bad signature, a key not on the list, or no `ssh-keygen` all look the same. Read git's message that sync prints unchanged.
+- **`list_invalid`**: the list does not parse, has no entries, or a line uses `valid-after`, `valid-before` or `cert-authority`.
+- **`mode_unreleased`**: the store uses a mode this release has not released. Use `ssh`.

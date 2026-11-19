@@ -8,11 +8,61 @@ The version number tracked here is the **package / tooling** version. The on-dis
 
 ## [Unreleased]
 
+## [1.0.0] - Unreleased
+
+**Major: commit trust replaces the in-repo trust model. Package 1.0.0 / spec 1.0.0 (was 0.8.0). Nothing to migrate: existing stores keep loading. See `docs/migrating-to-1.0.md`.**
+
+MemForge no longer carries its own key system. Trust in a shared store comes from signed git commits and a signer list the store commits, using the identity, signing and git host controls an organization already runs. There is nothing in MemForge to generate, rotate, revoke or recover.
+
+### Added
+
+- `memforge sync`: fetches the shared branch and accepts new history only when every first-parent commit passes the store's mode check (a valid signature by a signer the committed list named one commit earlier). Ordered steps, named failure reasons, exit codes 0, 1 and 2, `--check`, `--trust-head <commit>` and `--adopt-local`. It refuses a history rewrite, a shallow range it cannot see, and a divergent branch, and it has no override flag. One local state key, `memforge.verifiedHead`, records where verification stopped. It fetches only the branch named by the upstream setting, and it requires the store to be the top level of its git repository (`root_not_toplevel` otherwise). Only `memforge sync` checks anything; no other command is gated.
+- Three signer-list modes: `ssh` (`.memforge/allowed_signers`), `gpg` (`.memforge/allowed_gpg_fingerprints`) and `keyless` (`.memforge/allowed_identities`). The mode comes from the one list file in a commit's first parent. `ssh` is available. `gpg` and `keyless` are refused (`mode_unreleased`) until their proofs pass on the pinned tool versions.
+- Isolated verification: a throwaway config-free git directory and a cleared environment, with the verifier executables resolved to absolute paths and printed with their versions and SHA-256.
+- Spec section "Commit trust (v1.0.0+)", with the trust statement, setup guidance, what is and is not protected, and the residual risks.
+- Optional advisory frontmatter fields `agent_session` and `on_behalf_of`. They carry no integrity weight beyond the signed commit that introduced them.
+- `docs/migrating-to-1.0.md`, and a rewritten `docs/team-bootstrap.md` for three setups: two people on a private repository (`ssh`), a company with single sign-on and required signed commits, and keyless signing.
+
 ### Changed
 
-- Docs now state what the reference package implements for team use. The quickstart, team bootstrap guide, README and WebSocket example README previously described memories as signed on write and verified by receivers on read. The package does neither: only `upgrade-v04-memories` writes a signature, and no code verifies a memory signature on read. A new "Implementation status" section in `docs/team-bootstrap.md` lists what is built (identity, registry, rotation, revocation, attestation) and what is not (per-memory signing, sender sequence and checkpoints on writes, read-side verification, receiver state, the WebSocket client and relay). `spec/known-limitations.md` gains a matching gaps section and its header now covers spec v0.8.0. No code or spec text changed. The README Status rows for v0.5.0 now say which parts are spec only, and the quickstart version output no longer pins a version number.
+- `memforge init-store` is repurposed. It creates the `.memforge/` layout and, with `--mode ssh|gpg|keyless`, a signer list for that mode: your own configured signing key for `ssh` and `gpg` when it resolves, otherwise a comment-only file you fill in (always for `keyless`). It never overwrites. It no longer creates a registry, and `--force` is gone.
+- `identity` and `signature` frontmatter are legacy: read like any field, preserved on rewrite, never verified, never written, and no audit finding. `memforge.frontmatter.render` takes the file's current text as `original` and keeps those fields' lines as written (line terminators aside); `memforge-resolve` and `memory-frontmatter-backfill` pass it. Before this, a rewrite re-serialized them (a signature timestamp came back requoted). The "(v0.4: unsigned)" tag no longer exists.
+- Spec: versioning and versioning history updated; the in-repo trust model is deprecated by this major revision. Integrity invariants 16 to 25 are retired (numbers not reused). No code ever enforced them in `memory-audit`, so audit behavior does not change.
+- `spec/known-limitations.md` rewritten around the residual risks of commit trust and the mechanisms not yet proven against the real tools. `docs/quickstart.md`, `docs/adapter-implementation-guide.md`, the README and the `examples/git-hooks/commit-msg*` hooks and auto-commit watchers no longer mention the registry, revocation or attestation paths.
+- The README no longer says external adoption waits on a CLA flow. Pull requests are open under Apache-2.0 with a DCO sign-off.
+
 - External pull requests are open. Contributions come in under Apache-2.0 (inbound equals outbound) with a Developer Certificate of Origin sign-off on every commit; the planned Contributor License Agreement is dropped. A new `DCO sign-off` check fails a PR when any commit, merge commits included, lacks a `Signed-off-by:` line matching its author. It runs on `pull_request_target` from `main`'s copy of the workflow and checker, so the PR under check cannot edit them, and it reads the PR's commits as data without checking out or running PR code. Dependabot PRs are exempt. `.github/CODEOWNERS` assigns CI, release config, packaging, the spec, governance records and the policy files (LICENSE, CONTRIBUTING, SECURITY, CODE_OF_CONDUCT) to the maintainer.
 - GitHub Issues are back on for bug reports and design proposals; Discussions stay off. Contributor docs and templates no longer point at Discussions, which had been disabled while still being advertised.
+
+### Removed
+
+- The 13 key-system commands: `init-operator`, `operator-registry` (`add`, `verify`, `remove`, `fresh-start`), `rotate-key`, `revoke`, `revocation-snapshot`, `revoke-cache-refresh`, `memories-by-key`, `revoke-memories`, `upgrade-v04-memories`, `recovery-init`, `recovery-backup-confirm`, `attest-agent` and `messaging-doctor`. Each name stays as a stub that prints a removal notice pointing to `docs/migrating-to-1.0.md` and exits non-zero, and does nothing else.
+- The modules behind those commands (`registry`, `revocation`, `crypto`, `identity`, `agent_session`, `sender_sequence`, `recovery`, `_security`) and the tests that exercised them. The kept code imports none of them.
+- Spec sections: "v0.5.0 surface map", "Multi-identity primitives" (its frontmatter rows are replaced by the advisory fields), "Signed envelope scope", "Mixed v0.4 / v0.5 deployment posture", "Agent session attestation content scope", "Cryptographic attribution", "Operator identity + cross-store references", "Messaging adapter contract", "Key lifecycle + revocation", and "Cross-cutting fail-closed posture". "Security considerations", "Privacy considerations" and "Known limitations" are replaced.
+- The `examples/websocket/` scaffold and the spec's messaging adapter contract. The package never shipped a WebSocket client or relay.
+- Registry, revocation and attestation commit-prefix checks from the example commit-msg hooks and watchers.
+
+### Upgrade notes
+
+- `sync` ignores the old registry, revocation commits and per-memory signatures. Leave those files or delete them in a normal commit.
+- To adopt commit trust, add a signer list for your signing method and run the first sync with a pin. See `docs/migrating-to-1.0.md`.
+- Only `memforge sync` checks anything. Plain `git pull` and edits in your work tree are not checked.
+
+### Spec compatibility
+
+Spec 0.8.0 to 1.0.0, a major revision. Integrity invariants 16 to 25 are retired and none is added, so a folder that was well-formed under 0.8.0 stays well-formed. Files that carry `identity` and `signature` frontmatter stay valid. What changes is the trust model: the normative text for per-memory signatures, the registry, revocation and attestations is gone, and commit trust is the one supported model.
+
+### Pre-ship review
+
+- **Tests.** `720 passed, 11 skipped` locally, and `91 passed` on the sync tests against a real GnuPG keyring. Each change merged only on green CI across three operating systems and three Python versions. New tests for a defect were run against the unfixed code first and failed there.
+- **Panel.** Every voice came from a model family other than the one that wrote the change, and each was bound to the exact diff it reviewed. Architect (grok-reasoning), code review and adversarial critic (a second family), threat-modeler (a third family).
+  - `memforge sync`: three rounds; all three voices approve the final round. A finding that the single-branch fetch could leave the tracking ref stale was rebutted with a test that asserts the ref moved.
+  - Key-system removal: two rounds; architect approves; findings closed.
+  - Legacy-field preservation on rewrite: found during this review (the reference tools reformatted an old `signature` block), fixed, three rounds. Architect and code review approve. The critic's last finding (quoted keys) is refuted by a passing test that failed on the first version of the fix.
+  - Spec and docs text: the critic did not approve the draft in four rounds. On the final text the architect approved, the critic's two wording findings were fixed (the team guide overstated which commits are checked; the spec called a commit signature proof of authorship), and the next round passed.
+- **Threat-modeler.** Subprocess argument handling, temp-directory and signer-list file handling, fail-open paths in verification, the state write order and the legacy-field splice. No findings.
+- **Carried, MINOR.** The shallow-range refusal depends on a parent object being absent rather than on the shallow file.
+- **Not proven.** `keyless` has run only against a stub `gitsign`, and `gpg` verdicts depend on the receiver's keyring. Both modes stay refused (`mode_unreleased`) until their real-tool proofs pass.
 
 ## [0.12.1] - 2026-11-13
 
@@ -167,21 +217,21 @@ were unreachable.
 
   Observed in the field before this release: a store with 17 subfolders holding 266 files had exactly ONE rollup parent. 266 memories were unreachable from the index and `memory-audit` reported clean.
 
-  **Remediation:** author the missing `README.md` rollup parent(s), then regenerate with `memory-index-gen --write`. Do NOT add the detail files to `MEMORY.md` directly — that violates the rollup compression contract the spec defines (and the audit downgrades a direct pointer to a health advisory rather than accepting it as canonical).
+  **Remediation:** author the missing `README.md` rollup parent(s), then regenerate with `memory-index-gen --write`. Do NOT add the detail files to `MEMORY.md` directly - that violates the rollup compression contract the spec defines (and the audit downgrades a direct pointer to a health advisory rather than accepting it as canonical).
 
   A file pointed at DIRECTLY from `MEMORY.md` is reachable and is NOT counted toward the violation; it continues to raise only the existing health advisory recommending the rollup pattern.
 
 ### Added
 
-- **`memory-index-gen` now WARNS on stderr when it is about to ship a lossy index**, naming each parentless subfolder and its file count, on the `--write` path and on BOTH `--check` paths including `OK`. `OK` means "the generated file is byte-identical to the existing one", never "every memory is reachable" — staying silent there was the false-assurance case. Exit codes are unchanged; `memory-audit` remains the enforcement gate.
+- **`memory-index-gen` now WARNS on stderr when it is about to ship a lossy index**, naming each parentless subfolder and its file count, on the `--write` path and on BOTH `--check` paths including `OK`. `OK` means "the generated file is byte-identical to the existing one", never "every memory is reachable" - staying silent there was the false-assurance case. Exit codes are unchanged; `memory-audit` remains the enforcement gate.
 
 ### Fixed
 
-- **`memory-frontmatter-backfill` no longer fabricates an `access` label that contradicts an operator-set `sensitivity`.** It previously wrote `access: internal` unconditionally, so a file declaring `sensitivity: restricted` emerged asserting both — two classification fields disagreeing, one of them invented by tooling rather than chosen by the operator. Backfill now leaves `access` UNSET when `sensitivity` is `restricted` or `privileged`.
+- **`memory-frontmatter-backfill` no longer fabricates an `access` label that contradicts an operator-set `sensitivity`.** It previously wrote `access: internal` unconditionally, so a file declaring `sensitivity: restricted` emerged asserting both - two classification fields disagreeing, one of them invented by tooling rather than chosen by the operator. Backfill now leaves `access` UNSET when `sensitivity` is `restricted` or `privileged`.
 
-  Scope, stated precisely: this was **not** a live exposure. `recall._access_ok()` treats an absent access list and an `internal` label identically (both visible), and `sensitivity` is enforced by a separate ANDed gate, so nothing was bypassed. It would have BECOME an exposure the moment the no-label default changed to fail-closed — at which point every restricted file carrying a fabricated open label would have stayed visible while appearing gated. The non-restrictive default (`access: internal`) is unchanged.
+  Scope, stated precisely: this was **not** a live exposure. `recall._access_ok()` treats an absent access list and an `internal` label identically (both visible), and `sensitivity` is enforced by a separate ANDed gate, so nothing was bypassed. It would have BECOME an exposure the moment the no-label default changed to fail-closed - at which point every restricted file carrying a fabricated open label would have stayed visible while appearing gated. The non-restrictive default (`access: internal`) is unchanged.
 
-- **`memory-audit`'s new subfolder walk skips symlinked directories.** `index_gen` guards symlinks in five places; `audit.py` had none. A symlink pointing outside the store (worst case `-> /`) would make the walk enumerate an arbitrary tree — a cheap denial-of-service against the audit — and could report a "subfolder" not part of the store.
+- **`memory-audit`'s new subfolder walk skips symlinked directories.** `index_gen` guards symlinks in five places; `audit.py` had none. A symlink pointing outside the store (worst case `-> /`) would make the walk enumerate an arbitrary tree - a cheap denial-of-service against the audit - and could report a "subfolder" not part of the store.
 
 - **`memory-audit`'s new subfolder walk excludes dot-directories** (`.git`, `.memforge`, and similar tooling state), matching `index_gen`. Previously only `archive/` was excluded, which was harmless before this release but would have raised an integrity violation for `.git/` as soon as any markdown appeared inside it.
 
@@ -191,7 +241,7 @@ were unreachable.
 
 ### Added
 
-- **`memory-validate` — the syntax-aware write-boundary gate.** The agent-neutral primitive an adapter invokes BEFORE accepting or committing a memory write, so a malformed file is rejected at the boundary instead of surfacing later as a `memory-audit` failure. HARD check (always fails): the frontmatter parses as a YAML mapping (the recurring unquoted-colon break, new integrity invariant 27). SOFT checks (fail only under `--strict`): pointer/line caps, required v0.4 fields, `tier`/`status` enums. Read-only; single-file and batch; `--json`. The parser (`memforge.frontmatter.validate_frontmatter`) and the caps/enums (`memforge.constants`) are shared with `memory-audit`, so the two cannot disagree. Replaces the previously Claude-Code-only frontmatter hook with one check every IDE wires (git pre-commit = universal; Claude Code `PreToolUse` shim = pre-write).
+- **`memory-validate` - the syntax-aware write-boundary gate.** The agent-neutral primitive an adapter invokes BEFORE accepting or committing a memory write, so a malformed file is rejected at the boundary instead of surfacing later as a `memory-audit` failure. HARD check (always fails): the frontmatter parses as a YAML mapping (the recurring unquoted-colon break, new integrity invariant 27). SOFT checks (fail only under `--strict`): pointer/line caps, required v0.4 fields, `tier`/`status` enums. Read-only; single-file and batch; `--json`. The parser (`memforge.frontmatter.validate_frontmatter`) and the caps/enums (`memforge.constants`) are shared with `memory-audit`, so the two cannot disagree. Replaces the previously Claude-Code-only frontmatter hook with one check every IDE wires (git pre-commit = universal; Claude Code `PreToolUse` shim = pre-write).
 - **`memory-audit` waiver mechanism (`.memforge/audit-waivers.yaml`).** An explicit, recorded, fail-closed allowlist that suppresses immutable migration-era Tier 2 commit-log findings so a genuinely-clean corpus audits to zero. Waivers are REPORTED (audit prints "N waived" with the commit SHAs), never silent. Fail-closed: a missing, unreadable, malformed, non-mapping, or non-list-shaped waiver file yields an empty waiver set. `waived_commits` (>=7-char SHAs, short-token guarded) and/or a `superseded_transition_waived_before` date cutoff.
 - **`memory-detect` hygiene orchestrator + `memory-audit` convention-drift health check** (folded from the curate work): runs the read-only detection primitives on a cadence and writes a prioritized findings queue; the MEMORY.md line-count + pointer-byte checks move from integrity violations to `[convention-drift]` health warnings (the spec uses SHOULD on those caps).
 
@@ -209,7 +259,7 @@ were unreachable.
 
 ### Pre-ship review
 
-- Cross-family release-rigor panel. **Architect**: ship, no findings. **Threat-modeler (gemini-pro, gate 2)**: 2 MAJOR + 1 MINOR. MAJOR-1 fail-closed violation (a scalar `waived_commits` raised `TypeError` instead of yielding an empty set) and MAJOR-2 spoofing via type-confusion (`superseded_transition_waived_before: true` stringified to `"True"`, over-waiving all superseded transitions via string comparison) were both fixed; writing the regression tests surfaced a 3rd crash vector (an unquoted invalid date raises `ValueError` from the YAML timestamp constructor), also fixed by broadening the loader's fail-closed guard. The MINOR (unbounded file read on a local CLI) is carried per the voice's recommendation. **Adversarial critic (grok-reasoning, gate 1)**: 1 BLOCKER — `memory-validate` HARD-failed an empty/degenerate frontmatter fence (over-strict vs the lenient parser); fixed (validate now mirrors `has_frontmatter` leniency; empty block = empty mapping) and invariant 27 spec text reconciled.
+- Cross-family release-rigor panel. **Architect**: ship, no findings. **Threat-modeler (gemini-pro, gate 2)**: 2 MAJOR + 1 MINOR. MAJOR-1 fail-closed violation (a scalar `waived_commits` raised `TypeError` instead of yielding an empty set) and MAJOR-2 spoofing via type-confusion (`superseded_transition_waived_before: true` stringified to `"True"`, over-waiving all superseded transitions via string comparison) were both fixed; writing the regression tests surfaced a 3rd crash vector (an unquoted invalid date raises `ValueError` from the YAML timestamp constructor), also fixed by broadening the loader's fail-closed guard. The MINOR (unbounded file read on a local CLI) is carried per the voice's recommendation. **Adversarial critic (grok-reasoning, gate 1)**: 1 BLOCKER - `memory-validate` HARD-failed an empty/degenerate frontmatter fence (over-strict vs the lenient parser); fixed (validate now mirrors `has_frontmatter` leniency; empty block = empty mapping) and invariant 27 spec text reconciled.
 
 ## [0.8.1] - 2026-06-28
 
@@ -361,14 +411,14 @@ were unreachable.
 
 Drop-in scripts operators can fork. Each example ships in two flavors: bash (macOS / Linux / Git Bash on Windows / WSL) and PowerShell (native Windows + cross-platform pwsh 7+).
 
-- `examples/git-hooks/commit-msg` — bash `commit-msg` hook that enforces the `memforge:` prefix grammar for Tier 2 scoped paths (operator-registry, config, snoozes, revocations). Rejects bad commits with diagnostic before they land.
-- `examples/git-hooks/commit-msg.ps1` — PowerShell port of the above. Windows install instructions in `examples/README.md` (thin `commit-msg` wrapper invoking pwsh).
-- `examples/scripts/memforge-auto-commit-watcher.sh` — bash file-system watcher that auto-commits memory `.md` writes. macOS (fswatch) and Linux (inotifywait) supported. Explicitly skips Tier 2 scoped paths so the `memforge` CLI's own commits are not raced.
-- `examples/scripts/memforge-auto-commit-watcher.ps1` — PowerShell port using `System.IO.FileSystemWatcher`; no external dependencies on Windows.
-- `examples/websocket/README.md` — scaffold for operators standing up the v0.5 WebSocket messaging substrate. Names this folder as starter material, NOT a deployable relay. Documents the gap: the reference CLI does not yet ship a WebSocket adapter; teams implement / contract their own relay against the spec contract.
-- `examples/websocket/config.example.yaml` — reference shape for the `.memforge/config.yaml` `messaging:` block when adapter is `websocket`. Forward-looking: schema a future MemForge client adapter will read.
-- `examples/websocket/probe.py` — minimal Python diagnostic that opens a `wss://` connection, authenticates with a per-operator bearer token, round-trips a placeholder envelope, and prints the echo. Verifies TLS handshake, auth, and relay reachability. Not a complete MemForge client; placeholder signatures noted in-source.
-- `examples/README.md` — index + Windows install instructions for each script.
+- `examples/git-hooks/commit-msg` - bash `commit-msg` hook that enforces the `memforge:` prefix grammar for Tier 2 scoped paths (operator-registry, config, snoozes, revocations). Rejects bad commits with diagnostic before they land.
+- `examples/git-hooks/commit-msg.ps1` - PowerShell port of the above. Windows install instructions in `examples/README.md` (thin `commit-msg` wrapper invoking pwsh).
+- `examples/scripts/memforge-auto-commit-watcher.sh` - bash file-system watcher that auto-commits memory `.md` writes. macOS (fswatch) and Linux (inotifywait) supported. Explicitly skips Tier 2 scoped paths so the `memforge` CLI's own commits are not raced.
+- `examples/scripts/memforge-auto-commit-watcher.ps1` - PowerShell port using `System.IO.FileSystemWatcher`; no external dependencies on Windows.
+- `examples/websocket/README.md` - scaffold for operators standing up the v0.5 WebSocket messaging substrate. Names this folder as starter material, NOT a deployable relay. Documents the gap: the reference CLI does not yet ship a WebSocket adapter; teams implement / contract their own relay against the spec contract.
+- `examples/websocket/config.example.yaml` - reference shape for the `.memforge/config.yaml` `messaging:` block when adapter is `websocket`. Forward-looking: schema a future MemForge client adapter will read.
+- `examples/websocket/probe.py` - minimal Python diagnostic that opens a `wss://` connection, authenticates with a per-operator bearer token, round-trips a placeholder envelope, and prints the echo. Verifies TLS handshake, auth, and relay reachability. Not a complete MemForge client; placeholder signatures noted in-source.
+- `examples/README.md` - index + Windows install instructions for each script.
 
 ### Documentation
 

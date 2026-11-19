@@ -9,8 +9,11 @@
 #
 # Extend the registered checks below as your team starts using
 # `memforge: resolve <topic>` and `memforge: alias <topic>`. The base
-# four (operator-registry, config, snooze, revoke) cover the common
-# Tier-2 mistakes.
+# two (config, snooze) cover the common Tier-2 mistakes.
+#
+# Signed commits and the signer list are separate from this hook. Set
+# `commit.gpgsign true` in git for commit signing; `memforge sync` checks
+# the signatures. This hook looks only at commit-message prefixes.
 
 set -e
 
@@ -29,14 +32,6 @@ fail() {
   exit 1
 }
 
-# .memforge/operator-registry.yaml -> memforge: operator-registry OR memforge: rotate-key
-if touches_exact ".memforge/operator-registry.yaml"; then
-  if ! starts_with "memforge: operator-registry" && ! starts_with "memforge: rotate-key"; then
-    fail "operator-registry.yaml staged but commit prefix is not 'memforge: operator-registry' or 'memforge: rotate-key'." \
-         "Run the corresponding memforge CLI command and use the message it prints."
-  fi
-fi
-
 # .memforge/config.yaml -> memforge: config (Tier 2 BLOCKER per spec)
 if touches_exact ".memforge/config.yaml"; then
   if ! starts_with "memforge: config"; then
@@ -50,14 +45,6 @@ if touches_pattern "^\.memforge/snoozes/.*\.yaml$"; then
   if ! starts_with "memforge: snooze "; then
     fail "Snooze file staged but commit prefix is not 'memforge: snooze <topic>'." \
          "Snooze edits MUST land in 'memforge: snooze <topic>' commits."
-  fi
-fi
-
-# Revocation events -> memforge: revoke OR memforge: revocation-snapshot
-if touches_pattern "^\.memforge/revocations?/"; then
-  if ! starts_with "memforge: revoke" && ! starts_with "memforge: revocation-snapshot"; then
-    fail "Revocation artifact staged but commit prefix is not 'memforge: revoke' or 'memforge: revocation-snapshot'." \
-         "Run 'memforge revoke <key_id>' or 'memforge revocation-snapshot' and use the printed message."
   fi
 fi
 

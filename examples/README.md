@@ -6,7 +6,7 @@ Two flavors of every example: bash (macOS / Linux / Git Bash on Windows / WSL) a
 
 ## commit-msg hook: enforce `memforge:` prefix grammar
 
-Rejects commits violating the `memforge:` prefix grammar for Tier 2 scoped paths (operator-registry, config, snoozes, revocations). Catches the bulk of common mistakes at commit time, before the diff lands in the audit trail.
+Rejects commits violating the `memforge:` prefix grammar for Tier 2 scoped paths (config and snoozes). Catches the bulk of common mistakes at commit time, before the diff lands in the audit trail.
 
 ### bash version (`git-hooks/commit-msg`)
 
@@ -29,11 +29,11 @@ exit `$LASTEXITCODE
 "@ | Set-Content -LiteralPath .git\hooks\commit-msg -Encoding utf8
 ```
 
-Extend either version for `memforge: resolve <topic>` and `memforge: alias <topic>` as your team adopts those operations. See `docs/quickstart.md` §"Commit hygiene + signed `memforge:` prefixes" for the underlying contract.
+Extend either version for `memforge: resolve <topic>` and `memforge: alias <topic>` as your team adopts those operations. The hook checks commit-message prefixes only. Commit signing is a separate git setting (`commit.gpgsign true`), and `memforge sync` checks the signatures. See `docs/quickstart.md` §"Commit hygiene and the `memforge:` prefixes" and `docs/team-bootstrap.md`.
 
 ## auto-commit watcher: auto-commit memory `.md` writes
 
-Watches a memory-root and auto-commits memory `.md` files as they land. Skips Tier 2 scoped paths so the `memforge` CLI's own commits land cleanly without a race.
+Watches a memory-root and auto-commits memory `.md` files as they land. Skips Tier 2 scoped paths so the `memforge` CLI's own commits land cleanly without a race. It commits only `.md` files, so a signer list file (`.memforge/allowed_signers` and the like) is never auto-committed; those land in a deliberate signed commit.
 
 ### bash version (`scripts/memforge-auto-commit-watcher.sh`)
 
@@ -57,16 +57,6 @@ Start-Job -Name MemForgeWatcher -ScriptBlock {
 ```
 
 If you run Claude Code, its built-in PostToolUse `memory-auto-commit.sh` hook gives you the same shape scoped to Claude Code's tool-call lifecycle (rather than fs-level events); fork either of the above as a starting point.
-
-## WebSocket scaffold (`websocket/`)
-
-Starter material for operators standing up the v0.5 WebSocket messaging substrate. Includes:
-
-- `websocket/README.md` — explains scope (this is scaffold, not a deployable relay; spec is the source of truth for the relay-side contract).
-- `websocket/config.example.yaml` — reference shape for the `.memforge/config.yaml` `messaging:` block when adapter is `websocket`.
-- `websocket/probe.py` — minimal Python probe that verifies a relay is reachable, accepts your operator's bearer token, and round-trips a placeholder envelope.
-
-See `docs/team-bootstrap.md` §"Pick your transport: git-only or WebSocket?" for the operator-decision framing before standing any of this up.
 
 ## Recall (`recall/`)
 

@@ -24,8 +24,8 @@ cd "$ROOT"
 
 scoped_path() {
   case "$1" in
-    .memforge/operator-registry.yaml|.memforge/config.yaml) return 0 ;;
-    .memforge/snoozes/*|.memforge/revocations/*|.memforge/sender-sequence/*|.memforge/agent-sessions/*) return 0 ;;
+    .memforge/config.yaml) return 0 ;;
+    .memforge/snoozes/*) return 0 ;;
     *) return 1 ;;
   esac
 }

@@ -1,7 +1,7 @@
 # MemForge adapter implementation guide
 
 **Status:** informative (not normative).
-**Spec target:** v0.4.0+.
+**Spec target:** v0.4.0+ (commit trust: v1.0.0).
 
 This guide is for adapter authors integrating MemForge into a coding agent, IDE, CLI, or web UI. It covers UX patterns, deployment guidance, and a conformance test approach. The normative spec lives in [`spec/SPEC.md`](../spec/SPEC.md); this document explains how to implement it cleanly across user surfaces.
 
@@ -28,10 +28,10 @@ Adapters implement UX on top of these contracts. UX is non-normative; the contra
 
 The package ships these binaries (after `pip install ildan-memforge`):
 
-- `memforge-resolve <topic>` — runs the resolve operation. Interactive by default; non-interactive via `--winner-uid <uid>`. Writes the atomic `memforge: resolve <topic>` commit.
-- `memory-audit` — runs Tier 1 + Tier 2 audit. Use as a CI gate.
-- `memforge-migrate-claim-block` — rewrites legacy per-group `status:` to canonical `state:` in `MEMORY.md`. One-shot fixer for v4-shape data.
-- `memory-promote`, `memory-rollup`, `memory-cluster-suggest`, `memory-link-rewriter`, etc. — pre-existing v0.3.x tools that work unchanged.
+- `memforge-resolve <topic>` - runs the resolve operation. Interactive by default; non-interactive via `--winner-uid <uid>`. Writes the atomic `memforge: resolve <topic>` commit.
+- `memory-audit` - runs Tier 1 + Tier 2 audit. Use as a CI gate.
+- `memforge-migrate-claim-block` - rewrites legacy per-group `status:` to canonical `state:` in `MEMORY.md`. One-shot fixer for v4-shape data.
+- `memory-promote`, `memory-rollup`, `memory-cluster-suggest`, `memory-link-rewriter`, etc. - pre-existing v0.3.x tools that work unchanged.
 
 Every other adapter is, ideally, a thin wrapper over these binaries. If your UX is shell-able, just shell out.
 
@@ -79,7 +79,7 @@ After mutations are applied but before the atomic commit fires, show the operato
 
 ### 5. After commit: run audit
 
-Always run `memory-audit --path <root>` after a resolve. Expect zero new BLOCKERs. If any fire, surface them — the resolve ran but the result has a problem the spec catches.
+Always run `memory-audit --path <root>` after a resolve. Expect zero new BLOCKERs. If any fire, surface them - the resolve ran but the result has a problem the spec catches.
 
 ### 6. Interaction with snooze
 
@@ -96,9 +96,9 @@ The spec acknowledges that Tier 2 (commit-log) audit invariants can be partially
 
 The mitigation is at the git provider, not in MemForge. If your deployment has any of: untrusted writers, multi-tenant memory repos, regulated content, or any setting where adversarial writers are a realistic threat, configure the canonical branch with:
 
-1. **Branch protection** — no force-push on the canonical branch; require pull-request review.
-2. **Required signed commits** — author identity is harder to forge.
-3. **Required status checks** — `memory-audit` runs on every PR + on the canonical branch tip; PR cannot merge if audit fires BLOCKERs.
+1. **Branch protection** - no force-push on the canonical branch; require pull-request review.
+2. **Required signed commits** - author identity is harder to forge.
+3. **Required status checks** - `memory-audit` runs on every PR + on the canonical branch tip; PR cannot merge if audit fires BLOCKERs.
 
 ### Secure-mode adapter conformance (informative)
 
@@ -117,7 +117,7 @@ gh api "repos/$REPO/branches/$BRANCH/protection" \
 
 Adapters that do NOT claim secure-mode MUST emit an informative startup notice: "Operating without git-layer protection; Tier 2 audit guarantees reduced. Solo-operator deployments are explicitly not in secure mode."
 
-Solo-operator deployments running without branch protection are explicitly OK to run; the operator accepts the residual force-push threat as part of running solo. Don't refuse to start in solo mode just because branch protection is missing — that's a false-positive.
+Solo-operator deployments running without branch protection are explicitly OK to run; the operator accepts the residual force-push threat as part of running solo. Don't refuse to start in solo mode just because branch protection is missing - that's a false-positive.
 
 #### Secure-mode sensitivity enforcement (v0.4.0+)
 
@@ -133,50 +133,50 @@ Operators MAY disable the export-tier gate or the DLP cross-check at non-privile
 
 Before declaring your adapter v0.4-conformant, run the following test scenarios. All produce known states the spec catches; passing tests verify that your UX surfaces the right data and that mutations land in the right commit shape.
 
-### T1 — Two competing memories, pick existing winner
+### T1 - Two competing memories, pick existing winner
 
 1. Create two memories with the same `decision_topic`, both `status: active`.
 2. Invoke your adapter's resolve flow.
 3. Operator picks member 1 as winner.
 4. **Assert**: post-state has member 1 active, member 2 superseded with `superseded_by: [member-1-UID]`, member 1's `replaces:` lists member 2's UID, both have `ever_multi_member: true`, single commit with message `memforge: resolve <topic>`, `memory-audit` passes.
 
-### T2 — Two competing memories, write new winner
+### T2 - Two competing memories, write new winner
 
 1. Same setup as T1.
 2. Operator picks "write new memory" with body content.
 3. **Assert**: post-state has the new memory active with `decision_topic == <topic>` and `replaces: [m1-UID, m2-UID]`; m1 and m2 superseded with `superseded_by: [new-UID]`; commit message and audit as above.
 
-### T3 — Single live member (no-op)
+### T3 - Single live member (no-op)
 
 1. One memory with `decision_topic: foo`, `status: active`. No competing members.
 2. Invoke resolve flow.
 3. **Assert**: adapter exits cleanly with "nothing to resolve" message; no mutations applied; no commit.
 
-### T4 — Snooze present (strict mode)
+### T4 - Snooze present (strict mode)
 
 1. Two competing memories + a snooze file at `.memforge/snoozes/<topic>.yaml` with `snoozed_until` in the future.
 2. Invoke resolve flow.
 3. **Assert**: adapter refuses to proceed (in strict mode); surfaces the snooze; operator prompted to cancel snooze first.
 
-### T5 — Cross-root members (must error)
+### T5 - Cross-root members (must error)
 
 1. Place one member in `~/.memforge/global-memory/` and one member in `~/.memforge/memory/`, same `decision_topic`.
 2. Invoke resolve flow.
 3. **Assert**: adapter errors with "members span multiple memory roots"; cross-root resolution out of scope for v0.4.
 
-### T6 — Audit catches asymmetric supersession
+### T6 - Audit catches asymmetric supersession
 
 1. Manually edit a memory: `status: superseded` with `superseded_by: [does-not-exist]`.
 2. Run `memory-audit`.
 3. **Assert**: BLOCKER fires citing the dangling reference.
 
-### T7 — Audit catches alias non-mutuality
+### T7 - Audit catches alias non-mutuality
 
 1. Anchor of topic A lists topic B in `topic_aliases:`. Anchor of topic B does NOT list A.
 2. Run `memory-audit`.
 3. **Assert**: WARN fires; alias is inactive; both groups continue to be treated as separate.
 
-### T8 — Migrate-claim-block on legacy data
+### T8 - Migrate-claim-block on legacy data
 
 1. Hand-craft a `MEMORY.md` with `status: competing` (legacy v4 shape) at the per-group level inside the fenced block.
 2. Run `memforge-migrate-claim-block`.
@@ -189,7 +189,7 @@ A reference test fixture set is at `tests/conformance/sensitivity/` (covers spec
 If you're integrating MemForge as the substrate for a multi-agent system, you should understand the threat model. Short version:
 
 - Tier 1 invariants are HEAD-pure. They survive any history rewrite. If your adapter trusts `memory-audit`'s pass on HEAD, you can trust the data shape.
-- Tier 2 invariants depend on git history. Force-push erases history. Defending against force-push is the git provider's job (branch protection + signed commits).
+- Tier 2 invariants depend on git history. Force-push erases history. Defending against force-push is the git provider's job (branch protection + signed commits). `memforge sync` also refuses a rewrite of history it already verified.
 - Solo-operator deployments accept the residual force-push threat. Multi-writer / regulated / adversarial deployments must enable secure-mode.
 - The resolve operation is the only path that mutates resolution state. All other writes are advisory until the resolve operation ratifies them.
 - `created_by` on snoozes is best-effort provenance. Pure git allows author amend; adapters seeking unforgeable provenance should require signed commits.
@@ -206,13 +206,13 @@ Pick the strongest tier your surface supports. Most adapters can do at least Tie
 
 | Tier | When it fires | Rejects the bad write before… | Available on |
 |------|---------------|-------------------------------|--------------|
-| **A — pre-write** | before the bytes reach disk | …the file is ever written | surfaces with a true pre-write hook (Claude Code `PreToolUse`) |
-| **B — pre-commit** | when the change is staged for commit | …it enters git history | **every** adapter (all version via git: CC auto-commit, `memory-watch`, Aider native) |
-| **C — on-save / advisory** | after the write, in the editor | nothing; surfaces inline | editor-on-save integrations |
+| **A - pre-write** | before the bytes reach disk | …the file is ever written | surfaces with a true pre-write hook (Claude Code `PreToolUse`) |
+| **B - pre-commit** | when the change is staged for commit | …it enters git history | **every** adapter (all version via git: CC auto-commit, `memory-watch`, Aider native) |
+| **C - on-save / advisory** | after the write, in the editor | nothing; surfaces inline | editor-on-save integrations |
 
 Tier B is the universal floor: because every MemForge adapter versions the memory folder with git, a `pre-commit` hook is a gate every adapter inherits for free. Tier A is strictly better (the malformed bytes never touch disk) but needs a real pre-write hook, which today only Claude Code exposes.
 
-### Tier B — git pre-commit hook (universal, copy-paste)
+### Tier B - git pre-commit hook (universal, copy-paste)
 
 Install in the memory folder's git repo at `.git/hooks/pre-commit` (or wire via `core.hooksPath` / pre-commit framework):
 
@@ -228,9 +228,9 @@ echo "$staged" | xargs memory-validate || {
 }
 ```
 
-This is the recommended gate for Cursor, VS Code Copilot, Aider, Codex, Cline, Continue, Windsurf, and any future adapter — they all already commit through git (most via `memory-watch`), so the hook fires regardless of which agent did the write. Add `--strict` if you want SOFT findings (pointer-cap, missing fields, bad enums) to block too; the default blocks only the HARD frontmatter-parse failure.
+This is the recommended gate for Cursor, VS Code Copilot, Aider, Codex, Cline, Continue, Windsurf, and any future adapter - they all already commit through git (most via `memory-watch`), so the hook fires regardless of which agent did the write. Add `--strict` if you want SOFT findings (pointer-cap, missing fields, bad enums) to block too; the default blocks only the HARD frontmatter-parse failure.
 
-### Tier A — Claude Code PreToolUse shim (reference implementation)
+### Tier A - Claude Code PreToolUse shim (reference implementation)
 
 Claude Code can deny a `Write`/`Edit` before it lands. The shim reconstructs the *post-write* content and pipes it to `memory-validate`. The adapter (not memforge) owns the reconstruction, because only the adapter knows the tool semantics:
 
@@ -273,18 +273,18 @@ if __name__ == "__main__":
 
 Call the installed package's `validate_frontmatter`, not a vendored copy, so the gate tracks spec updates. Always fail open on internal error: a write-gate that wedges on its own bug is worse than the break it prevents.
 
-### Tier C — editor-on-save
+### Tier C - editor-on-save
 
 For an editor integration, run `memory-validate <file>` on save and surface failures inline (a red squiggle / problems-panel entry). This is advisory: it informs the author but does not stop the save. Pair it with Tier B so the authoritative rejection still happens at commit time.
 
 ### Per-IDE specifics
 
-- **Claude Code** — Tier A. Register the shim above under `PreToolUse` matching `Write|Edit`. This is the only adapter today that pre-empts the on-disk write. (The interim hand-written CC hook that motivated this operation is now exactly this shim over the shared primitive.)
-- **Cursor** — Tier B. Cursor exposes no pre-write hook (writes are surfaced after the fact via `memory-watch`), so the git pre-commit hook is the gate. Optionally extend the `memory-watch` invocation to run `memory-validate` on a settled write and skip the auto-commit on failure, surfacing the reason in the watcher log.
-- **VS Code Copilot** — Tier B (+ optional Tier C via a VS Code task bound to `onSave`). Same constraint as Cursor: no pre-write hook, so gate at commit. The VS Code "Problems" panel is the natural Tier C surface.
-- **Aider** — Tier B. Aider's native auto-commit fires the pre-commit hook for files it edits via `/add`; `memory-watch` covers external edits, and its commit fires the same hook. No Aider-specific pre-write hook exists.
-- **Codex CLI / Cline / Continue / Windsurf** — Tier B. All AGENTS.md-aware agents version via `memory-watch` (or native git), so the pre-commit hook is the universal gate. None expose a pre-write hook.
-- **Plain shell / vim / emacs / CI** — Tier B is just `memory-validate` in a pre-commit hook; CI can additionally run `memory-validate --path <root> --strict` as a blocking job alongside `memory-audit`.
+- **Claude Code** - Tier A. Register the shim above under `PreToolUse` matching `Write|Edit`. This is the only adapter today that pre-empts the on-disk write. (The interim hand-written CC hook that motivated this operation is now exactly this shim over the shared primitive.)
+- **Cursor** - Tier B. Cursor exposes no pre-write hook (writes are surfaced after the fact via `memory-watch`), so the git pre-commit hook is the gate. Optionally extend the `memory-watch` invocation to run `memory-validate` on a settled write and skip the auto-commit on failure, surfacing the reason in the watcher log.
+- **VS Code Copilot** - Tier B (+ optional Tier C via a VS Code task bound to `onSave`). Same constraint as Cursor: no pre-write hook, so gate at commit. The VS Code "Problems" panel is the natural Tier C surface.
+- **Aider** - Tier B. Aider's native auto-commit fires the pre-commit hook for files it edits via `/add`; `memory-watch` covers external edits, and its commit fires the same hook. No Aider-specific pre-write hook exists.
+- **Codex CLI / Cline / Continue / Windsurf** - Tier B. All AGENTS.md-aware agents version via `memory-watch` (or native git), so the pre-commit hook is the universal gate. None expose a pre-write hook.
+- **Plain shell / vim / emacs / CI** - Tier B is just `memory-validate` in a pre-commit hook; CI can additionally run `memory-validate --path <root> --strict` as a blocking job alongside `memory-audit`.
 
 ### Validate vs audit (do not confuse them)
 
@@ -310,9 +310,23 @@ Recall is an alternative to bulk-loading the `tier: index` hotlist (`MEMORY.md`)
 
 The Claude Code reference adapter is `adapters/claude-code/hooks/memory_recall_hook.py` (registered under `UserPromptSubmit`). Operator examples, including a synonym-override file, are in `examples/recall/`.
 
+## Commit trust (v1.0.0)
+
+Spec 1.0.0 puts trust for a shared store in signed git commits and a committed signer list, checked by `memforge sync`. See spec §"Commit trust (v1.0.0+)". What that means for an adapter:
+
+- **An adapter does not verify anything itself.** Do not read or write signer list files, and do not reimplement signature checks. Call `memforge sync` (or run your own spec-conformant `sync`) when the user wants to take in new history.
+- **Do not gate other operations on verified state.** Loading memory, recall, audit, validate and resolve read what is checked out. The spec forbids gating them. If your adapter loads content after a plain `git pull` or a work-tree edit, that content is unverified, and the spec says so plainly. Tell your users where the check lives rather than implying a load is verified.
+- **Surface sync results as they are.** Show the exit code, the reason name (`unsigned`, `ssh_not_verified`, `history_rewrite`, and the rest) and the commit it names. Do not offer an override. The way out of a refusal is the remote's owner removing the commit.
+- **Change notifications are optional and carry no authority.** An adapter MAY tell a user the shared branch moved. The message carries no memory content and proves nothing. The user runs `sync`.
+- **Attribution is advisory.** An adapter MAY write `agent_session` and `on_behalf_of` in frontmatter. They are free text and carry no integrity weight beyond the signed commit that introduced them. Never show them as proof of authorship.
+- **Preserve legacy fields.** Files may carry `identity` and `signature` from older versions. Keep each field's lines byte for byte on rewrite, from its key line through the last line of its value (line terminators aside). Never write them and never verify them.
+- **Do not auto-commit signer lists.** A change to `.memforge/allowed_signers`, `.memforge/allowed_gpg_fingerprints` or `.memforge/allowed_identities` must land in a deliberate commit signed by an already listed signer. Auto-commit helpers should leave these files alone.
+- **Commit signing is a git setting.** Agents that commit for a person sign with that person's configured key. The commit then carries that person's signature. Say so in your UX.
+
 ## Pointers
 
-- Spec: [`spec/SPEC.md`](../spec/SPEC.md), in particular §"Recall operation", §"Multi-agent concurrency: competing claims", and §"Integrity invariants".
+- Spec: [`spec/SPEC.md`](../spec/SPEC.md), in particular §"Commit trust (v1.0.0+)", §"Recall operation", §"Multi-agent concurrency: competing claims", and §"Integrity invariants".
+- Team setup: [`team-bootstrap.md`](./team-bootstrap.md). Upgrading: [`migrating-to-1.0.md`](./migrating-to-1.0.md).
 - Reference CLI: [`src/memforge/cli/resolve.py`](../src/memforge/cli/resolve.py).
 - Audit: [`src/memforge/cli/audit.py`](../src/memforge/cli/audit.py) + [`src/memforge/cli/_concurrency_audit.py`](../src/memforge/cli/_concurrency_audit.py).
 - Migration fixer: [`src/memforge/cli/migrate_claim_block.py`](../src/memforge/cli/migrate_claim_block.py).

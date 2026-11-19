@@ -1,27 +1,35 @@
 # MemForge
 
-**Typed, git-native, dynamic memory for coding agents.** A markdown folder + a small spec + reference tooling. Works across Claude Code, Cursor, Aider, Codex, and GitHub Copilot Chat through thin adapters. As of v0.5, supports multi-operator teams with cryptographic attribution; as of v0.5.2, the reference CLI ships under a single `memforge` dispatcher with cross-platform support (macOS, Linux, native Windows); as of v0.6, query-triggered recall surfaces the memories matching a prompt on demand instead of bulk-loading the whole index.
+**Typed, git-native, dynamic memory for coding agents.** A markdown folder + a small spec + reference tooling. Works across Claude Code, Cursor, Aider, Codex, and GitHub Copilot Chat through thin adapters. As of 1.0, a shared store is protected by the signed git commits you already use: `memforge sync` checks every commit against a signer list the store commits, and MemForge holds no keys. The reference CLI ships under a single `memforge` dispatcher with cross-platform support (macOS, Linux, native Windows). Query-triggered recall surfaces the memories matching a prompt on demand instead of bulk-loading the whole index.
 
 [![CI](https://github.com/ildan-ai/memforge/actions/workflows/ci.yml/badge.svg)](https://github.com/ildan-ai/memforge/actions/workflows/ci.yml) [![PyPI version](https://img.shields.io/pypi/v/ildan-memforge)](https://pypi.org/project/ildan-memforge/) [![Python versions](https://img.shields.io/pypi/pyversions/ildan-memforge)](https://pypi.org/project/ildan-memforge/) [![License: Apache 2.0](https://img.shields.io/badge/license-Apache%202.0-blue.svg)](./LICENSE) [![DOI](https://img.shields.io/badge/DOI-10.5281%2Fzenodo.20113963-blue)](https://doi.org/10.5281/zenodo.20113963)
 
 Docs: [PyPI](https://pypi.org/project/ildan-memforge/) | [CHANGELOG](./CHANGELOG.md) | [spec](./spec/SPEC.md) | [examples](./examples/)
 
-> **Status: pre-1.0; contributions welcome.** Issues and pull requests are open. Every commit needs a DCO sign-off (`git commit -s`). See [CONTRIBUTING.md](./CONTRIBUTING.md). Security reports go through the private channel in [SECURITY.md](./SECURITY.md).
+> **Status: 1.0; contributions welcome.** Issues and pull requests are open. Every commit needs a DCO sign-off (`git commit -s`). See [CONTRIBUTING.md](./CONTRIBUTING.md). Security reports go through the private channel in [SECURITY.md](./SECURITY.md).
 
-## Quickstart (v0.5+, ~3 minutes)
+## Quickstart (~3 minutes)
 
 ```bash
 pip install ildan-memforge
 memforge --version                  # prints the installed package version
-memforge init-operator --name "Your Name" --gen-key
 cd /path/to/memory-root
-memforge init-store                 # creates the signed operator-registry first
-memforge recovery-init              # anchors the recovery-secret SHA256 in that registry
-memforge recovery-backup-confirm --i-have-backed-up-the-secret
-memforge messaging-doctor           # verify v0.5 posture: ALL CHECKS PASSED
+memforge init-store                 # creates the .memforge/ layout
+memory-audit --strict               # check the store
 ```
 
-Full quickstart at [`docs/quickstart.md`](./docs/quickstart.md) (includes a section on commit hygiene + the signed `memforge:` commit-prefix grammar that audit / resolve / revoke parse). **What the package implements today:** operator identity, the signed operator-registry, key rotation, revocation and agent-session attestation. It does not yet sign a memory on a normal write or verify another operator's memory on read, and it ships no WebSocket client or relay. See [Implementation status](./docs/team-bootstrap.md#implementation-status). Multi-operator team bootstrap at [`docs/team-bootstrap.md`](./docs/team-bootstrap.md) (includes "Pick your transport: git-only or WebSocket?" decision-framing for teams weighing the spec's messaging substrates).
+For a store shared by several people or agents, add commit trust: every writer signs commits, the store commits a signer list, and everyone takes in new history with `memforge sync`.
+
+```bash
+memforge init-store --mode ssh      # writes .memforge/allowed_signers
+memforge sync --adopt-local         # the creator, first time
+memforge sync --trust-head <commit> # everyone else, first time
+memforge sync                       # every time after
+```
+
+Full quickstart at [`docs/quickstart.md`](./docs/quickstart.md). Shared-store setup for two people, a company with single sign-on, and keyless signing is at [`docs/team-bootstrap.md`](./docs/team-bootstrap.md). Coming from an older version? See [`docs/migrating-to-1.0.md`](./docs/migrating-to-1.0.md).
+
+**What the package does today.** `memforge sync` fetches the shared branch, checks every first-parent commit against the committed signer list, fast-forwards, and records where it stopped. The `ssh` mode is available. The `gpg` and `keyless` modes are refused until their proofs pass. Only `memforge sync` checks anything: plain `git pull` and edits in your work tree are not checked, and no other command is gated on verified state. MemForge does not sign or verify individual memory files and does not manage keys, rotation, revocation or a registry. The limits are in [`spec/known-limitations.md`](./spec/known-limitations.md).
 
 ## Cite this work
 
@@ -56,7 +64,7 @@ pip install ildan-memforge
 
 The PyPI distribution is published under `ildan-memforge` because the
 shorter `memforge` name is held by an unrelated project. The Python
-import path is still `memforge`, and the 20 CLI commands install with
+import path is still `memforge`, and the CLI commands install with
 the same names (`memory-audit`, `memory-watch`, `memory-dlp-scan`,
 `memforge-resolve`, etc.).
 You can also install straight from source:
@@ -181,26 +189,16 @@ Adapters are thin: they translate "load this folder at session start" into the a
 
 Run `--help` on any of them.
 
-### v0.5+ operator + identity surface (under the `memforge` dispatcher)
+### Commit trust (under the `memforge` dispatcher)
 
 | Subcommand | What it does |
 | --- | --- |
-| `memforge init-operator` | Generate operator-UUID + register a GPG signing key as the operator identity. |
-| `memforge init-store` | Bootstrap `.memforge/` in a memory-root + create a signed operator-registry. |
-| `memforge operator-registry {add\|verify\|remove\|fresh-start}` | Manage the operator-registry (add a peer operator; verify the signature; etc.). |
-| `memforge rotate-key` | Generate a new long-lived key, cross-sign with the old one, lands the registry update with a 24-hour cool-down. |
-| `memforge revoke <key_id> --reason ...` | Build a signed `memforge: revoke <key_id>` commit body. |
-| `memforge revocation-snapshot` | Emit a signed snapshot of the current revocation set. |
-| `memforge memories-by-key <key_id>` | List memories signed under a given key (forensic + bulk-revoke prep). |
-| `memforge revoke-memories <key_id> --bulk` | Mark memories signed by a revoked key as `status: superseded`. |
-| `memforge upgrade-v04-memories --apply` | Add v0.5 `identity` + `signature` frontmatter to v0.4 memories in-place. |
-| `memforge revoke-cache-refresh` | Refresh the remote-fetch revocation cache (sparse-checkout / shallow-clone mode). |
-| `memforge messaging-doctor` | Run the v0.5.1 fail-closed checklist + report posture (OK / WARN / FAIL). |
-| `memforge recovery-init` | Generate `~/.memforge/recovery-secret.bin` + anchor SHA256 in the signed operator-registry. |
-| `memforge recovery-backup-confirm` | Acknowledge offline backup of the recovery-secret; unlocks v0.5+ writes. |
-| `memforge attest-agent` | Issue a signed agent-session attestation (nonce + expires_at + capability_scope). |
+| `memforge sync` | Fetch the upstream branch, verify every first-parent commit against the committed signer list, fast-forward, record where verification stopped. Flags: `--check` (verify, change nothing local), `--trust-head <commit>` and `--adopt-local` (first-sync pins). Exit 0 verified, 2 refused by verification or history rules, 1 any other error. |
+| `memforge init-store` | Create the `.memforge/` layout. With `--mode ssh\|gpg\|keyless`, also write the signer list for that mode. Never overwrites. |
 
-### v0.3 / v0.4 memory-format surface (per-tool console scripts)
+The 13 key-system commands from 0.5.x (`init-operator`, `operator-registry`, `rotate-key`, `revoke`, `revocation-snapshot`, `revoke-cache-refresh`, `memories-by-key`, `revoke-memories`, `upgrade-v04-memories`, `recovery-init`, `recovery-backup-confirm`, `attest-agent`, `messaging-doctor`) are removed. Each prints a removal notice and exits non-zero. See [`docs/migrating-to-1.0.md`](./docs/migrating-to-1.0.md).
+
+### Memory-format surface (per-tool console scripts)
 
 | Tool | What it does |
 | --- | --- |
@@ -261,16 +259,17 @@ Format invariants are in [`spec/SPEC.md`](./spec/SPEC.md). Topic taxonomy is in 
 | v0.11.0 | 2026-08-05 | Two signal-quality fixes to the diagnostic surface, both from a full audit of an 834-memory corpus. `memory-dedup --description-warn-threshold` now defaults to `0` (disabled): the old default of `50` flagged 101 of 101 top-level files, and `description` is the authoritative recall text that is SUPPOSED to be descriptive, so the check was noise that trained operators to skip output also carrying cloud-egress and sensitivity warnings. `memory-audit` now warns when a `MEMORY.md` pointer carries no hook text because the title+path prefix exhausted the byte cap: `memory-index-gen` always degraded gracefully there, but silently, so the one line with no relevance cue was the one line nothing reported. Hard-failing the generator was considered and rejected (zero occurrences; would trade a cosmetic loss for an availability one). spec/VERSION unchanged at 0.8.0; no format change, no migration. |
 | v0.12.0 | 2026-08-05 | Two new `memory-audit` checks for defect classes that accumulated silently, both from auditing an 842-memory corpus. Reports a memory with no `topic:` tag: `tags` feeds the recall trigger set AND the `MEMORY.md` topic section, and `memory-frontmatter-backfill` infers a topic only from a named subfolder or a filename matching its inline `KNOWN_TOPICS`, so a top-level file with an unrecognized name gets nothing and no tool objects (59 files had accumulated that way, putting 46 of 87 per-cwd pointers into `(no topic)`). Reports top-level frontmatter disagreeing with a nested `metadata:` block, naming each field and both values: some agent harnesses nest the prior frontmatter and synthesize fresh top-level fields, and since every tool reads only the top level, the nested copy becomes invisible truth (460 of 842 files carried the block; 74 diverged; `--strict` exited 0 throughout). Both are HEALTH, never violations, because the files are well-formed and a harness-shaped corpus would otherwise make `--strict` something operators disable. Neither repairs: picking a topic and picking the authoritative level are both semantic calls. Fire rates measured before shipping (1.8% and 8.8%). spec/VERSION unchanged at 0.8.0. |
 | v0.12.1 | 2026-11-13 | `memforge-detect` now resolves stale findings. A re-run used to only add queue items, so a finding stayed open after its condition was fixed and the open count only grew. An open item in a category the run checked, and did not find again, is now marked `resolved` with a `resolved_by` note. Categories the run skipped (duplicates with no local dispatcher, lessons under `--no-lessons` or with no lessons file) are never auto-resolved, because absence there means "not checked", not "fixed". Done items stay done; a resolved item found again is re-opened. spec/VERSION unchanged at 0.8.0; no format change, no migration. |
+| v1.0.0 | (unreleased) | Commit trust replaces the in-repo trust model (spec 0.8.0 -> 1.0.0, a major revision). New `memforge sync`: verifies the signed first-parent history of the shared branch against a committed signer list (`ssh` mode available; `gpg` and `keyless` refused until their proofs pass). Removed: per-memory signatures, the operator registry, key rotation, revocation, agent attestation, the messaging adapter contract and the `examples/websocket/` scaffold, plus the 13 commands that implemented them (each is now a stub that prints a removal notice). `init-store` creates the layout and, with `--mode`, a signer list. Legacy `identity` and `signature` frontmatter is preserved and ignored. Nothing to migrate; see `docs/migrating-to-1.0.md`. |
 
-For what the package implements today for team use, and what it does not, see [`docs/team-bootstrap.md`](./docs/team-bootstrap.md) "Implementation status".
+The v0.5.x rows above describe the in-repo signing model that 1.0 removed. For what the package implements today for team use, and what it does not, see [`docs/team-bootstrap.md`](./docs/team-bootstrap.md) "Implementation status".
 
-The reference implementation is running in production. External adoption is welcome once the CLA flow is live.
+The reference implementation is running in production. External pull requests are welcome under Apache-2.0 with a DCO sign-off; see [CONTRIBUTING.md](./CONTRIBUTING.md).
 
 ## License
 
 Apache-2.0. See [`LICENSE`](./LICENSE).
 
-The "MemForge" name and logo are subject to pending trademark filings; the Apache-2.0 grant does not cover the marks. A trademark policy will land alongside the v0.3.x CLA release.
+The "MemForge" name and logo are subject to pending trademark filings; the Apache-2.0 grant does not cover the marks.
 
 ## Contributing
 
