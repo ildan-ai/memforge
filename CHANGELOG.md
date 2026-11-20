@@ -8,7 +8,7 @@ The version number tracked here is the **package / tooling** version. The on-dis
 
 ## [Unreleased]
 
-## [1.0.0] - Unreleased
+## [1.0.0] - 2026-11-19
 
 **Major: commit trust replaces the in-repo trust model. Package 1.0.0 / spec 1.0.0 (was 0.8.0). Nothing to migrate: existing stores keep loading. See `docs/migrating-to-1.0.md`.**
 
@@ -54,12 +54,13 @@ Spec 0.8.0 to 1.0.0, a major revision. Integrity invariants 16 to 25 are retired
 
 ### Pre-ship review
 
-- **Tests.** `720 passed, 11 skipped` locally, and `91 passed` on the sync tests against a real GnuPG keyring. Each change merged only on green CI across three operating systems and three Python versions. New tests for a defect were run against the unfixed code first and failed there.
+- **Tests.** `723 passed, 11 skipped` locally, and `94 passed` on the sync tests against a real GnuPG keyring. Each change merged only on green CI across three operating systems and three Python versions. New tests for a defect were run against the unfixed code first and failed there.
 - **Panel.** Every voice came from a model family other than the one that wrote the change, and each was bound to the exact diff it reviewed. Architect (grok-reasoning), code review and adversarial critic (a second family), threat-modeler (a third family).
   - `memforge sync`: three rounds; all three voices approve the final round. A finding that the single-branch fetch could leave the tracking ref stale was rebutted with a test that asserts the ref moved.
   - Key-system removal: two rounds; architect approves; findings closed.
   - Legacy-field preservation on rewrite: found during this review (the reference tools reformatted an old `signature` block), fixed, three rounds. Architect and code review approve. The critic's last finding (quoted keys) is refuted by a passing test that failed on the first version of the fix.
   - Spec and docs text: the critic did not approve the draft in four rounds. On the final text the architect approved, the critic's two wording findings were fixed (the team guide overstated which commits are checked; the spec called a commit signature proof of authorship), and the next round passed.
+  - Windows: the first CI run failed the sync tests on Windows only. Two causes, both fixed before merge: a file sync writes for git was written in text mode, and OpenSSH for Windows exits silently when `PROGRAMDATA` is missing from the environment, which the cleared verifier environment did not carry. The verifier now gets an empty folder of its own as `PROGRAMDATA`. The second cause was found and the fix proven on a Windows machine, not by CI rounds. Three rounds; architect and code review approve; the critic's two MINORs are that `PROGRAMDATA` also reaches the `gpg` and `keyless` tools, which were not run on Windows, and that a caller of the internal helper could override the folder (no call site does).
 - **Threat-modeler.** Subprocess argument handling, temp-directory and signer-list file handling, fail-open paths in verification, the state write order and the legacy-field splice. No findings.
 - **Carried, MINOR.** The shallow-range refusal depends on a parent object being absent rather than on the shallow file.
 - **Not proven.** `keyless` has run only against a stub `gitsign`, and `gpg` verdicts depend on the receiver's keyring. Both modes stay refused (`mode_unreleased`) until their real-tool proofs pass.
