@@ -8,7 +8,7 @@ The version number tracked here is the **package / tooling** version. The on-dis
 
 ## [Unreleased]
 
-## [1.0.0] - 2026-11-19
+## [1.0.0] - 2026-11-20
 
 **Major: commit trust replaces the in-repo trust model. Package 1.0.0 / spec 1.0.0 (was 0.8.0). Nothing to migrate: existing stores keep loading. See `docs/migrating-to-1.0.md`.**
 
