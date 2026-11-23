@@ -63,16 +63,26 @@ program() {
 }
 
 # program() follows links with readlink, so readlink itself cannot be found
-# that way. The first readlink on PATH that is a regular file, not a link, in
-# a folder outside the stores is used; a link there could point at one
-# planted in a store. A Homebrew coreutils readlink is such a link, and the
-# system one after it on PATH is then used. None: the hook does nothing.
+# that way. The first readlink on PATH in a folder outside the stores is used
+# when it is a regular file, or a link in /usr/bin or /bin: a link elsewhere
+# could point at one planted in a store, and only root can change those two
+# folders. A Homebrew coreutils readlink is a link elsewhere, so the system
+# one after it on PATH is used. uutils coreutils and busybox install readlink
+# as a link in /usr/bin or /bin; it is run by that link, since a multi-call
+# binary picks its command by the name it is started as, and refused when its
+# target lies in a store. None: the hook does nothing.
 readlink_bin=""
 for entry in "${path_entries[@]}"; do
-  [[ "$entry" == /* && -f "$entry/readlink" && -x "$entry/readlink" && ! -L "$entry/readlink" ]] \
-    || continue
+  [[ "$entry" == /* && -f "$entry/readlink" && -x "$entry/readlink" ]] || continue
   readlink_dir=$(cd -P "$entry" 2>/dev/null && pwd -P) || continue
   in_store "$readlink_dir" && continue
+  if [[ -L "$entry/readlink" ]]; then
+    [[ "$readlink_dir" == /usr/bin || "$readlink_dir" == /bin ]] || continue
+    target=$("$readlink_dir/readlink" -f "$readlink_dir/readlink") || continue
+    [[ "$target" == /* ]] || continue
+    target_dir=$(cd -P "${target%/*}" 2>/dev/null && pwd -P) || continue
+    in_store "$target_dir" && continue
+  fi
   readlink_bin="$readlink_dir/readlink"
   break
 done

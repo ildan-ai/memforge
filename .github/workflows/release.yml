@@ -227,6 +227,17 @@ jobs:
         with:
           chrome-version: ${{ env.CHROME_VERSION }}
           install-dependencies: true
+      - name: Let Chrome start its sandbox
+        # Ubuntu 23.10 and later block unprivileged user namespaces through
+        # AppArmor, and Chrome's sandbox needs one. This runner is a throwaway
+        # VM that runs only this job, so the restriction is lifted here and
+        # Chrome keeps its sandbox.
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [ -e /proc/sys/kernel/apparmor_restrict_unprivileged_userns ]; then
+            sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
+          fi
       - name: Build the PDF
         # build-pdf.sh prints the pandoc and Chrome versions it checked.
         shell: bash

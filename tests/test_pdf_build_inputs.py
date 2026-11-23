@@ -303,3 +303,26 @@ def test_the_pdf_jobs_keep_no_token_in_the_checkout(workflow, job):
     assert checkouts
     for step in checkouts:
         assert (step.get("with") or {}).get("persist-credentials") is False
+
+
+def _steps(workflow: str, job: str) -> list[dict]:
+    data = yaml.safe_load((REPO / ".github" / "workflows" / workflow).read_text(encoding="utf-8"))
+    return data["jobs"][job]["steps"]
+
+
+@pytest.mark.parametrize("workflow,job", [("ci.yml", "architecture-pdf"), ("release.yml", "pdf")])
+def test_the_pdf_jobs_let_chrome_start_its_sandbox_before_the_build(workflow, job):
+    # Ubuntu 23.10 and later runners block the user namespace Chrome's sandbox
+    # needs; without this step Chrome aborts with "No usable sandbox".
+    steps = _steps(workflow, job)
+    names = [step.get("name") for step in steps]
+    build = names.index("Build the PDF")
+    lifts = [i for i, step in enumerate(steps)
+             if "kernel.apparmor_restrict_unprivileged_userns=0" in str(step.get("run", ""))]
+    assert lifts and lifts[0] < build
+
+
+def test_the_pdf_build_keeps_chrome_sandboxed():
+    script = (REPO / "docs" / "pdf" / "build-pdf.sh").read_text(encoding="utf-8")
+    assert "--no-sandbox" not in script
+    assert "--disable-setuid-sandbox" not in script

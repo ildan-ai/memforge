@@ -34,7 +34,6 @@ from __future__ import annotations
 
 import json
 import os
-import shutil
 import subprocess
 import sys
 from pathlib import Path
@@ -63,14 +62,14 @@ def _recall_program() -> str:
     `_also_refused`, and the repository that holds any of them.
     """
     try:
-        from memforge._programs import ProgramInFolder, find_program_outside, refuse_inside
+        from memforge._programs import ProgramInFolder, find_program_outside, program_in, refuse_inside
         from memforge.paths import default_memory_paths
     except ImportError:
         return _recall_program_without_memforge()
     stores = [path for path in default_memory_paths() if os.path.isdir(path)]
     scripts = os.path.join(sys.prefix, "Scripts" if os.name == "nt" else "bin")
     try:
-        own = shutil.which(os.path.join(scripts, "memory-recall"))
+        own = program_in(scripts, "memory-recall")
         if own is not None:
             own = os.path.abspath(own)
             refuse_inside("memory-recall", own, *stores)
@@ -189,6 +188,21 @@ def _repository_top(folder: str) -> str | None:
         real = up
 
 
+def _program_in(folder: str, name: str) -> str | None:
+    """memforge._programs.program_in: the program `name` in `folder` alone,
+    trying each PATHEXT extension on Windows, without `shutil.which`."""
+    path = os.path.join(folder, name)
+    candidates = [path]
+    if os.name == "nt":
+        extensions = [e for e in os.environ.get("PATHEXT", ".COM;.EXE;.BAT;.CMD").split(os.pathsep) if e]
+        if not any(name.lower().endswith(e.lower()) for e in extensions):
+            candidates = [path + e for e in extensions]
+    for candidate in candidates:
+        if os.path.isfile(candidate) and os.access(candidate, os.X_OK):
+            return candidate
+    return None
+
+
 def _recall_program_without_memforge() -> str:
     """The PATH lookup, with the same folder checks, when this interpreter
     cannot import memforge, as when memforge is installed with pipx and the
@@ -209,7 +223,7 @@ def _recall_program_without_memforge() -> str:
     for entry in os.environ.get("PATH", os.defpath).split(os.pathsep):
         if not os.path.isabs(entry):
             continue
-        found = shutil.which(os.path.join(entry, "memory-recall"))
+        found = _program_in(entry, "memory-recall")
         if found is None:
             continue
         found = os.path.abspath(found)

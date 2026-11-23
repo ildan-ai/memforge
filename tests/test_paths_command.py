@@ -12,6 +12,9 @@ REPO = Path(__file__).resolve().parents[1]
 
 def _memforge_paths(home: Path, cwd: Path, **extra: str) -> subprocess.CompletedProcess:
     env = {"HOME": str(home), "USERPROFILE": str(home), "PATH": os.environ.get("PATH", ""), "PYTHONPATH": str(REPO / "src"), **extra}
+    # Python before 3.11 cannot start on Windows without SYSTEMROOT.
+    if "SYSTEMROOT" in os.environ:
+        env["SYSTEMROOT"] = os.environ["SYSTEMROOT"]
     return subprocess.run([sys.executable, "-m", "memforge.cli._dispatch", "paths"],
                           cwd=cwd, env=env, capture_output=True, timeout=60)
 

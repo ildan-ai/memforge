@@ -8,6 +8,7 @@ someone ran the pass from inside that folder.
 
 from __future__ import annotations
 
+import os
 from pathlib import Path
 
 import memforge
@@ -74,8 +75,10 @@ def test_child_imports_from_where_the_parent_does_and_not_the_working_directory(
     proc = detect._run_module("site", [], timeout=60)
 
     assert proc.returncode == 0, proc.stderr
-    assert repr(package_root) in proc.stdout
-    assert repr(str(tmp_path)) not in proc.stdout
+    # Windows paths compare without case: a venv lists `lib`, resolve() gives `Lib`.
+    listed = os.path.normcase(proc.stdout)
+    assert os.path.normcase(repr(package_root)) in listed
+    assert os.path.normcase(repr(str(tmp_path))) not in listed
     assert repr("") not in proc.stdout
 
 

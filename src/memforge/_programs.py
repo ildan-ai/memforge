@@ -8,7 +8,6 @@ and started by the absolute path this returns, never by a bare name.
 from __future__ import annotations
 
 import os
-import shutil
 import sys
 from pathlib import Path
 
@@ -23,17 +22,36 @@ class ProgramInFolder(Exception):
         self.folder = folder
 
 
+def program_in(folder: str, name: str) -> str | None:
+    """The path of the program `name` in `folder` alone, or None.
+
+    On Windows a name without one of the PATHEXT extensions is tried with each
+    of them, so `git` finds `git.exe`. `shutil.which` is not used: before
+    Python 3.12 it skips PATHEXT for a name with a folder part, and given a
+    search path instead it looks in the current folder first.
+    """
+    path = os.path.join(folder, name)
+    candidates = [path]
+    if os.name == "nt":
+        extensions = [e for e in os.environ.get("PATHEXT", ".COM;.EXE;.BAT;.CMD").split(os.pathsep) if e]
+        if not any(name.lower().endswith(e.lower()) for e in extensions):
+            candidates = [path + e for e in extensions]
+    for candidate in candidates:
+        if os.path.isfile(candidate) and os.access(candidate, os.X_OK):
+            return candidate
+    return None
+
+
 def find_program(name: str) -> str | None:
     """The absolute path of `name` from the absolute PATH entries only.
 
     A `.`, empty or relative PATH entry, and the current folder that Windows
     searches first, would each find a program committed to the store the tool
-    runs in; a name with a folder part makes `shutil.which` search that folder
-    alone.
+    runs in.
     """
     for entry in os.environ.get("PATH", os.defpath).split(os.pathsep):
         if os.path.isabs(entry):
-            found = shutil.which(os.path.join(entry, name))
+            found = program_in(entry, name)
             if found is not None:
                 return os.path.abspath(found)
     return None

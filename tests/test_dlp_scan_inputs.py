@@ -9,7 +9,6 @@ from __future__ import annotations
 
 import json
 import os
-import shutil
 import subprocess
 import sys
 from pathlib import Path
@@ -416,10 +415,13 @@ def test_staged_scan_keeps_its_findings_when_the_temporary_folder_cannot_be_made
         _stub_detect_secrets(tmp_path, monkeypatch)
     else:
         # Only detect-secrets is made to look installed; git must still resolve.
-        real_which = shutil.which
+        import memforge.cli.dlp_scan as dlp_scan
+
+        real_lookup = dlp_scan.find_program_outside
         monkeypatch.setattr(
-            "shutil.which",
-            lambda name, *a, **k: name if "detect-secrets" in name else real_which(name, *a, **k),
+            dlp_scan,
+            "find_program_outside",
+            lambda name, *folders: name if name == "detect-secrets" else real_lookup(name, *folders),
         )
     (repo / "note.md").write_text(_SECRET_LINE, encoding="utf-8")
     _git(repo, "add", "note.md")
@@ -534,7 +536,7 @@ def test_strict_fails_when_detect_secrets_times_out(tmp_path, monkeypatch, capsy
 
 
 def test_detect_secrets_not_installed_stays_a_warning(tmp_path, monkeypatch, capsys, scratch_home):
-    monkeypatch.setattr("shutil.which", lambda name: None)
+    monkeypatch.setattr("memforge.cli.dlp_scan.find_program_outside", lambda name, *folders: None)
     clean = tmp_path / "clean.md"
     clean.write_text("plain\n", encoding="utf-8")
 
