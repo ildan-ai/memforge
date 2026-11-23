@@ -12,7 +12,10 @@ import pytest
 
 HOOK = Path(__file__).resolve().parents[1] / "examples" / "git-hooks" / "commit-msg"
 
-pytestmark = pytest.mark.skipif(shutil.which("bash") is None, reason="needs bash")
+pytestmark = [
+    pytest.mark.skipif(sys.platform == "win32", reason="bash scripts"),
+    pytest.mark.skipif(shutil.which("bash") is None, reason="needs bash"),
+]
 
 
 def _git(repo: Path, *args: str) -> None:
