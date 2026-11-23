@@ -28,9 +28,9 @@ MemForge is a spec-first standards project. Inbound equals outbound: every contr
 
 Every change, internal or external, must:
 
-- Run `memory-audit --strict` (the installed console script; after `pip install -e .`) against the test fixtures and pass.
+- Run `memory-audit --strict --path tests/conformance/sensitivity/shared_input` (the installed console script, after `pip install -e .`) and pass. That folder is the memory store the conformance fixtures share; the other scenario folders hold only expected results.
 - Sign off every commit (`git commit -s`).
-- Run `pytest` and pass. The full test suite ships with the package (unit + conformance fixtures under `tests/`); keep it green and add coverage for any new behavior.
+- Run `pytest` and pass. The test suite (unit tests and the conformance fixtures under `tests/`) lives in the repository and ships in the source distribution, not in the wheel; keep it green and add coverage for any new behavior.
 - Add or update a CHANGELOG entry under `## [Unreleased]`.
 - If `spec/SPEC.md` or `spec/taxonomy.yaml` changes, bump `spec/VERSION` accordingly (SemVer track).
 - Keep the format-vs-loading distinction clean: anything that couples to a single agent (Claude Code, Cursor, Aider, Codex, GitHub Copilot Chat, etc.) belongs in `adapters/<agent>/`, not in `spec/` or `tools/`.

@@ -26,8 +26,8 @@
 # `memforge: resolve <topic>` commit. Adding mirror-write logic here would
 # reintroduce an unguarded authority channel.
 #
-# Defaults: per-cwd memory folder ($USER-claude-projects/memory/) +
-# ~/.claude/global-memory/. Override with --path (repeatable).
+# Defaults: memforge.paths.default_memory_paths() (per-cwd memory folder +
+# global memory folder). Override with --path (repeatable).
 
 from __future__ import annotations
 
@@ -35,12 +35,21 @@ import argparse
 import os
 import re
 import sys
+from dataclasses import dataclass, field
 from pathlib import Path
+from typing import Optional
 
+from memforge._terminal import terminal_safe, visible
 from memforge.frontmatter import parse as _mf_parse, has_frontmatter as _mf_has_fm  # noqa: E402
 from memforge.paths import default_memory_paths  # noqa: E402
 from memforge.models import FolderIndex, Link, Memory  # noqa: E402
-from memforge.discovery import walk_memory_files  # noqa: E402
+from memforge.discovery import (  # noqa: E402
+    SymlinkWriteRefused,
+    access_error,
+    read_text_no_follow,
+    walk_memory_files,
+    write_text_inside,
+)
 
 # Centralized in memforge.paths (env override -> grandfathered .claude layout if
 # present -> ~/.memforge). Keeps the package IDE/OS-neutral.
@@ -131,22 +140,33 @@ def has_frontmatter(text: str) -> bool:
 # local copy (closes discovery-02).
 
 
-def index_folder(root: Path) -> FolderIndex:
-    idx = FolderIndex(root=root)
+@dataclass
+class RewriterIndex(FolderIndex):
+    """A FolderIndex plus each file the walk found but could not read, with
+    the reason. A file left out of the index may still link to a file being
+    renamed, so every command refuses while this list is not empty."""
+    unreadable: list[tuple[Path, str]] = field(default_factory=list)
+
+
+def index_folder(root: Path) -> RewriterIndex:
+    idx = RewriterIndex(root=root)
     seen_uid: dict[str, Memory] = {}
     dup_groups: dict[str, list[Memory]] = {}
 
     for fpath in walk_memory_files(root):
         try:
-            text = fpath.read_text(encoding="utf-8")
-        except (OSError, UnicodeDecodeError):
+            text = read_text_no_follow(fpath, root=root)
+        except (OSError, UnicodeDecodeError) as exc:
+            idx.unreadable.append((fpath.relative_to(root), str(exc)))
             continue
         fm = parse_frontmatter(text)
+        # uid keys the lookups below; a list or mapping there is no uid at all.
+        uid = fm.get("uid")
         m = Memory(
             path=fpath,
             relpath=fpath.relative_to(root),
             root=root,
-            uid=fm.get("uid"),
+            uid=uid if isinstance(uid, str) else None,
             name=fm.get("name"),
             tier=fm.get("tier"),
             has_frontmatter=has_frontmatter(text),
@@ -195,9 +215,35 @@ def is_internal_path_link(target: str) -> bool:
     return target.endswith(".md")
 
 
+def _read_all(idx: RewriterIndex) -> Optional[dict[Path, str]]:
+    """Every indexed file's text, read before a command looks at or changes
+    any of them, or None (with each reason printed) if the walk found a file
+    it could not read or one cannot be read now.
+
+    A rename or upgrade then works from these texts alone, so a file swapped
+    for a link while it runs cannot be read through, and a refused read
+    cannot leave a rename half applied.
+    """
+    for relpath, reason in idx.unreadable:
+        print(f"error: cannot read {visible(relpath)}, nothing changed: {visible(reason)}", file=sys.stderr)
+    if idx.unreadable:
+        return None
+    texts: dict[Path, str] = {}
+    for m in idx.memories:
+        try:
+            texts[m.path] = read_text_no_follow(m.path, root=idx.root)
+        except (OSError, UnicodeDecodeError) as exc:
+            print(f"error: cannot read {visible(m.relpath)}, nothing changed: {visible(exc)}", file=sys.stderr)
+            return None
+    return texts
+
+
 # ----- check subcommand -----
 
-def cmd_check(idx: FolderIndex, *, json_out: bool = False) -> int:
+def cmd_check(idx: RewriterIndex, *, json_out: bool = False) -> int:
+    texts = _read_all(idx)
+    if texts is None:
+        return 2
     issues = []
     warnings = []
 
@@ -219,7 +265,7 @@ def cmd_check(idx: FolderIndex, *, json_out: bool = False) -> int:
     broken_path_links: list[tuple[Memory, Link]] = []
     broken_mem_links: list[tuple[Memory, Link]] = []
     for m in idx.memories:
-        text = m.path.read_text(encoding="utf-8")
+        text = texts[m.path]
         for link in extract_links(text):
             if link.is_mem_uri:
                 if link.uid not in idx.by_uid:
@@ -232,7 +278,7 @@ def cmd_check(idx: FolderIndex, *, json_out: bool = False) -> int:
                     rel = resolved.relative_to(idx.root)
                 except ValueError:
                     continue  # link goes outside the memory folder
-                if str(rel) not in idx.by_relpath and not (idx.root / rel).exists():
+                if str(rel) not in idx.by_relpath and not os.path.exists(idx.root / rel):
                     broken_path_links.append((m, link))
 
     if broken_mem_links:
@@ -246,7 +292,7 @@ def cmd_check(idx: FolderIndex, *, json_out: bool = False) -> int:
             issues.append(f"  - {m.relpath}: {link.target} -> not found")
 
     # report
-    print(f"====== {idx.root} ======")
+    print(f"====== {visible(idx.root)} ======")
     print(f"  Files indexed: {len(idx.memories)}")
     print(f"  With UID: {sum(1 for m in idx.memories if m.uid)}")
     print(f"  Tier=index: {sum(1 for m in idx.memories if m.tier == 'index')}")
@@ -256,12 +302,12 @@ def cmd_check(idx: FolderIndex, *, json_out: bool = False) -> int:
     if issues:
         print("  ISSUES:")
         for line in issues:
-            print(f"    {line}")
+            print(f"    {visible(line)}")
         print()
     if warnings:
         print("  WARNINGS:")
         for line in warnings:
-            print(f"    {line}")
+            print(f"    {visible(line)}")
         print()
 
     return 1 if issues else 0
@@ -269,7 +315,7 @@ def cmd_check(idx: FolderIndex, *, json_out: bool = False) -> int:
 
 # ----- rename subcommand -----
 
-def cmd_rename(idx: FolderIndex, src: Path, dst: Path, *, dry_run: bool) -> int:
+def cmd_rename(idx: RewriterIndex, src: Path, dst: Path, *, dry_run: bool) -> int:
     """Move src to dst within the memory folder + rewrite all references."""
     root_resolved = idx.root.resolve()
     src_abs = src.resolve()
@@ -278,14 +324,17 @@ def cmd_rename(idx: FolderIndex, src: Path, dst: Path, *, dry_run: bool) -> int:
         src_rel = src_abs.relative_to(root_resolved)
         dst_rel = dst_abs.relative_to(root_resolved)
     except ValueError:
-        print(f"error: src or dst outside memory root {idx.root} (resolved={root_resolved})", file=sys.stderr)
+        print(f"error: src or dst outside memory root {visible(idx.root)} (resolved={visible(root_resolved)})", file=sys.stderr)
         return 2
 
-    if not src_abs.exists():
-        print(f"error: source file does not exist: {src_abs}", file=sys.stderr)
+    if not os.path.exists(src_abs):
+        print(f"error: source file does not exist: {visible(src_abs)}", file=sys.stderr)
         return 2
-    if dst_abs.exists():
-        print(f"error: destination already exists: {dst_abs}", file=sys.stderr)
+    if os.path.exists(dst_abs):
+        print(f"error: destination already exists: {visible(dst_abs)}", file=sys.stderr)
+        return 2
+    texts = _read_all(idx)
+    if texts is None:
         return 2
 
     # find all references to src in OTHER files
@@ -302,7 +351,7 @@ def cmd_rename(idx: FolderIndex, src: Path, dst: Path, *, dry_run: bool) -> int:
     for m in idx.memories:
         if m.path == src_abs:
             continue
-        text = m.path.read_text(encoding="utf-8")
+        text = texts[m.path]
         per_file: list[tuple[Link, str]] = []
         for link in extract_links(text):
             if link.is_mem_uri:
@@ -323,15 +372,15 @@ def cmd_rename(idx: FolderIndex, src: Path, dst: Path, *, dry_run: bool) -> int:
 
     md_count = sum(len(per) for _, per, _ in rewrites)
     wl_count = sum(len(wl) for _, _, wl in rewrites)
-    print(f"rename: {src_rel} -> {dst_rel}")
+    print(f"rename: {visible(src_rel)} -> {visible(dst_rel)}")
     print(f"references to rewrite: {md_count} markdown + {wl_count} wikilink(s) in {len(rewrites)} files")
     for m, per, wl in rewrites:
-        print(f"  {m.relpath}:")
+        print(f"  {visible(m.relpath)}:")
         for link, new in per:
-            print(f"    {link.target} -> {new}")
+            print(f"    {visible(link.target)} -> {visible(new)}")
         for start, end, rep in wl:
-            src_text = m.path.read_text(encoding="utf-8")[start:end]
-            print(f"    wikilink: {src_text} -> {rep} (line approx {m.path.read_text(encoding='utf-8')[:start].count(chr(10)) + 1})")
+            src_text = texts[m.path][start:end]
+            print(f"    wikilink: {visible(src_text)} -> {visible(rep)} (line approx {texts[m.path][:start].count(chr(10)) + 1})")
 
     if dry_run:
         print("\n(dry-run; no changes written)")
@@ -342,8 +391,9 @@ def cmd_rename(idx: FolderIndex, src: Path, dst: Path, *, dry_run: bool) -> int:
     src_abs.rename(dst_abs)
 
     # rewrite references
+    refused = 0
     for m, per, wl in rewrites:
-        text = m.path.read_text(encoding="utf-8")
+        text = texts[m.path]
         # apply markdown rewrites in reverse to keep spans valid
         per_sorted = sorted(per, key=lambda x: -x[0].span[0])
         for link, new in per_sorted:
@@ -357,15 +407,19 @@ def cmd_rename(idx: FolderIndex, src: Path, dst: Path, *, dry_run: bool) -> int:
         wl_fresh = _collect_wikilink_rewrites(text, src_aliases, dst_stem)
         for start, end, replacement in sorted(wl_fresh, key=lambda x: -x[0]):
             text = text[:start] + replacement + text[end:]
-        m.path.write_text(text, encoding="utf-8")
+        try:
+            write_text_inside(idx.root, m.path, text)
+        except SymlinkWriteRefused as exc:
+            print(f"error: {visible(exc)}; references in {visible(m.relpath)} NOT rewritten", file=sys.stderr)
+            refused += 1
 
-    print(f"\nmoved + rewrote {len(rewrites)} files")
-    return 0
+    print(f"\nmoved + rewrote {len(rewrites) - refused} files")
+    return 1 if refused else 0
 
 
 # ----- rename-batch subcommand -----
 
-def cmd_rename_batch(idx: FolderIndex, pairs: list[tuple[Path, Path]], *, dry_run: bool) -> int:
+def cmd_rename_batch(idx: RewriterIndex, pairs: list[tuple[Path, Path]], *, dry_run: bool) -> int:
     """Move many files + rewrite all internal references in ONE pass.
 
     Closes the O(N) subprocess-spawn pattern in memory-rollup. Cost: one
@@ -381,19 +435,22 @@ def cmd_rename_batch(idx: FolderIndex, pairs: list[tuple[Path, Path]], *, dry_ru
             src_abs.relative_to(root_resolved)
             dst_abs.relative_to(root_resolved)
         except ValueError:
-            print(f"error: src or dst outside memory root {idx.root} (resolved={root_resolved})", file=sys.stderr)
+            print(f"error: src or dst outside memory root {visible(idx.root)} (resolved={visible(root_resolved)})", file=sys.stderr)
             return 2
-        if not src_abs.exists():
-            print(f"error: source file does not exist: {src_abs}", file=sys.stderr)
+        if not os.path.exists(src_abs):
+            print(f"error: source file does not exist: {visible(src_abs)}", file=sys.stderr)
             return 2
-        if dst_abs.exists():
-            print(f"error: destination already exists: {dst_abs}", file=sys.stderr)
+        if os.path.exists(dst_abs):
+            print(f"error: destination already exists: {visible(dst_abs)}", file=sys.stderr)
             return 2
         src_to_dst[src_abs] = dst_abs
 
     if not src_to_dst:
         print("rename-batch: empty pair list; nothing to do")
         return 0
+    texts = _read_all(idx)
+    if texts is None:
+        return 2
 
     src_set = set(src_to_dst.keys())
 
@@ -426,7 +483,7 @@ def cmd_rename_batch(idx: FolderIndex, pairs: list[tuple[Path, Path]], *, dry_ru
         is_moved = m_resolved in src_set
         new_m_dir = src_to_dst[m_resolved].parent if is_moved else m.path.parent.resolve()
 
-        m_text = m.path.read_text(encoding="utf-8")
+        m_text = texts[m.path]
         per_file: list[tuple[Link, str]] = []
         for link in extract_links(m_text):
             if link.is_mem_uri:
@@ -493,18 +550,18 @@ def cmd_rename_batch(idx: FolderIndex, pairs: list[tuple[Path, Path]], *, dry_ru
     if wl_count > 0:
         for m, _, _, wl in rewrites:
             for start, end, rep in wl:
-                m_text = m.path.read_text(encoding="utf-8")
+                m_text = texts[m.path]
                 orig = m_text[start:end]
                 lineno = m_text[:start].count("\n") + 1
-                print(f"  wikilink: {orig} -> {rep} in {m.relpath} (line {lineno})")
+                print(f"  wikilink: {visible(orig)} -> {visible(rep)} in {visible(m.relpath)} (line {lineno})")
     if wikilink_ambiguous:
         print(f"  ambiguous/skipped wikilinks ({len(wikilink_ambiguous)}):")
         for msg in wikilink_ambiguous:
-            print(f"    {msg}")
+            print(f"    {visible(msg)}")
 
     if dry_run:
         for src, dst in pairs:
-            print(f"  {src.resolve().relative_to(root_resolved)} -> {dst.resolve().relative_to(root_resolved)}")
+            print(f"  {visible(src.resolve().relative_to(root_resolved))} -> {visible(dst.resolve().relative_to(root_resolved))}")
         print("\n(dry-run; no changes written)")
         return 0
 
@@ -512,7 +569,7 @@ def cmd_rename_batch(idx: FolderIndex, pairs: list[tuple[Path, Path]], *, dry_ru
     # until after moves so we can write to the post-move path.
     rewritten_text: dict[Path, str] = {}
     for m, _new_dir, per, wl in rewrites:
-        text = m.path.read_text(encoding="utf-8")
+        text = texts[m.path]
         per_sorted = sorted(per, key=lambda x: -x[0].span[0])
         for link, new in per_sorted:
             start, end = link.span
@@ -545,9 +602,10 @@ def cmd_rename_batch(idx: FolderIndex, pairs: list[tuple[Path, Path]], *, dry_ru
 
         for m_resolved, text in rewritten_text.items():
             target_path = src_to_dst.get(m_resolved, m_resolved)
-            target_path.write_text(text, encoding="utf-8")
+            # A refusal here is an OSError: the handler below rolls the moves back.
+            write_text_inside(root_resolved, target_path, text)
     except Exception as e:
-        print(f"error during batch rename: {e}; rolling back {len(moved)} moves", file=sys.stderr)
+        print(f"error during batch rename: {visible(e)}; rolling back {len(moved)} moves", file=sys.stderr)
         for src_abs, dst_abs in reversed(moved):
             try:
                 dst_abs.rename(src_abs)
@@ -561,13 +619,17 @@ def cmd_rename_batch(idx: FolderIndex, pairs: list[tuple[Path, Path]], *, dry_ru
 
 # ----- upgrade subcommand -----
 
-def cmd_upgrade(idx: FolderIndex, *, dry_run: bool) -> int:
+def cmd_upgrade(idx: RewriterIndex, *, dry_run: bool) -> int:
     """Rewrite path-form internal links to mem:uid form when target has uid."""
     upgraded_count = 0
     files_touched = 0
+    refused = 0
+    texts = _read_all(idx)
+    if texts is None:
+        return 2
 
     for m in idx.memories:
-        text = m.path.read_text(encoding="utf-8")
+        text = texts[m.path]
         replacements: list[tuple[Link, str]] = []
         for link in extract_links(text):
             if link.is_mem_uri:
@@ -590,9 +652,9 @@ def cmd_upgrade(idx: FolderIndex, *, dry_run: bool) -> int:
 
         files_touched += 1
         upgraded_count += len(replacements)
-        print(f"  {m.relpath}: {len(replacements)} link(s)")
+        print(f"  {visible(m.relpath)}: {len(replacements)} link(s)")
         for link, new in replacements[:3]:
-            print(f"    {link.target} -> {new}")
+            print(f"    {visible(link.target)} -> {visible(new)}")
         if len(replacements) > 3:
             print(f"    ... +{len(replacements) - 3} more")
 
@@ -602,16 +664,21 @@ def cmd_upgrade(idx: FolderIndex, *, dry_run: bool) -> int:
                 start, end = link.span
                 new_md = f"[{link.text}]({new})"
                 text = text[:start] + new_md + text[end:]
-            m.path.write_text(text, encoding="utf-8")
+            try:
+                write_text_inside(idx.root, m.path, text)
+            except SymlinkWriteRefused as exc:
+                print(f"error: {visible(exc)}", file=sys.stderr)
+                refused += 1
 
     print(f"\nupgraded {upgraded_count} link(s) in {files_touched} file(s)")
     if dry_run:
         print("(dry-run; no changes written)")
-    return 0
+    return 1 if refused else 0
 
 
 # ----- main -----
 
+@terminal_safe
 def main() -> int:
     p = argparse.ArgumentParser(
         prog="memory-link-rewriter",
@@ -640,7 +707,8 @@ def main() -> int:
 
     args = p.parse_args()
     paths = args.path or DEFAULT_PATHS
-    paths = [p for p in paths if p.is_dir()]
+    # A folder that cannot be looked at is kept: the walk reports it.
+    paths = [p for p in paths if os.path.isdir(p) or access_error(p)]
 
     if not paths:
         print("no memory folders found", file=sys.stderr)

@@ -2,7 +2,7 @@
 
 Cross-platform Python rewrite of the prior bash implementation.
 
-Default: audits both per-cwd memory and ~/.claude/global-memory/.
+Default: audits the folders `memforge paths` prints that exist.
 Integrity violations (orphans, bad frontmatter, cap violations) return
 nonzero when --strict is set, so this script is CI-wireable.
 """
@@ -11,13 +11,23 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import re
 import sys
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Optional
 
+from memforge._terminal import terminal_safe, visible
+from memforge.discovery import (
+    SymlinkWriteRefused,
+    access_error,
+    read_text_no_follow,
+    walk_md_files,
+    write_text_inside,
+)
 from memforge.frontmatter import has_frontmatter, parse
+from memforge.cli.index_gen import index_line_fields
 # S5: caps are single-sourced in memforge.constants so audit, validate, and
 # index-gen cannot drift (closes the 150-vs-180 split).
 from memforge.constants import MEMORY_MD_LINE_CAP, POINTER_LINE_BYTE_CAP
@@ -26,6 +36,8 @@ from memforge.constants import MEMORY_MD_LINE_CAP, POINTER_LINE_BYTE_CAP
 VALID_TYPES = {"user", "feedback", "project", "reference"}
 VALID_SENSITIVITIES = {"public", "internal", "restricted", "privileged"}
 SPEC_TIERS = {"index", "detail"}
+#: Frontmatter fields the per-file audit reads as one text value.
+_TEXT_FIELDS = ("name", "description", "type", "sensitivity", "tier", "status")
 
 
 # ---------- helpers ----------
@@ -36,10 +48,11 @@ def _default_paths() -> list[Path]:
 
     Existence-filtered for consistency with the sibling audit-deep / audit-log
     tools (ext-01): a non-Claude-Code user gets [] and the no-folders path
-    rather than a per-folder '(directory does not exist, skipping)' banner."""
+    rather than a per-folder '(directory does not exist, skipping)' banner.
+    A folder that cannot be looked at is kept, so it is reported."""
     from memforge.paths import default_memory_paths
 
-    return [p for p in default_memory_paths() if p.exists()]
+    return [p for p in default_memory_paths() if os.path.exists(p) or access_error(p)]
 
 
 _POINTER_RE = re.compile(r"\[[^\]]+\]\(([^)]+\.md)\)")
@@ -47,13 +60,6 @@ _BULLET_POINTER_RE = re.compile(r"^- \[")
 # A pointer emitted with NO hook text: `- [title](path.md)` and nothing after it.
 # index_gen produces this shape when the title+path prefix exhausts the byte cap.
 _BARE_POINTER_RE = re.compile(r"^- \[([^\]]+)\]\(([^)]+\.md)\)\s*$")
-
-
-def _extract_pointers(memory_md: Path) -> list[str]:
-    if not memory_md.is_file():
-        return []
-    text = memory_md.read_text(encoding="utf-8", errors="replace")
-    return _POINTER_RE.findall(text)
 
 
 def _disk_md_files(folder: Path) -> list[str]:
@@ -66,18 +72,19 @@ def _disk_md_files(folder: Path) -> list[str]:
     subfolder is excluded from recursion.
 
     Returns sorted POSIX-relative paths (subfolder READMEs as
-    "<topic>/README.md").
+    "<topic>/README.md"). Symlinked files and folders are not part of the
+    store and are left out.
     """
     out: list[str] = []
     for p in sorted(folder.glob("*.md")):
-        if p.name == "MEMORY.md":
+        if p.name == "MEMORY.md" or os.path.islink(p):
             continue
         out.append(p.name)
     for sub in sorted(folder.iterdir()):
-        if not sub.is_dir() or sub.name == "archive":
+        if not os.path.isdir(sub) or os.path.islink(sub) or sub.name == "archive":
             continue
         readme = sub / "README.md"
-        if readme.is_file():
+        if os.path.isfile(readme) and not os.path.islink(readme):
             out.append(f"{sub.name}/README.md")
     return out
 
@@ -100,7 +107,7 @@ def _parentless_rollup_subfolders(
     pairs, sorted by name.
 
     WHY THIS EXISTS. `_disk_md_files()` above adds `<topic>/README.md` to the
-    pointer-comparable set only `if readme.is_file()`. When the README is
+    pointer-comparable set only `if os.path.isfile(readme)`. When the README is
     ABSENT the subfolder contributes nothing to that set, so the pointer/disk
     comparison has nothing to compare and raises nothing -- every file in it
     is silently unreachable from MEMORY.md while the audit reports clean.
@@ -125,7 +132,7 @@ def _parentless_rollup_subfolders(
     seen = reachable or set()
     out: list[tuple[str, int]] = []
     for sub in sorted(folder.iterdir()):
-        if not sub.is_dir():
+        if not os.path.isdir(sub):
             continue
         # Never descend a symlinked directory. index_gen guards this in five
         # places; audit.py had none, so this helper inherited the gap. A
@@ -134,7 +141,7 @@ def _parentless_rollup_subfolders(
         # cheap denial-of-service against the audit itself. It could also
         # report a "subfolder" that is not part of the store at all.
         # (threat-model finding, 2026-07-29.)
-        if sub.is_symlink():
+        if os.path.islink(sub):
             continue
         # Exclude archive/ (outside the rollup contract) AND any dot-directory
         # (tooling state: .git, .memforge, .memforge-rollup-history, ...).
@@ -152,7 +159,7 @@ def _parentless_rollup_subfolders(
         # `archive` while index_gen excluded `archive`, `.git`, `.memforge`.)
         if sub.name == "archive" or sub.name.startswith("."):
             continue
-        if (sub / "README.md").is_file():
+        if os.path.isfile(sub / "README.md"):
             continue
         n = len([
             p for p in sub.glob("*.md")
@@ -265,17 +272,17 @@ def _rollup_readme_gaps(
     """
     out: list[tuple[str, list[str], list[str]]] = []
     for sub in sorted(folder.iterdir()):
-        if not sub.is_dir() or sub.is_symlink():
+        if not os.path.isdir(sub) or os.path.islink(sub):
             continue
         if sub.name == "archive" or sub.name.startswith("."):
             continue
         readme = sub / "README.md"
-        if not readme.is_file():
+        if not os.path.isfile(readme):
             continue
         siblings = {p.name for p in sub.glob("*.md") if p.name != "README.md"}
         try:
-            text = readme.read_text(encoding="utf-8", errors="replace")
-        except OSError:
+            text = read_text_no_follow(readme, root=folder)
+        except (OSError, UnicodeDecodeError):
             # Fail closed: cannot read the README, so cannot prove any sibling
             # is reachable. Report rather than skip.
             out.append((sub.name, sorted(siblings), [], True))
@@ -310,16 +317,10 @@ def _all_md_files_recursive(folder: Path) -> set[str]:
     "archive" deeper in the tree is NOT excluded).
     """
     out: set[str] = set()
-    for p in folder.rglob("*.md"):
+    for p in walk_md_files(folder):
         if p.name == "MEMORY.md":
             continue
-        try:
-            # rglob may yield paths reached via a symlink that resolves
-            # outside `folder`; relative_to then raises ValueError. Skip
-            # those rather than crash.
-            rel = p.relative_to(folder)
-        except ValueError:
-            continue
+        rel = p.relative_to(folder)
         if rel.parts and rel.parts[0] == "archive":
             continue
         out.add(rel.as_posix())
@@ -347,18 +348,33 @@ def _files_to_audit(folder: Path) -> list[str]:
     validated here; that is by design for the current rollup model (audit-03).
     Switch to rglob (excluding archive/) if a deeper nesting convention lands.
 
-    Returns sorted POSIX-relative paths.
+    Returns sorted POSIX-relative paths. Symlinked files and folders are not
+    part of the store: auditing one would read (and, under --add-defaults,
+    write) a file outside the folder.
     """
     out: list[str] = []
     for p in sorted(folder.glob("*.md")):
-        if p.name == "MEMORY.md":
+        if p.name == "MEMORY.md" or os.path.islink(p):
             continue
         out.append(p.name)
     for sub in sorted(folder.iterdir()):
-        if not sub.is_dir() or sub.name == "archive":
+        if not os.path.isdir(sub) or os.path.islink(sub) or sub.name == "archive":
             continue
         for p in sorted(sub.glob("*.md")):
+            if os.path.islink(p):
+                continue
             out.append(f"{sub.name}/{p.name}")
+    # A folder the walk cannot list, at any depth, is audited as a file it
+    # cannot read: the files in it are hidden from every check. So is a path
+    # that cannot be looked at, as in a folder that can be listed but not
+    # searched, where a subfolder cannot be told from a file.
+    listed = set(out)
+    for p in walk_md_files(folder):
+        rel = p.relative_to(folder)
+        if rel.parts[0] == "archive" or rel.as_posix() in listed:
+            continue
+        if os.path.isdir(p) or access_error(p):
+            out.append(rel.as_posix())
     return out
 
 
@@ -492,10 +508,10 @@ def _is_live_status(status: str) -> bool:
 
 def _read_ledger(folder: Path) -> dict[str, str]:
     p = folder / ".last_used.json"
-    if not p.is_file():
+    if not os.path.isfile(p):
         return {}
     try:
-        return json.loads(p.read_text(encoding="utf-8"))
+        return json.loads(read_text_no_follow(p, root=folder))
     except (OSError, json.JSONDecodeError):
         return {}
 
@@ -565,11 +581,33 @@ def audit_target(
 ) -> tuple[int, Optional[dict]]:
     """Audit one folder. Returns (violation_count, optional json blob)."""
     print()
-    print(f"====== {target} ======")
+    print(f"====== {visible(target)} ======")
 
-    if not target.is_dir():
+    if not os.path.isdir(target) and access_error(target) is None:
         print("  (directory does not exist, skipping)")
         return 0, None
+
+    # A folder that cannot be listed would audit as an empty store and pass.
+    try:
+        os.scandir(target).close()
+    except OSError as exc:
+        unlisted = f"cannot list the memory folder: {exc}"
+        print()
+        print("  INTEGRITY VIOLATIONS (1):")
+        print(f"    - {visible(unlisted)}")
+        print()
+        if not json_out:
+            return 1, None
+        return 1, {
+            "target": str(target),
+            "file_count": 0,
+            "types": dict.fromkeys(("user", "feedback", "project", "reference", "other"), 0),
+            "violations": [unlisted],
+            "health": [],
+            "stale": [],
+            "orphan_files": [],
+            "orphan_pointers": [],
+        }
 
     memory_md = target / "MEMORY.md"
     violations: list[str] = []
@@ -588,11 +626,17 @@ def audit_target(
     file_count = 0
 
     # ---- MEMORY.md index checks ----
-    if not memory_md.is_file():
+    index_text = ""
+    if not os.path.isfile(memory_md) and access_error(memory_md) is None:
         violations.append("MEMORY.md missing")
-        index_text = ""
     else:
-        index_text = memory_md.read_text(encoding="utf-8")
+        try:
+            index_text = read_text_no_follow(memory_md, root=target)
+        except (OSError, UnicodeDecodeError) as exc:
+            # Fail closed: with no readable index, no file is proven reachable,
+            # so every file is reported as an orphan below.
+            violations.append(f"MEMORY.md: cannot read file: {exc}")
+    if index_text:
         if has_frontmatter(index_text):
             violations.append("MEMORY.md has frontmatter (should be index only)")
         line_count = len(index_text.splitlines())
@@ -637,7 +681,7 @@ def audit_target(
             )
 
     # ---- pointer / disk-file set comparison ----
-    pointers = _extract_pointers(memory_md)
+    pointers = _POINTER_RE.findall(index_text)
     seen: dict[str, int] = {}
     for p in pointers:
         seen[p] = seen.get(p, 0) + 1
@@ -715,7 +759,7 @@ def audit_target(
     for fname in _files_to_audit(target):
         fpath = target / fname
         try:
-            text = fpath.read_text(encoding="utf-8")
+            text = read_text_no_follow(fpath, root=target)
         except (OSError, UnicodeDecodeError):
             violations.append(f"{fname}: cannot read file")
             continue
@@ -737,6 +781,22 @@ def audit_target(
                 "(check for unquoted special chars, unbalanced quotes, etc.)"
             )
             continue
+
+        # A list or mapping where one text value belongs cannot be looked up
+        # in the enums below, and no check on this file means anything until
+        # the field is fixed. Report it and move on to the next file.
+        not_text = [
+            f for f in _TEXT_FIELDS
+            if fm.get(f) is not None and not isinstance(fm[f], str)
+        ]
+        if not_text:
+            violations.extend(f"{fname}: field '{f}' must be text" for f in not_text)
+            continue
+
+        try:
+            index_line_fields(fm, Path(fname).stem, fname)
+        except ValueError as exc:
+            violations.append(f"{fname}: {exc}; it is left out of MEMORY.md")
 
         name = fm.get("name", "")
         desc = fm.get("description", "")
@@ -838,7 +898,7 @@ def audit_target(
             and fm.get("do_not_inject") is not True
             and _is_live_status(fm.get("status", ""))
         ):
-            always_live.append((fname, desc))
+            always_live.append((fname, str(desc)))
 
         # Staleness: prefer the .last_used.json ledger when present, fall back
         # to mtime. The ledger is written by the read-tracker hook in the
@@ -896,8 +956,14 @@ def audit_target(
             health.append(f"[v0.4 MAJOR] {msg}")
         for _, msg in warns_v04:
             health.append(f"[v0.4 WARN] {msg}")
-    except Exception as e:  # noqa: BLE001 — never let v0.4 audit kill the existing audit
-        health.append(f"[v0.4] concurrency audit raised {type(e).__name__}: {e}")
+    # Never let the v0.4 audit kill the existing audit.
+    except Exception as e:  # noqa: BLE001
+        # A violation, not a health note: this pass holds the competing-claim
+        # blockers, and one malformed file must not switch them off quietly.
+        violations.append(
+            f"[v0.4] concurrency audit did not run ({type(e).__name__}: {e}); "
+            "its checks are unverified for this folder"
+        )
 
     # ---- report ----
     print()
@@ -917,26 +983,26 @@ def audit_target(
     if violations:
         print(f"  INTEGRITY VIOLATIONS ({len(violations)}):")
         for v in violations:
-            print(f"    - {v}")
+            print(f"    - {visible(v)}")
         print()
 
     if health:
         print(f"  HEALTH ({len(health)}):")
         for h in health:
-            print(f"    - {h}")
+            print(f"    - {visible(h)}")
         print()
 
     if stale:
         print(f"  STALE >{stale_days}d ({len(stale)}):")
         for s in stale:
-            print(f"    - {s}")
+            print(f"    - {visible(s)}")
         print()
 
     # ---- --add-defaults: insert sensitivity: internal where missing ----
     if add_defaults and missing_sens_files:
         print(f"  --add-defaults: {len(missing_sens_files)} file(s) missing sensitivity field")
         for f in missing_sens_files:
-            print(f"    - {f}")
+            print(f"    - {visible(f)}")
         try:
             ans = input("    Add 'sensitivity: internal' to all of the above? [y/N] ").strip().lower()
         except EOFError:
@@ -944,7 +1010,11 @@ def audit_target(
         if ans in ("y", "yes"):
             for f in missing_sens_files:
                 fpath = target / f
-                text = fpath.read_text(encoding="utf-8")
+                try:
+                    text = read_text_no_follow(fpath, root=target)
+                except (OSError, UnicodeDecodeError) as exc:
+                    print(f"      SKIPPED {visible(f)}: cannot read file: {visible(exc)}")
+                    continue
                 # Insert before the closing fence of the frontmatter block.
                 lines = text.split("\n")
                 new_lines: list[str] = []
@@ -969,11 +1039,15 @@ def audit_target(
                 # claiming a write that did not change the file (closes
                 # recall-03). This also avoids needless mtime churn on no-ops.
                 if inserted:
-                    fpath.write_text("\n".join(new_lines), encoding="utf-8")
-                    print(f"      wrote sensitivity: internal to {f}")
+                    try:
+                        write_text_inside(target, fpath, "\n".join(new_lines))
+                    except SymlinkWriteRefused as exc:
+                        print(f"      SKIPPED {visible(f)}: {visible(exc)}")
+                        continue
+                    print(f"      wrote sensitivity: internal to {visible(f)}")
                 else:
                     print(
-                        f"      SKIPPED {f}: could not locate the frontmatter "
+                        f"      SKIPPED {visible(f)}: could not locate the frontmatter "
                         "closing fence; sensitivity field NOT added"
                     )
         else:
@@ -981,22 +1055,30 @@ def audit_target(
         print()
 
     # ---- --fix: remove orphan pointers with y/N prompt ----
-    if fix and orphan_ptrs and memory_md.is_file():
+    if fix and orphan_ptrs and os.path.isfile(memory_md):
         print("  --fix: orphan pointer removal")
-        index_text = memory_md.read_text(encoding="utf-8")
-        for p in orphan_ptrs:
+        try:
+            index_text = read_text_no_follow(memory_md, root=target)
+        except (OSError, UnicodeDecodeError) as exc:
+            print(f"  --fix: cannot read {memory_md}, nothing removed: {exc}")
+            print()
+        else:
+            for p in orphan_ptrs:
+                try:
+                    ans = input(f"    Remove pointer '{p}' from {memory_md}? [y/N] ").strip().lower()
+                except EOFError:
+                    ans = ""
+                if ans in ("y", "yes"):
+                    pat = re.compile(r"^.*\(" + re.escape(p) + r"\).*$\n?", re.MULTILINE)
+                    index_text, n = pat.subn("", index_text, count=1)
+                    print(f"      removed ({n} line)." if n else "      not found (skipped).")
+                else:
+                    print("      kept.")
             try:
-                ans = input(f"    Remove pointer '{p}' from {memory_md}? [y/N] ").strip().lower()
-            except EOFError:
-                ans = ""
-            if ans in ("y", "yes"):
-                pat = re.compile(r"^.*\(" + re.escape(p) + r"\).*$\n?", re.MULTILINE)
-                index_text, n = pat.subn("", index_text, count=1)
-                print(f"      removed ({n} line)." if n else "      not found (skipped).")
-            else:
-                print("      kept.")
-        memory_md.write_text(index_text, encoding="utf-8")
-        print()
+                write_text_inside(target, memory_md, index_text)
+            except SymlinkWriteRefused as exc:
+                print(f"      NOT WRITTEN: {exc}")
+            print()
 
     blob: Optional[dict] = None
     if json_out:
@@ -1017,12 +1099,16 @@ def audit_target(
 # ---------- CLI ----------
 
 
+@terminal_safe
 def main(argv: list[str] | None = None) -> int:
     p = argparse.ArgumentParser(
         prog="memory-audit",
         description=(
             "Health + integrity checks for MemForge memory folders. "
-            "Defaults: per-cwd memory + ~/.claude/global-memory/."
+            "Defaults: the folders `memforge paths` prints that exist "
+            "($MEMFORGE_MEMORY_PATH when set; else the Claude Code per-cwd memory "
+            "and ~/.claude/global-memory/ when either exists; else "
+            "~/.memforge/memory/ and ~/.memforge/global-memory/)."
         ),
     )
     p.add_argument("--path", action="append", type=Path, default=[],
@@ -1065,6 +1151,28 @@ def main(argv: list[str] | None = None) -> int:
 
     targets: list[Path] = [pp.expanduser().resolve() for pp in args.path] or _default_paths()
 
+    if not targets:
+        # No total is printed: a zero would read as a pass for a store this
+        # run never opened. A strict gate that checked nothing has not passed.
+        from memforge.paths import default_memory_paths
+        looked_for = ", ".join(str(d) for d in default_memory_paths())
+        print(
+            f"memory-audit: nothing audited. No --path was given and none of "
+            f"the default memory folders exists ({looked_for}). "
+            "Pass --path <folder> to audit another folder.",
+            file=sys.stderr,
+        )
+        return 2 if args.strict else 0
+
+    # A named folder that is not there was not audited. Same rule as above:
+    # say so, print no total when nothing at all was audited, fail --strict.
+    missing = [t for t in targets if not os.path.isdir(t) and access_error(t) is None]
+    for t in missing:
+        print(f"memory-audit: {t} does not exist or is not a folder; not audited.",
+              file=sys.stderr)
+    if len(missing) == len(targets):
+        return 2 if args.strict else 0
+
     total_violations = 0
     json_reports: list[dict] = []
 
@@ -1094,6 +1202,8 @@ def main(argv: list[str] | None = None) -> int:
 
     if args.strict and total_violations > 0:
         return 1
+    if args.strict and missing:
+        return 2
     return 0
 
 

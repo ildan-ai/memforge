@@ -10,8 +10,7 @@ Two channels are accepted:
    https://github.com/ildan-ai/memforge/security/advisories/new. GitHub
    notifies maintainers privately and provides a coordination workspace.
 2. **Email**: `security@ildan.ai` with the prefix `[memforge-security]` in
-   the subject line. Encrypted reports welcome (PGP key fingerprint TBD;
-   contact the address for current key).
+   the subject line. For an encrypted channel, ask at that address first.
 
 Include:
 
@@ -46,19 +45,26 @@ GitHub Security Advisory CVE flow.
 
 | Version | Status |
 | --- | --- |
-| 0.7.x | Supported (current) |
-| < 0.7 | Not supported |
+| 1.0.x | Supported (current) |
+| < 1.0 | Not supported |
 
-This is a pre-1.0 project on a fast-moving SemVer track: only the current
-minor line (0.7.x) receives security fixes. When the next minor line ships,
-security fixes for the prior line continue for 90 days from that line's first
-release; after that window, upgrade to the current minor to stay supported.
-Patch releases within the current line always carry the latest fixes.
+Only the current minor line (1.0.x) receives security fixes. When the next
+minor line ships, security fixes for the prior line continue for 90 days from
+that line's first release; after that window, upgrade to the current minor to
+stay supported. Patch releases within the current line always carry the latest
+fixes. The 0.x lines carried an in-repo key system that 1.0 removed; they get
+no further fixes.
 
 ## Scope
 
 In-scope for security reports:
 
+- Commit trust (`memforge sync`, v1.0.0+): any way to get a commit accepted
+  that the committed signer list does not authorize, to move the recorded
+  verified head without verification, or to run code during a sync. The
+  limits the spec states under "Commit trust" (a pin vouches for earlier
+  history, a merge is checked as one commit, a listed signer is trusted
+  completely) are documented behavior, not vulnerabilities.
 - Code execution / arbitrary file write outside the memory folder.
 - Path traversal in `memory-link-rewriter`, `memory-rollup`, or any tool
   that resolves user-supplied paths.

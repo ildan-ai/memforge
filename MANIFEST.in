@@ -1,0 +1,11 @@
+# The sdist carries what the test suite needs to run from it: the tests with
+# their helpers and fixtures, and the repository files some tests read.
+graft tests
+graft spec
+graft examples
+graft adapters
+graft docs
+graft tools
+graft .github
+include CHANGELOG.md CONTRIBUTING.md SECURITY.md CODE_OF_CONDUCT.md
+global-exclude __pycache__ *.py[cod] .DS_Store

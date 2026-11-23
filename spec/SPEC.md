@@ -279,6 +279,8 @@ When the index is generated (v0.6.3+), the generator MUST keep each emitted poin
 
 Section headers (`##`, `###`) MAY group pointers by theme. An introductory paragraph at the top is permitted.
 
+**Operator text in a generated file.** A generator that copies text it does not control into a generated file (the preamble of a generated `MEMORY.md`, the body of a pinned memory placed in an `AGENTS.md`) SHOULD copy it as literal text: inside a backtick code fence one backtick longer than the longest run of backticks in the text, and at least three. No line of the text can close a fence that long, so nothing in it (a heading, a fence of its own, an HTML block, a comment) reaches the generated text around it, and no body heading is moved or rewritten. The reference generators (`memory-index-gen`, `agents-md-gen`) do this. A tool that reads such a preamble back (`memory-preamble-extract`) takes a block that is one such fence from its first line to its last as the preamble, without the fence lines, and does not end the preamble at a heading or bullet inside the fence. A generator still refuses text that carries a marker only the generator writes (the generated header, the competing-claims block), because line-based readers do not track fences.
+
 ## Recall operation (v0.6.0+)
 
 Earlier spec versions assume an adapter loads the `tier: index` hotlist (`MEMORY.md`) into every session. As a memory set grows, bulk-loading the whole index becomes token-expensive and the one-line index pointers become too terse to reliably surface the right memory at the right moment. The **recall operation** is an alternative, query-driven loading strategy: given a query string, a recall consumer surfaces only the memories whose triggers match, injecting their `description` text (not their bodies) so the agent can read the full file on demand.
@@ -319,6 +321,8 @@ The result set MAY be ranked and truncated to a budget (top-K, character or toke
 ### Index artifact (informative)
 
 Recall is latency-sensitive when wired to a per-query hook, so reference implementations precompute an inverted index at memory-change time rather than walking the folder per query. The build step and the query step are separate operations; in the reference implementation `memory-index-gen` emits the recall index and a thin `memory-recall` reader consumes it. The index is a derived build artifact (like `MEMORY.md`); it is not part of the on-disk format contract and MAY be regenerated at any time. Implementations SHOULD version the artifact and reject an incompatible version by falling back to a rebuild or to empty recall (per post-condition 7).
+
+The index is a local cache, not a shared file. It SHOULD NOT be committed, because a copy that arrives by `git pull` is input from another machine and its entries are injected into an agent's context. An implementation SHOULD store in the index a fingerprint of the memory files it was built from (each file's relative name, size and modification time in nanoseconds, in a fixed order), SHOULD compare it with the fingerprint of the folder as it is now before it serves a query, and SHOULD rebuild the index on any difference (a change to the synonym override file counts), so a stale, pulled or hand-edited index is never served. An implementation that compares file modification times SHOULD also store the time the build started (the reference index field `built_ns`, an integer count of nanoseconds since the epoch, read before the first memory file is read) and SHOULD treat the index as stale when any memory file's modification time is within 2 seconds of it, inclusive, before or after it, so an edit that keeps its size and falls in the same file-clock tick as the build is not served stale (a coarse file clock rounds times up to 2 seconds on some file systems). An index with no usable build time is rebuilt. Readers ignore index fields they do not know. The `folder` it reports for an entry is the folder it read, whatever the index file says. An index it cannot write is not an error: it answers from the build it made in memory. Per post-condition 7 an index it cannot build yields empty recall.
 
 ### Tier and recall (clarification, v0.6.1+)
 
@@ -452,6 +456,7 @@ Lifecycle:
 
 - Snooze creation, edits, and deletion (outside resolve flow) MUST occur in commits whose message starts with `memforge: snooze <topic>` and that touch ONLY the single snooze file. Audit MAJOR if violated.
 - Snooze deletion inside a `memforge: resolve <topic>` commit is permitted (deletion is part of the atomic resolution).
+- `.memforge` and `.memforge/snoozes` MUST be real folders and a snooze record a regular file. A committed link at `.memforge`, at `.memforge/snoozes`, on the way to the snooze folder or under it is a Tier 2 BLOCKER, and the resolve operation MUST refuse to delete a snooze through one, before it changes any member.
 - Audit suppresses live-collision findings for any topic whose snooze is in effect (today ≤ `snoozed_until`), but emits a separate "snoozed" line per group so the queue is observable.
 - Audit MAJOR `long-snoozed` once `today - created > horizon` (default 14 days, configurable). BLOCKER once `today - created > 2× horizon`.
 - Audit MAJOR `orphaned snooze` if the snooze file exists for a topic with fewer than two live members.
@@ -483,7 +488,7 @@ audit:
 
 **Validation rules (HEAD-pure).** `audit.audit_window_days` MUST be ≥ 30 (BLOCKER if lower; the audit refuses to run on a sub-floor config). `audit.snooze_horizon_days` MUST be in `[1, 90]` (MAJOR if out of range). `audit.stale_collision_days` MUST be in `[1, 30]` (MAJOR). `audit.snooze_cap_per_author` MUST be in `[1, 100]` (MAJOR). `audit.decision_bearing_tags` MUST be a list of strings.
 
-**Edit gate (Tier 2).** All edits to `.memforge/config.yaml` MUST occur in commits whose message starts with `memforge: config` AND that touch ONLY the config file. Multi-file or wrong-prefix commits modifying config are BLOCKER.
+**Edit gate (Tier 2).** All edits to `.memforge/config.yaml` MUST occur in commits whose message starts with `memforge: config` AND that touch ONLY the config file. Multi-file or wrong-prefix commits modifying config are BLOCKER. The config file follows links, so "the config file" here is every committed path a loader can open as it: any case spelling of `.memforge/config.yaml` or of `.memforge` (macOS and Windows open either), a committed link at `.memforge`, at `.memforge/config.yaml` or anywhere on the way, and the file inside the repository that such a link chain ends at, as committed before or after the commit. A link chain is followed as the file system follows it: one name at a time, `..` applied after the link before it, and an absolute target under the repository top read as that repository path. A committed config link chain that cannot be followed to a file inside the repository (it leaves the repository, climbs above its top, or passes more than 40 links) is a BLOCKER in any commit that changes a link of that chain, whatever the prefix.
 
 **Two-phase cutover for `decision_bearing_tags` shrinks.** A config change that shrinks `decision_bearing_tags` does NOT take effect immediately. For one full `audit.audit_window_days` after the shrink commit, the effective set is `union(old_tags, new_tags)` and audit emits MAJOR for the duration. At window end, the shrink takes effect. Operators may override via `memforge: config-major` prefix with a manifest of affected UIDs in the commit body; audit BLOCKER until each manifested UID is reconciled.
 
@@ -495,6 +500,8 @@ A consumer (CC adapter, memory-query, MEMORY.md generator) MUST:
 2. For any group with two or more live members AND no active snooze, surface the set as a competing-claim block per the canonical serialization below.
 3. **Snooze interaction**: when a snooze is in effect, the competing-claim block is SUPPRESSED but the canonical serialization includes a separate "snoozed" line listing the topic, snooze creator, `snoozed_until`, and `snooze_reason`. Operators are NOT blinded.
 4. Refuse to silently pick a winner. Refuse to drop members based on any unratified `replaces:` claim.
+
+A generator run with a viewer filter MUST still list every live member of a group, and MUST show only the `uid` and a restricted marker (`restricted: true`) for a member the viewer may not read.
 
 The competing-claim block in `MEMORY.md` is a fenced YAML region with **canonical serialization**:
 
@@ -521,7 +528,7 @@ Canonical serialization rules (mandatory for byte-match CI):
 - 2-space indent, no tabs.
 - Key emission order MUST match the example exactly: `decision_topic`, `state`, conditionally `snoozed_until` and `snooze_reason`, then `members`; per-member `uid`, `owner`, `status`, `updated`, `first_line`, `file_path`.
 - Block style only; no flow style.
-- String values single-quoted only when they contain reserved YAML characters; otherwise plain.
+- String values single-quoted only when they contain reserved YAML characters; otherwise plain. A string is also single-quoted when its plain form would not read back under a YAML 1.1 reader as the same string (for example `<<`, `=`, `.5e+3`). A string holding a control character, U+2028, U+2029, a surrogate, U+FFFE or U+FFFF is double-quoted, with those characters escaped (`\n`, `\r`, `\t`, `\0`, else `\xXX` for C0, DEL and C1 controls; `\uXXXX` for the rest).
 - `first_line` truncation: NFKD normalize first, then take the first 117 UTF-8 bytes (split safely on UTF-8 boundary), then append the literal three-character string `...` only if any truncation occurred.
 - Stable sort: groups by `decision_topic` ascending; within each group, members by `updated` descending then `uid` ascending.
 - Empty groups (zero or one live member after exclusion AND no active snooze) are omitted.
@@ -530,7 +537,7 @@ Canonical serialization rules (mandatory for byte-match CI):
 
 ### Audit invariants for competing claims
 
-`memory-audit` v0.4.0+ enforces the layered rule set below. Tier 1 invariants are evaluated against HEAD alone (history-independent); Tier 2 invariants walk git log over the audit window (default 30 days, floored at 30 by config validation).
+`memory-audit` v0.4.0+ enforces the layered rule set below. Tier 1 invariants are evaluated against HEAD alone (history-independent); Tier 2 invariants walk git log over the audit window (default 30 days, floored at 30 by config validation). Tier 2 reads the repository that holds the store: repository-local git variables in the caller's environment (`GIT_DIR`, `GIT_WORK_TREE`, `GIT_INDEX_FILE` and the like, which a git hook sets) are not passed to git.
 
 **Tier 1 (HEAD-pure) BLOCKERs**: asymmetric supersession (every `superseded` has `superseded_by: [exactly 1 UID]` pointing to sole active winner of same group; symmetric `replaces:` on winner); exactly-one-active for any group whose anchor or any member carries `ever_multi_member: true`; status enumeration; cross-topic replaces; dangling replaces; alias cycle; resolve-commit producing zero or two-plus active in resolved group; `ever_multi_member: true` → `false` transition; sub-floor `audit.audit_window_days` in config.
 
@@ -538,7 +545,9 @@ Canonical serialization rules (mandatory for byte-match CI):
 
 **Tier 1 WARNs**: alias non-mutual; near-duplicate slugs (edit distance ≤ 2 lacking mutual alias); adapter horizon misconfiguration; snooze author-correlation heuristic.
 
-**Tier 2 (commit-log) BLOCKERs**: status transition to `superseded` outside resolve commit; `superseded_by:` written outside resolve commit; `decision_topic` mutation on existing memory outside resolve commit; memory deletion of group member outside resolve commit; resolve-commit scope violation; config edit outside `memforge: config` commit.
+**Tier 2 (commit-log) BLOCKERs**: status transition to `superseded` outside resolve commit; `superseded_by:` written outside resolve commit; `decision_topic` mutation on existing memory outside resolve commit; memory deletion of group member outside resolve commit (a live member moved into `archive/` counts as deleted; a `superseded`, `dropped` or `archived` one does not); resolve-commit scope violation; config edit outside `memforge: config` commit; a config link chain that cannot be followed to a file inside the repository (§"Config file"); a committed link at or under the snooze folder or on the way to it (§"Snooze record"); waiver-file edit outside a waiver-only `memforge: waiver` commit (§"Audit waivers").
+
+**Merge commits (Tier 2).** A merge is judged by what it changes on its first parent, whichever parent the change came from. A change that a merged branch's own commits made since the merge base is checked on those commits, not again on the merge, when both hold: the merge result for that path is the branch's (the same file, or for a memory the same `status`, `superseded_by`, `decision_topic` and `topic_aliases`), and every branch commit that touched the path is inside the audit window. A merge that writes another value of the same kind, or that brings in a branch commit older than the window, is checked as the merge's own change. Anything else a merge brings onto its first parent (a side chosen against a change on the first parent, a branch with no merge base, a new result) is checked as the merge commit's own change under the rules above.
 
 **Tier 2 MAJORs**: pending resolution (scoped to same-topic, at least one other live member); live collision past stale threshold; long-snoozed past horizon; orphaned snooze; snooze preemption (collision-recency primary); snooze cap (per-author and per-topic); snooze date-forgery; alias edit outside resolve or `memforge: alias`; snooze edit outside `memforge: snooze`.
 
@@ -573,9 +582,10 @@ The Tier 2 (commit-log) layer flags authority-state transitions (e.g. a `status:
 **Semantics (normative).**
 
 1. **Reported, never silent.** When any waiver applies, `memory-audit` MUST emit a visible "N finding(s) waived" line listing the waived commit SHAs. A waiver suppresses a finding from the BLOCKER set; it MUST NOT hide that a waiver occurred.
-2. **Fail-closed.** A missing, unreadable, malformed, or non-mapping waiver file yields an EMPTY waiver set, so genuine violations still fire. Only an explicit, valid, git-tracked waiver suppresses a finding.
+2. **Fail-closed.** A missing, unreadable, malformed, or non-mapping waiver file yields an EMPTY waiver set, so genuine violations still fire. Only an explicit, valid waiver committed at HEAD suppresses a finding: `memory-audit` reads the file from the HEAD commit, never from the work tree, so an untracked, staged-only or locally edited waiver file waives nothing. A HEAD entry that is not a regular file (a committed link) yields an empty set. When the work-tree or index copy differs from HEAD, `memory-audit` MUST emit a WARN saying only the committed version is honored.
 3. **Minimum SHA length.** A `waived_commits` entry shorter than 7 characters MUST be ignored, so a stray short token cannot waive broadly by prefix-match.
-4. **Trust boundary.** The waiver file is git-tracked and shares the trust boundary of the memory files themselves: anyone who can write the repo can author a waiver. Deployments with untrusted writers rely on the same git-provider branch-protection + signed-commit mitigations as the rest of the Tier 2 layer (§"Residual git-layer threat"); a waiver is not a security control, it is a recorded, reviewable suppression of a known-benign historical finding.
+4. **Trust boundary.** The waiver file is git-tracked and shares the trust boundary of the memory files themselves: anyone who can write the repo can author a waiver, but only in a gated commit (rule 5), so every waiver change is a separate, reviewable commit in the log. Deployments with untrusted writers rely on the same git-provider branch-protection + signed-commit mitigations as the rest of the Tier 2 layer (§"Residual git-layer threat"); a waiver is not a security control, it is a recorded, reviewable suppression of a known-benign historical finding.
+5. **Edit gate (Tier 2).** Every add, change or delete of `.memforge/audit-waivers.yaml` MUST land in a commit whose subject is `memforge: waiver` or starts with `memforge: waiver` followed by a space, AND that touches ONLY the waiver file. A waiver-file change in any other commit is a Tier 2 BLOCKER. A waiver never applies to a commit that changes the waiver file: every Tier 2 finding on such a commit (the waiver-edit BLOCKER and any other finding in the same commit) is reported whatever the waiver file lists, including a SHA entry for that commit and the `superseded_transition_waived_before` cutoff. This holds for the commit that introduced the file and for every later waiver-file commit. Waivers for all other commits work as rules 1 to 3 state.
 
 ## Commit trust (v1.0.0+)
 
@@ -601,12 +611,13 @@ Each mode has one committed list under `<memory-root>/.memforge/`:
 
 **Mode derivation.** The mode of a commit C is the mode of the single list file present in C's first parent. There is no mode setting to store or change.
 
-- Two or more list files in the first parent: `ambiguous_list`.
+- Two or more list files in the first parent: `ambiguous_list`. A tree that names the same list file more than once is `ambiguous_list` as well.
 - No list file in the first parent: `list_missing`.
 - A list that does not parse, or has no entries: every commit judged against it fails `list_invalid`.
 - A commit whose own tree does not hold exactly one valid list with at least one entry is refused `list_removed`. This keeps a listed signer from deleting the list by accident. It does not stop a listed signer from blocking later syncs on purpose, for example with a valid list of keys nobody holds, or by switching to a mode a receiver refuses.
+- A commit with no signature header is refused `unsigned` once its first parent's list is validated and before its own tree's list is read, so `unsigned` takes precedence over `list_removed`.
 
-The list is validated before any signature is checked. A parse or content failure (including a list line with an unsupported option) is `list_invalid` and takes precedence over any verifier result.
+The checks run in this order: the list file count in the first parent (`list_missing`, `ambiguous_list`), the mode release gate (`mode_unreleased`), the first parent's list (`list_invalid`), the signature header (`unsigned`), the commit's own list (`list_removed`), then the signature. The list is validated before any signature is checked. A parse or content failure (including a list line with an unsupported option) is `list_invalid` and takes precedence over any verifier result.
 
 Because the list is read from the first parent, a commit that edits the list cannot authorize itself. A signer is added by a commit signed by an already listed signer. A mode is changed by a listed signer in one commit that deletes the old list file and adds the new one. That commit is judged under the old mode, and its descendants under the new mode.
 
@@ -618,13 +629,30 @@ Repo-local git configuration changes verdicts. For example, `gpg.ssh.revocationF
 
 1. Make a throwaway bare git directory with no configuration, whose `objects/info/alternates` points at the store's object directory. Remove it on every exit path.
 2. Run every verification command as `git --git-dir=<throwaway> ...` with a cleared environment: `PATH`, a fixed locale, a private temporary directory, an empty `HOME` (unless the mode declares `HOME` as an input, as `gpg` and `keyless` do), `PROGRAMDATA` pointing at an empty private directory (OpenSSH for Windows does not run without it), `GIT_CONFIG_GLOBAL` and `GIT_CONFIG_SYSTEM` pointing at an empty file, system configuration disabled, and the variables the mode declares as inputs. Pin the mode's `gpg.*` keys with `-c`.
-3. Resolve `git` and the mode's verifier (`ssh-keygen`, `gpg`, `gitsign`) to absolute paths once, at the start. Those absolute paths, not the bare names, are what `gpg.ssh.program`, `gpg.program` and the `gitsign` call use. Each run prints one line per executable (`git`, `ssh-keygen`, `gpg`, `gitsign`) in the form `verifier <name>: path=<absolute path> version=<version> sha256=<hex>`, with `not found` for an executable that is absent, so the executable that is printed is the one that produces the verdict. `ssh-keygen` has no version flag, so its version is that of the `ssh` binary beside it.
+3. Before any program runs, refuse a memory root that has no `.git` entry of its own: `root_not_toplevel` when a folder above it has one, else `not_a_repository`. Then resolve `git` and the mode's verifier (`ssh-keygen`, `gpg`, `gitsign`) to absolute paths once. Those absolute paths, not the bare names, are what `gpg.ssh.program`, `gpg.program` and the `gitsign` call use. Each run that passes that check prints one line per executable (`git`, `ssh-keygen`, `gpg`, `gitsign`) in the form `verifier <name>: path=<absolute path> version=<version> sha256=<hex>`, with `not found` for an executable that is absent, so the executable that is printed is the one that produces the verdict. `ssh-keygen` has no version flag, so its version is that of the `ssh` binary beside it.
 
 ### Verifying one commit
 
 **`ssh`.** Extract `allowed_signers` from the first parent to a temporary file inside the throwaway directory. Run `verify-commit` with `-c gpg.format=ssh`, `-c gpg.ssh.program=<resolved ssh-keygen>` and `-c gpg.ssh.allowedSignersFile=<temporary file>`. Exit 0 passes. No decision reads a clock or a commit date.
 
-**List grammar.** For every mode the list is UTF-8; blank lines and lines whose first non-blank character is `#` are ignored; surrounding whitespace is trimmed; a list with no entries is `list_invalid`. In `ssh` mode each entry line must hold a token that starts with `ssh-`, `ecdsa-sha2-` or `sk-`, and a line that carries `valid-after`, `valid-before` or `cert-authority` (any case) makes the whole list invalid. Those are the only `list_invalid` checks for `ssh` beyond the common rules. The rest of each line (principals, other options, the key record) is passed to `ssh-keygen` unchanged, so a malformed key record shows up as `ssh_not_verified` when a signature is checked. In `gpg` mode an entry is exactly one 40-hex primary key fingerprint (either case, compared case-insensitively), optionally followed by `#` and a comment. In `keyless` mode an entry is exactly two whitespace-separated fields, the certificate identity and the issuer URL; a trailing comment is not allowed.
+**List grammar.** The grammar is narrower than `ssh-keygen`'s, so that no line can mean one thing to the implementation and another to `ssh-keygen`. Any failure below makes the whole list `list_invalid`. For every mode:
+
+- The tree entry that names a list file MUST name a blob. An entry that names a tag, a tree or any other object is `list_invalid`, decided from the object type before the object is read.
+- A list is at most 1 MiB (1,048,576 bytes). A larger list is `list_invalid`, decided from the object size before the list is read.
+- The list is UTF-8.
+- Lines are split on newline (LF) only. One carriage return at the end of a line is removed.
+- Any other control character in a line (U+0000 to U+0008, U+000A to U+001F, U+007F; tab is allowed) makes the list invalid, in a comment line too.
+- Only space and tab are trimmed from each end of a line. A line that is then empty is blank, and a line whose first character is then `#` is a comment. Blank and comment lines are ignored.
+- Every entry line (a line that is neither blank nor a comment) is tab and printable ASCII (U+0020 to U+007E) only, so the characters trimmed and the characters that split fields can only be space and tab.
+- A list with no entries is `list_invalid`.
+
+In `ssh` mode each entry line MUST also meet all of these:
+
+- A double quote appears only in a `namespaces="..."` value (the option name in any case, at the start of the line or after a space, tab or comma). After every such value is removed, no `"` is left.
+- No `cert-authority`, `valid-after=` or `valid-before=` (any case) starts the line or follows a space, tab, comma or double quote.
+- At least one whitespace-separated token starts with `ssh-`, `ecdsa-sha2-` or `sk-`.
+
+Those are the only `list_invalid` checks for `ssh` beyond the common rules. The rest of each line (principals, other options, the key record) is passed to `ssh-keygen` unchanged, so a malformed key record shows up as `ssh_not_verified` when a signature is checked. In `gpg` mode an entry is exactly one 40-hex primary key fingerprint (either case, compared case-insensitively), optionally followed by `#` and a comment. In `keyless` mode an entry is exactly two fields separated by spaces or tabs, the certificate identity and the issuer URL; a trailing comment is not allowed.
 
 Reasons: `unsigned` (git shows no signature header; decided without `ssh-keygen`), `ssh_not_verified` (any non-zero exit on a signed commit: a bad signature, a key not on the list and a missing `ssh-keygen` all look the same; git's stderr is shown unchanged), `list_missing`, `list_invalid`.
 
@@ -674,7 +702,7 @@ V is only a lower bound on what was verified, so a lost write costs time and is 
 
 **Output.** Each run prints the `verifier` lines above. After verification it prints one mode line per mode that judged a commit, in the form `mode <name>: <text>`. For `ssh`, the text is `verdict has no receiver-local input except the git and ssh-keygen executables`. For `gpg` and `keyless`, it is `verdict depends on this receiver's keyring, configuration and clock`. A run refused before any commit is judged prints no mode line.
 
-**Other exit-1 errors.** Errors outside the steps above also exit 1 and are named: `root_not_toplevel` (the memory root is not the repository top level), `bad_arguments` (both pin flags given), `pin_invalid` (`--trust-head` is not a full commit id), `state_invalid` (the state key is not a commit id), `git_missing`, `not_a_repository`, `object_missing` (an object the range needs is not present and the clone is not shallow), `bad_commit` (a malformed parent header), `isolation_failed` (the throwaway directory could not be made) and `git_failed` (a git command the run depends on failed).
+**Other exit-1 errors.** Errors outside the steps above also exit 1 and are named: `root_not_toplevel` (the memory root is not the repository top level), `bad_arguments` (both pin flags given), `pin_invalid` (`--trust-head` is not a full commit id), `state_invalid` (the state key is not a commit id), `git_missing`, `not_a_repository`, `object_missing` (an object the range needs is not present and the clone is not shallow), `bad_commit` (a commit in the range whose parent header is not a lowercase hex object id, such as an uppercase id that git stores; it names a commit in the range being verified, usually a fetched one, so treat it like a refusal), `isolation_failed` (the throwaway directory could not be made), `git_failed` (a git command the run depends on failed) and `tool_in_store` (`git` or a verifier executable resolves to a file inside the store).
 
 ### Local state and the first sync
 

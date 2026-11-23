@@ -17,6 +17,9 @@ import tempfile
 from dataclasses import dataclass
 from pathlib import Path
 
+# find_program is imported from here by other modules.
+from memforge._programs import ProgramInFolder, find_program, find_program_outside, git_env  # noqa: F401
+
 TIMEOUT_SECONDS = 120
 
 
@@ -100,7 +103,7 @@ def _version(name: str, path: str) -> str:
     if name == "ssh-keygen":
         # ssh-keygen has no version flag; the sibling ssh from the same install reports it.
         sibling = Path(path).with_name("ssh" + Path(path).suffix)
-        if sibling.is_file():
+        if os.path.isfile(sibling):
             # OpenSSH for Windows exits silently without PROGRAMDATA; an empty folder is enough.
             with tempfile.TemporaryDirectory(prefix="memforge-sync-") as empty:
                 env["PROGRAMDATA"] = empty
@@ -117,15 +120,21 @@ def _sha256(path: str) -> str:
     return digest.hexdigest()
 
 
-def resolve_tools() -> dict[str, Tool]:
-    """Resolve each program once; these paths are the ones used and printed."""
+def resolve_tools(store: Path) -> dict[str, Tool]:
+    """Resolve each program once; these paths are the ones used and printed.
+
+    A program inside the store is refused before it runs: anyone who can
+    commit could have replaced it.
+    """
     tools: dict[str, Tool] = {}
     for name in ("git", "ssh-keygen", "gpg", "gitsign"):
-        found = shutil.which(name)
-        if found is None:
+        try:
+            path = find_program_outside(name, store)
+        except ProgramInFolder as exc:
+            raise SyncError("tool_in_store", f"{name} resolves to {exc.path}, inside the store") from None
+        if path is None:
             tools[name] = Tool(name, None, "not found", "-")
             continue
-        path = os.path.abspath(found)
         tools[name] = Tool(name, path, _version(name, path), _sha256(path))
     return tools
 
@@ -135,14 +144,15 @@ def tool_line(tool: Tool) -> str:
 
 
 class Store:
-    """The store's own repository, driven with the receiver's normal environment."""
+    """The store's own repository, driven with the receiver's normal environment
+    minus the variables that would point git at another repository."""
 
     def __init__(self, git: str, root: Path) -> None:
         self.git_path = git
         self.root = root
 
     def git(self, *args: str) -> Result:
-        return run([self.git_path, *args], env=dict(os.environ), cwd=str(self.root))
+        return run([self.git_path, *args], env=git_env(), cwd=str(self.root))
 
     def must(self, *args: str) -> str:
         result = self.git(*args)

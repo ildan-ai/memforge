@@ -6,6 +6,10 @@
 # Signed commits and the signer list are separate from this hook: set
 # `commit.gpgsign true` in git and let `memforge sync` check signatures.
 #
+# What it does not check: that a config commit touches only the config
+# file, and a snooze file whose name holds a newline. `memory-audit`
+# reports both.
+#
 # Install (Windows PowerShell or pwsh 7+ on any platform):
 #   Copy-Item examples\git-hooks\commit-msg.ps1 .git\hooks\commit-msg.ps1
 #   # Git's hooks dispatcher looks for `.git\hooks\commit-msg` (no
@@ -26,7 +30,7 @@ $ErrorActionPreference = 'Stop'
 $msg = Get-Content -LiteralPath $MsgFile -TotalCount 1 -ErrorAction SilentlyContinue
 if (-not $msg) { $msg = '' }
 
-$staged = (& git diff --cached --name-only) -split "`r?`n" | Where-Object { $_ }
+$staged = (& git -c core.quotePath=false diff --cached --name-only) -split "`r?`n" | Where-Object { $_ }
 
 function Test-StartsWith([string]$prefix) {
   return $msg.StartsWith($prefix)
@@ -45,12 +49,27 @@ function Stop-Commit([string]$problem, [string]$hint) {
   exit 1
 }
 
-# .memforge/config.yaml -> memforge: config (Tier 2 BLOCKER per spec)
+# .memforge/config.yaml -> memforge: config (Tier 2 BLOCKER per spec).
+# Only the prefix is checked here; memory-audit checks the config-only rule.
 if (Test-TouchesExact '.memforge/config.yaml') {
   if (-not (Test-StartsWith 'memforge: config')) {
     Stop-Commit `
       ".memforge/config.yaml staged but commit prefix is not 'memforge: config'." `
-      "Per spec: config edits MUST land in 'memforge: config' commits that touch ONLY the config file."
+      "Per spec: config edits MUST land in 'memforge: config' commits that touch ONLY the config file (memory-audit checks that part)."
+  }
+}
+
+# .memforge/audit-waivers.yaml -> memforge: waiver, alone (Tier 2 BLOCKER per spec)
+if (Test-TouchesExact '.memforge/audit-waivers.yaml') {
+  if (-not ($msg -ceq 'memforge: waiver' -or (Test-StartsWith 'memforge: waiver '))) {
+    Stop-Commit `
+      ".memforge/audit-waivers.yaml staged but commit prefix is not 'memforge: waiver'." `
+      "Per spec: waiver edits MUST land in 'memforge: waiver' commits that touch ONLY the waiver file."
+  }
+  if (@($staged).Count -ne 1) {
+    Stop-Commit `
+      ".memforge/audit-waivers.yaml staged together with other files." `
+      "Per spec: waiver edits MUST land in 'memforge: waiver' commits that touch ONLY the waiver file."
   }
 }
 

@@ -32,17 +32,20 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import re
 import sys
 from pathlib import Path
 from typing import Any, Optional
 
+from memforge._terminal import terminal_safe, visible
 from memforge.constants import (
     MEMORY_MD_LINE_CAP,
     POINTER_LINE_BYTE_CAP,
     VALID_STATUSES,
     VALID_TIERS,
 )
+from memforge.discovery import access_error, read_text_no_follow, walk_md_files
 from memforge.frontmatter import parse, validate_frontmatter
 
 
@@ -117,28 +120,45 @@ def _check_required_fields(path: Path, fm: dict[str, Any], findings: list[Findin
             f"missing required v0.4 field(s): {', '.join(missing)} "
             "(run memory-frontmatter-backfill to fill them)",
         ))
+    # A value that is not text cannot be looked up in an enum or shown as the
+    # memory's index line; name the field instead.
+    not_text = [
+        f for f in ("name", "description", "tier", "status")
+        if fm.get(f) is not None and not isinstance(fm[f], str)
+    ]
+    for f in not_text:
+        findings.append(Finding(
+            str(path), "warn", "bad_field_type", f"field '{f}' must be text",
+        ))
     tier = fm.get("tier")
-    if tier is not None and tier not in VALID_TIERS:
+    if tier is not None and "tier" not in not_text and tier not in VALID_TIERS:
         findings.append(Finding(
             str(path), "warn", "bad_tier",
             f"tier '{tier}' is not one of {sorted(VALID_TIERS)}",
         ))
     status = fm.get("status")
-    if status is not None and status not in VALID_STATUSES:
+    if status is not None and "status" not in not_text and status not in VALID_STATUSES:
         findings.append(Finding(
             str(path), "warn", "bad_status",
             f"status '{status}' is not one of {sorted(VALID_STATUSES)}",
         ))
 
 
-def validate_file(path: Path) -> list[Finding]:
-    """Validate a single file. Returns the findings (possibly empty)."""
+def validate_file(path: Path, root: Optional[Path] = None) -> list[Finding]:
+    """Validate a single file. Returns the findings (possibly empty).
+
+    Give ``root`` for a file found by walking a folder, so a link there is not
+    read through; a file named on the command line is read as named.
+    """
     findings: list[Finding] = []
     try:
-        text = path.read_text(encoding="utf-8")
+        if root is None:
+            text = path.read_text(encoding="utf-8")
+        else:
+            text = read_text_no_follow(path, root=root)
     except FileNotFoundError:
         return [Finding(str(path), "error", "not_found", "file does not exist")]
-    except OSError as e:
+    except (OSError, UnicodeDecodeError) as e:
         return [Finding(str(path), "error", "read_error", f"could not read file: {e}")]
 
     # HARD: frontmatter must parse as a mapping (the colon-break gate).
@@ -159,33 +179,39 @@ def validate_file(path: Path) -> list[Finding]:
     return findings
 
 
-def _iter_target_files(paths: list[Path], explicit_files: list[Path]) -> list[Path]:
-    """Resolve the set of files to validate.
+def _iter_target_files(
+    paths: list[Path], explicit_files: list[Path]
+) -> list[tuple[Path, Optional[Path]]]:
+    """Resolve the set of files to validate, each with the folder it was
+    found by walking (None for a file named on the command line).
 
     Explicit FILE positionals win (validate exactly those). Otherwise walk each
     --path dir (or the default memory roots) for *.md, skipping archive/."""
     if explicit_files:
-        return [f.expanduser() for f in explicit_files]
+        return [(f.expanduser(), None) for f in explicit_files]
 
     roots = [p.expanduser().resolve() for p in paths]
     if not roots:
         from memforge.paths import default_memory_paths
-        roots = default_memory_paths()
+        # Only folders: a file at a default folder's path is not a store. One
+        # that cannot be looked at is walked, so it is reported.
+        roots = [r for r in default_memory_paths() if os.path.isdir(r) or access_error(r)]
 
-    out: list[Path] = []
+    out: list[tuple[Path, Optional[Path]]] = []
     for root in roots:
-        if root.is_file():
-            out.append(root)
+        if os.path.isfile(root):
+            out.append((root, None))
             continue
-        if not root.is_dir():
+        if not os.path.isdir(root) and access_error(root) is None:
             continue
-        for f in sorted(root.rglob("*.md")):
+        for f in sorted(walk_md_files(root)):
             if "archive" in f.parts:
                 continue
-            out.append(f)
+            out.append((f, root))
     return out
 
 
+@terminal_safe
 def main(argv: Optional[list[str]] = None) -> int:
     p = argparse.ArgumentParser(
         prog="memory-validate",
@@ -207,11 +233,56 @@ def main(argv: Optional[list[str]] = None) -> int:
                    help="Emit machine-readable JSON.")
     args = p.parse_args(argv)
 
+    not_a_folder: list[Path] = []
+    if not args.files and not args.path:
+        from memforge.paths import default_memory_paths
+        defaults = default_memory_paths()
+        # A default memory folder is a folder. Something else at that path is
+        # not a store, and validating it as one memory file would report a
+        # pass for a store this run never opened.
+        not_a_folder = [d for d in defaults if os.path.exists(d) and not os.path.isdir(d)]
+        for d in not_a_folder:
+            print(f"memory-validate: {d} is not a folder; not validated.", file=sys.stderr)
+        if not any(os.path.isdir(d) or access_error(d) for d in defaults) and not_a_folder:
+            return 2 if args.strict else 0
+        if not any(os.path.exists(d) or access_error(d) for d in defaults):
+            # "0 file(s) OK" would read as a pass for a store this run never
+            # opened. A strict gate that checked nothing has not passed.
+            looked_for = ", ".join(str(d) for d in defaults)
+            print(
+                f"memory-validate: nothing validated. No FILE or --path was "
+                f"given and none of the default memory folders exists "
+                f"({looked_for}). Pass --path <folder> to validate another folder.",
+                file=sys.stderr,
+            )
+            return 2 if args.strict else 0
+
+    # A named --path that is neither a folder nor a regular file (missing, or
+    # a pipe or device) was not validated. Same rule as above: say so, print no
+    # summary when nothing at all was validated, fail --strict.
+    missing = [] if args.files else [
+        p for p in args.path
+        if not (
+            os.path.isdir(p.expanduser())
+            or os.path.isfile(p.expanduser())
+            or access_error(p.expanduser())
+        )
+    ]
+    for p_missing in missing:
+        print(
+            f"memory-validate: {p_missing} does not exist or is not a folder or "
+            "file; not validated.",
+            file=sys.stderr,
+        )
+    if missing and len(missing) == len(args.path):
+        return 2 if args.strict else 0
+    missing += not_a_folder
+
     targets = _iter_target_files(args.path, args.files)
 
     all_findings: list[Finding] = []
-    for t in targets:
-        all_findings.extend(validate_file(t))
+    for t, root in targets:
+        all_findings.extend(validate_file(t, root))
 
     errors = [f for f in all_findings if f.level == "error"]
     warns = [f for f in all_findings if f.level == "warn"]
@@ -226,7 +297,7 @@ def main(argv: Optional[list[str]] = None) -> int:
     else:
         for f in all_findings:
             marker = "ERROR" if f.level == "error" else "warn "
-            print(f"  [{marker}] {f.file}: {f.message}", file=sys.stderr)
+            print(f"  [{marker}] {visible(f.file)}: {visible(f.message)}", file=sys.stderr)
         if not all_findings:
             print(f"memory-validate: {len(targets)} file(s) OK", file=sys.stderr)
         else:
@@ -241,6 +312,8 @@ def main(argv: Optional[list[str]] = None) -> int:
         return 1
     if warns and args.strict:
         return 1
+    if missing and args.strict:
+        return 2
     return 0
 
 

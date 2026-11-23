@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Thin shim — invokes memforge.cli.query.main()."""
+"""Thin shim: invokes memforge.cli.query.main()."""
 import sys
 from memforge.cli.query import main
 

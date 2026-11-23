@@ -9,17 +9,21 @@
 #
 # Extend the registered checks below as your team starts using
 # `memforge: resolve <topic>` and `memforge: alias <topic>`. The base
-# two (config, snooze) cover the common Tier-2 mistakes.
+# three (config, waiver, snooze) cover the common Tier-2 mistakes.
 #
 # Signed commits and the signer list are separate from this hook. Set
 # `commit.gpgsign true` in git for commit signing; `memforge sync` checks
 # the signatures. This hook looks only at commit-message prefixes.
+#
+# What it does not check: that a config commit touches only the config
+# file, and a snooze file whose name holds a newline. `memory-audit`
+# reports both.
 
 set -e
 
 msg_file="$1"
 msg=$(head -n1 "$msg_file" 2>/dev/null || true)
-staged=$(git diff --cached --name-only)
+staged=$(git diff --cached --name-only -z | tr '\0' '\n')
 
 touches_exact()   { echo "$staged" | grep -q "^$1$"; }
 touches_pattern() { echo "$staged" | grep -qE "$1"; }
@@ -32,11 +36,25 @@ fail() {
   exit 1
 }
 
-# .memforge/config.yaml -> memforge: config (Tier 2 BLOCKER per spec)
+# .memforge/config.yaml -> memforge: config (Tier 2 BLOCKER per spec).
+# Only the prefix is checked here; memory-audit checks the config-only rule.
 if touches_exact ".memforge/config.yaml"; then
   if ! starts_with "memforge: config"; then
     fail ".memforge/config.yaml staged but commit prefix is not 'memforge: config'." \
-         "Per spec: config edits MUST land in 'memforge: config' commits that touch ONLY the config file."
+         "Per spec: config edits MUST land in 'memforge: config' commits that touch ONLY the config file (memory-audit checks that part)."
+  fi
+fi
+
+# .memforge/audit-waivers.yaml -> memforge: waiver, alone (Tier 2 BLOCKER per spec)
+if touches_exact ".memforge/audit-waivers.yaml"; then
+  if ! { [ "$msg" = "memforge: waiver" ] || starts_with "memforge: waiver "; }; then
+    fail ".memforge/audit-waivers.yaml staged but commit prefix is not 'memforge: waiver'." \
+         "Per spec: waiver edits MUST land in 'memforge: waiver' commits that touch ONLY the waiver file."
+  fi
+  # Count NUL-separated names: a name made of a newline counts too.
+  if [ "$(git diff --cached --name-only -z | tr -cd '\0' | wc -c | tr -d ' ')" -ne 1 ]; then
+    fail ".memforge/audit-waivers.yaml staged together with other files." \
+         "Per spec: waiver edits MUST land in 'memforge: waiver' commits that touch ONLY the waiver file."
   fi
 fi
 

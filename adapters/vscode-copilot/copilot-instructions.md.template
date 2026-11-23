@@ -9,24 +9,24 @@ The operator maintains persistent memory in MemForge folders. Treat the followin
 Read these files at session start:
 
 - `~/.claude/global-memory/MEMORY.md`
-- `~/.claude/projects/PER_CWD_WORKSPACE_NAME/memory/MEMORY.md`
+- `~/.claude/projects/PROJECT_FOLDER/memory/MEMORY.md`
 
-(Replace `PER_CWD_WORKSPACE_NAME` with your actual workspace folder name. Run `ls ~/.claude/projects/` to find it.)
+(Replace `PROJECT_FOLDER` with the project's absolute path with every character other than an ASCII letter or digit replaced by a hyphen (`/home/alice/notes` becomes `-home-alice-notes`). Run `ls ~/.claude/projects/` to find it.)
 
 When the operator references a memory by title, follow the link in `MEMORY.md` to read the underlying file before answering.
 
-When the operator asks you to remember something cross-session, write it as a new file in the appropriate memory folder using the v0.3.0 frontmatter schema (see `~/claude-projects/memforge/spec/SPEC.md`). The filesystem watcher (memforge `memory-watch`) will commit the file automatically.
+When the operator asks you to remember something cross-session, write it as a new file in the appropriate memory folder using the v0.3.0 frontmatter schema (see `<path to your memforge clone>/spec/SPEC.md`). The filesystem watcher (memforge `memory-watch`) will commit the file automatically.
 
 ## MemForge tools available on PATH
 
 You can invoke these directly when the operator asks for memory operations:
 
-- `memory-audit-deep --strict` — verify memory integrity (UID uniqueness, taxonomy compliance, supersedes resolution, broken links, rollup staleness).
-- `memory-query --topic <X> --type <Y>` — find memories by frontmatter.
-- `memory-cluster-suggest` — surface candidate rollup clusters.
-- `memory-rollup create --slug <name> <files>` — pull files into a topic subfolder + generate README parent.
-- `memory-dlp-scan --staged --strict` — pre-commit scan for credentials / secrets / PII.
-- `memory-audit-log verify` — validate the tamper-evident audit chain.
+- `memory-audit-deep --strict`: verify memory integrity (UID uniqueness, taxonomy compliance, supersedes resolution, broken links, rollup staleness).
+- `memory-query --topic <X> --type <Y>`: find memories by frontmatter.
+- `memory-cluster-suggest`: surface candidate rollup clusters.
+- `memory-rollup create --slug <name> <files>`: pull files into a topic subfolder + generate README parent.
+- `memory-dlp-scan --staged --strict`: pre-commit scan for credentials / secrets / PII.
+- `memory-audit-log verify`: check the audit log's hash chain.
 
 ## Sensitivity
 

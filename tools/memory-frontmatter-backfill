@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Thin shim — invokes memforge.cli.frontmatter_backfill.main()."""
+"""Thin shim: invokes memforge.cli.frontmatter_backfill.main()."""
 import sys
 from memforge.cli.frontmatter_backfill import main
 

@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Thin shim — invokes memforge.cli.dlp_scan.main()."""
+"""Thin shim: invokes memforge.cli.dlp_scan.main()."""
 import sys
 from memforge.cli.dlp_scan import main
 

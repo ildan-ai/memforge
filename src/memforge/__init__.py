@@ -19,9 +19,9 @@ try:  # pragma: no cover - trivial metadata lookup
     try:
         __version__ = _pkg_version("ildan-memforge")
     except PackageNotFoundError:
-        __version__ = "0.9.1"
+        __version__ = "1.0.0"
 except ImportError:  # pragma: no cover - importlib.metadata always present on 3.10+
-    __version__ = "0.9.1"
+    __version__ = "1.0.0"
 
 __all__ = [
     "parse",

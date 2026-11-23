@@ -1,0 +1,50 @@
+@startuml trust-boundaries
+!include _style.iuml
+title MemForge trust boundaries and controls
+
+rectangle "**Memory content (untrusted input)**\nmemory files, MEMORY.md, rollups,\n.memforge/ as in the work tree\nSC-14 no-follow store reads and writes\nSC-15 frontmatter size and node limits\nSC-16 index fields untrusted\nSC-43 unreadable is reported, never absent\nSC-24 write gate (fails open, says so)" as Content #FEE2E2
+
+rectangle "**Tools (run as the user)**\nmemforge, console scripts, hooks\nSC-05 repository-local git variables dropped\nSC-06 absolute PATH lookup, none in the store\nor its repository\nSC-10 SC-11 automatic commit scope\nSC-12 SC-13 hook message and path rules\nSC-17 SC-18 SC-19 recall and index filters\nSC-41 recall index is a checked local cache\nSC-42 control characters escaped in output\nSC-20 SC-21 export gate, DLP\nSC-22 SC-23 Tier 2 audit, waivers at HEAD\nSC-40 file names passed to git literally\nSC-25 SC-36 local-only dispatch\nSC-26 isolated detect helpers\nSC-32 SC-33 SC-34 SC-37 agents-md-gen" as Tools
+
+rectangle "**Store repository**\nhistory, committed signer list,\nmemforge.verifiedHead\nSC-01 signature vs parent's list\nSC-02 unreleased modes refused\nSC-03 list grammar, 1 MiB cap\nSC-44 list reads bounded, blob only\nSC-04 list_removed\nSC-05 isolated verification\nSC-07 rewrite, shallow, divergence\nSC-08 state after fast-forward" as Store #FEFCE8
+
+cloud "**Remote**\ngit host, teammates, mergers\nbranch protection and\nrequired signing (host)\nSC-09 upstream branch only" as Remote
+
+rectangle "**Release pipeline**\nrelease.yml, pypi environment\nSC-27 signed tag on main\nSC-28 tests and version checks\nSC-29 trusted publishing\nSC-30 tag re-check before release\nSC-31 DCO from main's copy\nSC-38 attested release files, PDF\nSC-39 PDF build: no raw content, no network" as Release #FAF5FF
+
+cloud "**PyPI**\nildan-memforge" as Pypi
+
+Content --> Tools : "read as data, never as code"
+Tools --> Content : "writes inside the memory folder,\nno link, no second hard link"
+Tools --> Store : "scoped commits;\nverifiedHead only after ff"
+Remote --> Store : "**memforge sync**\nfetched objects used only\nafter every commit passes"
+Store --> Remote : "git push (user)"
+Remote -[dashed,#B91C1C]-> Content : "**git pull / merge / checkout**\nnot verified"
+Release --> Pypi : "OIDC upload of the checked commit"
+Pypi --> Tools : "pip install"
+Content -[dashed,#B91C1C]-> Store : "**.memforge/ signer list change**\nnever in an automatic commit"
+
+note right of Store
+**RISK**
+* a listed key is trusted completely
+* a pin vouches for unchecked history
+* hosts enforce registered keys, not the list
+* verdicts depend on local git and ssh-keygen
+end note
+
+note right of Content
+**RISK**
+* a trusted signer can write a prompt injection
+* the memory folder itself is opened by path
+* Windows: a folder swapped mid-open is followed
+end note
+
+note right of Release
+**RISK**
+* environment approval is a repository setting
+* a tag moved after the last check is not caught
+* trusts GitHub tag verification
+* a swapped release file is caught only if checked
+* a merged docs change can edit the PDF build itself
+end note
+@enduml

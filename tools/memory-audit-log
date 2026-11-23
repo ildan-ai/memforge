@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Thin shim — invokes memforge.cli.audit_log.main()."""
+"""Thin shim: invokes memforge.cli.audit_log.main()."""
 import sys
 from memforge.cli.audit_log import main
 

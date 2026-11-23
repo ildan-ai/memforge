@@ -13,8 +13,8 @@
       "file": "${userHome}/.claude/global-memory/MEMORY.md"
     },
     {
-      "_comment": "Per-cwd memory; path includes USERNAME, edit accordingly.",
-      "file": "${userHome}/.claude/projects/USERNAME-claude-projects/memory/MEMORY.md"
+      "_comment": "Per-cwd memory. Replace PROJECT_FOLDER with the project's absolute path, every character other than an ASCII letter or digit replaced by a hyphen (/home/alice/notes becomes -home-alice-notes).",
+      "file": "${userHome}/.claude/projects/PROJECT_FOLDER/memory/MEMORY.md"
     }
   ],
 

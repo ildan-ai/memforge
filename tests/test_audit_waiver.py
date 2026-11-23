@@ -23,8 +23,16 @@ def _git(repo: Path, *args: str) -> subprocess.CompletedProcess:
 
 
 def _write_waivers(memory: Path, body: str) -> None:
+    """Write and commit the waiver file: only the version at HEAD is honored."""
+    if subprocess.run(["git", "-C", str(memory), "rev-parse"], capture_output=True).returncode:
+        _git(memory, "init", "-q")
+        _git(memory, "config", "user.email", "test@example.com")
+        _git(memory, "config", "user.name", "Test")
+        _git(memory, "config", "commit.gpgsign", "false")
     (memory / ".memforge").mkdir(parents=True, exist_ok=True)
     (memory / ".memforge" / "audit-waivers.yaml").write_text(body, encoding="utf-8")
+    _git(memory, "add", ".memforge/audit-waivers.yaml")
+    _git(memory, "commit", "-q", "--allow-empty", "-m", "memforge: waiver")
 
 
 # ---------- _load_waivers ----------

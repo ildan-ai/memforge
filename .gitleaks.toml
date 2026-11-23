@@ -17,6 +17,8 @@ paths = [
     '''src/memforge/cli/lint\.py''',
     '''tools/memory-dlp-scan''',
     '''tests/test_dlp_scan_coverage\.py''',
+    '''tests/test_dlp_scan_redaction\.py''',
+    '''tests/test_agents_md_gen_fields\.py''',
     '''tests/test_lint\.py''',
     '''tests/test_agents_md_gen\.py''',
 ]

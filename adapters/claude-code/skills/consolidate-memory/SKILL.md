@@ -13,7 +13,7 @@ Distinct from session-handoff workflows, which operate on episodic resume folder
 
 Operates on these folders by default (the MemForge tooling defaults):
 
-- `~/.claude/projects/${USER}-claude-projects/memory/` (per-cwd memory)
+- `~/.claude/projects/<project>/memory/` (per-cwd memory; Claude Code names `<project>` after the project path with every character other than an ASCII letter or digit replaced by `-`)
 - `~/.claude/global-memory/` (global memory)
 
 The user may scope to a single folder with "just global memory" or "just the per-cwd memory" at invocation time, or pass an explicit `--path` to either tool.
@@ -56,7 +56,7 @@ The user may scope to a single folder with "just global memory" or "just the per
 
 ## Related
 
-- `tools/memory-audit` — integrity + health checks driving step 1.
-- `tools/memory-dedup` — LLM-backed dedup driving step 2.
-- `tools/memory-promote` — use this if a finding is "this is cross-folder, should be global"; promotes per-cwd → global with pointer fixup.
-- `spec/SPEC.md` — canonical format reference. Every fix should leave the folder conformant.
+- `tools/memory-audit`: integrity + health checks driving step 1.
+- `tools/memory-dedup`: LLM-backed dedup driving step 2.
+- `tools/memory-promote`: use this if a finding is "this is cross-folder, should be global"; promotes per-cwd → global with pointer fixup.
+- `spec/SPEC.md`: canonical format reference. Every fix should leave the folder conformant.

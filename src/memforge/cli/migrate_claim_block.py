@@ -31,10 +31,14 @@ Idempotent: running on an already-migrated file is a no-op.
 from __future__ import annotations
 
 import argparse
+import os
 import re
 import sys
 from pathlib import Path
 from typing import Optional
+
+from memforge._terminal import terminal_safe, visible
+from memforge.discovery import access_error, read_text_no_follow, write_text_inside
 
 
 BEGIN_MARK = "# memforge:competing-claims:begin"
@@ -121,30 +125,40 @@ def migrate_text(text: str) -> tuple[str, int, list[str]]:
     return ("".join(out), rewrites, warnings)
 
 
-def migrate_file(path: Path, *, dry_run: bool) -> int:
-    """Migrate one MEMORY.md file. Returns rewrite count."""
+def migrate_file(path: Path, *, dry_run: bool, root: Optional[Path] = None) -> int:
+    """Migrate one MEMORY.md file. Returns rewrite count.
+
+    ``root`` is the memory folder the file was found in; the read and the
+    write are held inside it. It defaults to the file's own folder.
+    """
+    folder = path.parent if root is None else root
     try:
-        text = path.read_text(encoding="utf-8")
+        text = read_text_no_follow(path, root=folder)
     except (OSError, UnicodeDecodeError) as e:
-        print(f"warn: cannot read {path}: {e}", file=sys.stderr)
+        print(f"warn: cannot read {visible(path)}: {visible(e)}", file=sys.stderr)
         return 0
     new_text, count, warnings = migrate_text(text)
     for w in warnings:
-        print(f"warn: {path}: {w}", file=sys.stderr)
+        print(f"warn: {visible(path)}: {visible(w)}", file=sys.stderr)
     if count == 0:
         return 0
     if dry_run:
-        print(f"  would rewrite {count} per-group status: line(s) in {path}")
+        print(f"  would rewrite {count} per-group status: line(s) in {visible(path)}")
         return count
     try:
-        path.write_text(new_text, encoding="utf-8")
+        write_text_inside(folder, path, new_text)
     except OSError as e:
-        print(f"warn: cannot write {path}: {e}", file=sys.stderr)
+        print(f"warn: cannot write {visible(path)}: {visible(e)}", file=sys.stderr)
         return 0
-    print(f"  rewrote {count} per-group status: line(s) in {path}")
+    print(f"  rewrote {count} per-group status: line(s) in {visible(path)}")
     return count
 
 
+def _warn_unlistable(err: OSError) -> None:
+    print(f"warn: cannot list {err.filename}: {err.strerror}", file=sys.stderr)
+
+
+@terminal_safe
 def main(argv: Optional[list[str]] = None) -> int:
     parser = argparse.ArgumentParser(
         prog="memforge-migrate-claim-block",
@@ -173,10 +187,20 @@ def main(argv: Optional[list[str]] = None) -> int:
     total = 0
     files_touched = 0
     for root in roots:
-        if not root.is_dir():
+        if not os.path.isdir(root) and access_error(root) is None:
             continue
-        for path in sorted(root.rglob("MEMORY.md")):
-            count = migrate_file(path, dry_run=args.dry_run)
+        # A folder the walk cannot list may hold a MEMORY.md; it is warned
+        # about as a MEMORY.md that cannot be read is.
+        indexes = [root / dirpath / "MEMORY.md"
+                   for dirpath, _dirs, files in os.walk(
+                       root, onerror=_warn_unlistable, followlinks=False)
+                   if "MEMORY.md" in files]
+        for path in sorted(indexes):
+            if os.path.islink(path):
+                print(f"warn: skipping {visible(path)}: it is a symlink and is not read",
+                      file=sys.stderr)
+                continue
+            count = migrate_file(path, dry_run=args.dry_run, root=root)
             if count:
                 total += count
                 files_touched += 1

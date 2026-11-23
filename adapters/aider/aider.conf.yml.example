@@ -1,4 +1,4 @@
-# ~/.aider.conf.yml — aider global config with MemForge memory loaded.
+# ~/.aider.conf.yml: aider global config with MemForge memory loaded.
 #
 # Copy to ~/.aider.conf.yml (or your project root) and edit the read:
 # entries to point at your memory folders. Aider will inline these as
@@ -7,10 +7,13 @@
 # Reference: https://aider.chat/docs/config/aider_conf.html
 
 # Files aider always reads (read-only; provides context, not edits).
+# Use the folders `memforge paths` prints. These are the 1.0 defaults; an
+# existing Claude Code store prints ~/.claude/global-memory and
+# ~/.claude/projects/<project>/memory instead.
 read:
-  - ~/.claude/global-memory/MEMORY.md
-  # - ~/.claude/projects/<workspace>/memory/MEMORY.md
-  # - ~/claude-projects/memforge/spec/SPEC.md
+  - ~/.memforge/global-memory/MEMORY.md
+  # - ~/.memforge/memory/MEMORY.md
+  # - <path to your memforge clone>/spec/SPEC.md
 
 # Optional: instruct aider to honor v0.3.0 frontmatter when editing
 # memory files added via /add.

@@ -44,9 +44,9 @@ The WebSocket messaging adapter contract and the `examples/websocket/` scaffold 
 ## How to adopt commit trust
 
 1. The store must be the top level of its git repository. `memforge sync` refuses anything else (`root_not_toplevel`).
-2. Every person who writes to the store configures signed commits in git. For SSH signing: `git config gpg.format ssh`, `git config user.signingkey ~/.ssh/id_ed25519.pub`, `git config commit.gpgsign true`.
+2. Every person who writes to the store configures signed commits in git, inside the store's repository. For SSH signing: `git config gpg.format ssh`, `git config user.signingkey ~/.ssh/id_ed25519.pub`, `git config commit.gpgsign true`.
 3. Create the signer list for your mode under `.memforge/`: `allowed_signers` (`ssh`), `allowed_gpg_fingerprints` (`gpg`) or `allowed_identities` (`keyless`). `memforge init-store --mode ssh` can write the first one for you.
-4. Commit the list in a signed commit and push it.
+4. Commit the list in a signed commit and push it with an upstream (`git push -u origin <branch>`). Sync exits 1 with `no_upstream` on a branch that has none.
 5. The person who created the store runs `memforge sync --adopt-local`. Everyone else clones and runs `memforge sync --trust-head <commit>`, using a commit id the creator gives them.
 6. From then on, everyone uses `memforge sync` to take in new history.
 

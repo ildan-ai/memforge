@@ -4,7 +4,7 @@ Spec: `spec/SPEC.md` §"Sensitivity enforcement (v0.4.0+)" → "Conformance fixt
 
 Each scenario is a directory with:
 
-- `expected.json` — assertions about which violations the tooling should
+- `expected.json`: assertions about which violations the tooling should
   emit when run against the scenario input.
 - An `input/` directory OR a reference into `shared_input/` (the four
   export-tier scenarios reuse a single 4-level memory folder so that a

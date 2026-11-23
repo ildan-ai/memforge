@@ -3,8 +3,11 @@ name: Release to PyPI
 on:
   push:
     tags:
-      # Release tags only (v<digit>...). Publish is gated by FOUR in-repo
-      # controls: this tag filter; the `test` job (pytest + version-consistency
+      # Release tags only (v<digit>...). Publish is gated by FIVE in-repo
+      # controls: this tag filter; the "Tag is signed and on main" step (a tag
+      # on a commit that never merged to main, or an unsigned or lightweight
+      # tag, fails before anything is built); the `test` job (pytest +
+      # version-consistency
       # run against the exact tag commit, since ci.yml never sees a tag ref);
       # the "Verify pyproject version matches tag" step (a mismatched tag fails
       # before build); and the `pypi` deployment environment on the publish job
@@ -24,6 +27,8 @@ jobs:
   test:
     name: Test gate (pytest + version consistency)
     runs-on: ubuntu-latest
+    outputs:
+      tag_object: ${{ steps.tag_check.outputs.tag_object }}
     # A tag ref does NOT trigger ci.yml (it runs only on push/PR to main), so
     # the tag commit that actually publishes has never been tested by CI. This
     # job re-runs the test suite and the version-consistency assertion against
@@ -31,6 +36,49 @@ jobs:
     # green CI run on main earlier is not a guarantee the tag commit is sound.
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          fetch-depth: 0
+      - name: Tag is signed and on main
+        id: tag_check
+        # Anyone who can push a tag can start this workflow. Only a signed,
+        # annotated tag on a commit that reached main through review may go
+        # on to build and publish. The values come in through env, never
+        # through expression text in the script.
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          TAG: ${{ github.ref_name }}
+          COMMIT: ${{ github.sha }}
+        run: |
+          set -euo pipefail
+          git fetch --quiet --no-tags origin main
+          if ! git merge-base --is-ancestor "$COMMIT" FETCH_HEAD; then
+            echo "::error::tag $TAG points at $COMMIT, which is not on main"
+            exit 1
+          fi
+          ref=$(gh api "repos/$REPO/git/ref/tags/$TAG" --jq '.object.type + " " + .object.sha')
+          if [ "${ref%% *}" != "tag" ]; then
+            echo "::error::tag $TAG is not an annotated tag (found ${ref%% *})"
+            exit 1
+          fi
+          tag_json=$(gh api "repos/$REPO/git/tags/${ref##* }")
+          # The tag ref is read now, after the push that started this run. It
+          # must still name the commit this run checked out and tested.
+          target=$(jq -r '.object.type + " " + .object.sha' <<<"$tag_json")
+          if [ "$target" != "commit $COMMIT" ]; then
+            echo "::error::tag $TAG now points at ${target}, not the commit $COMMIT this run is building"
+            exit 1
+          fi
+          verified=$(jq -r '.verification.verified' <<<"$tag_json")
+          if [ "$verified" != "true" ]; then
+            echo "::error::tag $TAG has no signature GitHub can verify"
+            exit 1
+          fi
+          # The release step later requires the tag to still name this same
+          # tag object, so a tag replaced in between is caught there.
+          echo "tag_object=${ref##* }" >> "$GITHUB_OUTPUT"
+          echo "OK: $TAG is a verified signed tag on a commit that is on main"
       - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0  # v7.1.0
         with:
           python-version: "3.11"
@@ -142,14 +190,98 @@ jobs:
         with:
           skip-existing: true
 
-  github-release:
-    name: GitHub Release (dist + CycloneDX SBOM)
-    needs: [build, publish]
+  pdf:
+    name: Build architecture PDF
+    needs: test
     runs-on: ubuntu-latest
-    # Every release ships a CycloneDX SBOM alongside the sdist + wheel (signed
-    # source release rule). The tag itself is signed at creation time (SSH,
-    # GitHub-verified); this
-    # job attaches the build artifacts + SBOM to the GitHub Release.
+    # The PDF is built here from the tag commit, never on a laptop, so a
+    # reader can check it against the attestation and the release notes.
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          # Chrome prints files from this checkout; leave no token in it.
+          persist-credentials: false
+      - name: Load the pinned PDF toolchain
+        # Versions and the pandoc checksum live in docs/pdf/toolchain.conf, which
+        # build-pdf.sh also reads; it refuses any other version.
+        shell: bash
+        run: |
+          set -euo pipefail
+          pins=$(grep -E '^(PANDOC_VERSION|PANDOC_LINUX_AMD64_SHA256|CHROME_VERSION)=[A-Za-z0-9.]+$' docs/pdf/toolchain.conf)
+          if [ "$(printf '%s\n' "$pins" | wc -l)" -ne 3 ]; then
+            echo "::error::docs/pdf/toolchain.conf must set PANDOC_VERSION, PANDOC_LINUX_AMD64_SHA256 and CHROME_VERSION once each"
+            exit 1
+          fi
+          printf '%s\n' "$pins" | tee -a "$GITHUB_ENV"
+      - name: Install pandoc (pinned, sha256-verified)
+        shell: bash
+        run: |
+          set -euo pipefail
+          archive="pandoc-${PANDOC_VERSION}-linux-amd64.tar.gz"
+          curl -sSfL "https://github.com/jgm/pandoc/releases/download/${PANDOC_VERSION}/${archive}" -o "$RUNNER_TEMP/$archive"
+          echo "${PANDOC_LINUX_AMD64_SHA256}  $RUNNER_TEMP/$archive" | sha256sum -c -
+          tar -xzf "$RUNNER_TEMP/$archive" -C "$RUNNER_TEMP"
+          echo "PANDOC=$RUNNER_TEMP/pandoc-${PANDOC_VERSION}/bin/pandoc" >> "$GITHUB_ENV"
+      - uses: browser-actions/setup-chrome@48ad923757ca74d66703209fe939badbdf80f2f4  # v2.2.0
+        id: chrome
+        with:
+          chrome-version: ${{ env.CHROME_VERSION }}
+          install-dependencies: true
+      - name: Build the PDF
+        # build-pdf.sh prints the pandoc and Chrome versions it checked.
+        shell: bash
+        env:
+          CHROME: ${{ steps.chrome.outputs.chrome-path }}
+        run: |
+          set -euo pipefail
+          mkdir -p pdf
+          docs/pdf/build-pdf.sh "pdf/memforge-${GITHUB_REF_NAME#v}-architecture.pdf"
+          ls -la pdf/
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9  # v7.0.2
+        with:
+          name: pdf
+          path: pdf/
+          if-no-files-found: error
+
+  attest:
+    name: Attest build provenance (dist, SBOM, PDF)
+    needs: [build, pdf]
+    runs-on: ubuntu-latest
+    # The only job that can sign an attestation. One provenance attestation,
+    # signed through Sigstore with this run's OIDC identity, covers every file
+    # the GitHub Release attaches.
+    permissions:
+      contents: read
+      id-token: write
+      attestations: write
+    steps:
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333  # v8.0.2
+        with:
+          name: dist
+          path: dist/
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333  # v8.0.2
+        with:
+          name: sbom
+          path: sbom/
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333  # v8.0.2
+        with:
+          name: pdf
+          path: pdf/
+      - uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8  # v4.2.2
+        with:
+          subject-path: |
+            dist/*
+            sbom/*
+            pdf/*
+
+  github-release:
+    name: GitHub Release (dist, CycloneDX SBOM, architecture PDF)
+    needs: [test, build, publish, pdf, attest]
+    runs-on: ubuntu-latest
+    # Every release ships a CycloneDX SBOM and the architecture PDF alongside
+    # the sdist + wheel (signed source release rule). The tag itself is signed
+    # at creation time (SSH, GitHub-verified); this job attaches the build
+    # artifacts, SBOM and PDF to the GitHub Release and lists their sha256.
     permissions:
       contents: write
     steps:
@@ -161,13 +293,55 @@ jobs:
         with:
           name: sbom
           path: sbom/
-      - name: Create GitHub Release with dist + SBOM
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333  # v8.0.2
+        with:
+          name: pdf
+          path: pdf/
+      - name: Create GitHub Release with dist, SBOM and PDF
+        # The tag was checked in the test job, but build and publish run in
+        # between and the tag can be moved or replaced meanwhile. Read it again
+        # right before the release names it, and only release if it is still
+        # the same signed tag object the test job verified (a tag object's sha
+        # covers its signature and its target) and points at the commit this
+        # run built. --verify-tag stops gh from creating a tag when none exists.
+        shell: bash
         env:
           GH_TOKEN: ${{ github.token }}
           REPO: ${{ github.repository }}
           TAG: ${{ github.ref_name }}
+          COMMIT: ${{ github.sha }}
+          TAG_OBJECT: ${{ needs.test.outputs.tag_object }}
         run: |
-          gh release create "$TAG" dist/* sbom/* \
+          set -euo pipefail
+          if [ -z "$TAG_OBJECT" ]; then
+            echo "::error::the test job did not record the verified tag object"
+            exit 1
+          fi
+          ref=$(gh api "repos/$REPO/git/ref/tags/$TAG" --jq '.object.type + " " + .object.sha')
+          if [ "$ref" != "tag $TAG_OBJECT" ]; then
+            echo "::error::tag $TAG now names ${ref}, not the signed tag object $TAG_OBJECT the test job verified"
+            exit 1
+          fi
+          target=$(gh api "repos/$REPO/git/tags/$TAG_OBJECT" --jq '.object.type + " " + .object.sha')
+          if [ "$target" != "commit $COMMIT" ]; then
+            echo "::error::tag $TAG now points at ${target}, not the commit $COMMIT this run built and published"
+            exit 1
+          fi
+          notes="$RUNNER_TEMP/release-notes.md"
+          {
+            echo "MemForge $TAG. See CHANGELOG.md for the release notes. A CycloneDX SBOM (ildan-memforge-*.cdx.json) and the architecture PDF, built from the tagged sources, are attached alongside the sdist and wheel. The release tag is signed and GitHub-verified."
+            echo
+            echo "Every attached file has a build provenance attestation from this workflow. Check a download with \`gh attestation verify <file> --repo $REPO\` and compare its sha256 with this list:"
+            echo
+            echo '```'
+            for f in dist/* sbom/* pdf/*; do
+              printf '%s  %s\n' "$(sha256sum "$f" | cut -d ' ' -f 1)" "${f##*/}"
+            done
+            echo '```'
+          } > "$notes"
+          cat "$notes"
+          gh release create "$TAG" dist/* sbom/* pdf/* \
             --repo "$REPO" \
+            --verify-tag \
             --title "$TAG" \
-            --notes "MemForge $TAG. See CHANGELOG.md for the release notes. A CycloneDX SBOM (ildan-memforge-*.cdx.json) is attached alongside the sdist and wheel. The release tag is signed and GitHub-verified."
+            --notes-file "$notes"

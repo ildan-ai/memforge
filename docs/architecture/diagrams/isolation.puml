@@ -1,0 +1,44 @@
+@startuml isolation
+!include _style.iuml
+title MemForge sensitivity and access isolation
+
+database "**Memory file frontmatter**\nsensitivity: public < internal < restricted < privileged\n(absent = internal)\naccess: public, internal, restricted, privileged,\nteam:<name>, other labels (e.g. counsel)" as Fm
+
+rectangle "**memory-index-gen**\n~--viewer-tier, ~--viewer-teams\nfilters by **access** only (SC-17)\nno filter when neither is given;\nno sensitivity filter" as Index
+rectangle "**memory-recall**\n~--sensitivity-max: drop above level,\nunknown = privileged (SC-19)\naccess: only public, internal or a held\nteam:<x> pass; others denied (SC-18)\ndo_not_inject dropped; descriptions only" as Recall
+rectangle "**agents-md-gen**\n~--max-sensitivity (default internal),\nunknown or non-text excluded;\nno access filter; pinned bodies only\nat public unless ~--inline-above-public (SC-32);\nDLP scan before write, BLOCKER\nor secret MAJOR refuses (SC-33)" as Agents
+rectangle "**memory-audit ~--export-tier**\nBLOCKER per file above the tier;\nprivileged blocks even with\nenforce_sensitivity_export_gate: false (SC-20)" as Export
+rectangle "**memory-dlp-scan**\nsensitivity_label_mismatch BLOCKER\nwhen content implies a higher tier (SC-21);\nno pattern implies privileged, so its\nprivileged floor does not fire yet" as Dlp
+rectangle "**memory-dedup, memory-lint**\ncloud dispatch withholds restricted,\nprivileged, access-restricted (SC-36)" as Llm
+
+rectangle "**MEMORY.md**" as MemoryMd #FEFCE8
+rectangle "**Recall output**\nto the agent's prompt" as RecallOut #FEFCE8
+rectangle "**<cwd>/AGENTS.md**" as AgentsMd #FEFCE8
+rectangle "**Export to an external surface**" as ExportOut #FEFCE8
+cloud "**Cloud model**" as Cloud
+
+Fm --> Index
+Fm --> Recall
+Fm --> Agents
+Fm --> Export
+Fm --> Dlp
+Fm --> Llm
+Index --> MemoryMd : "pointers the viewer may read;\nrestricted claim members by uid only"
+Recall --> RecallOut : "matched descriptions"
+Agents --> AgentsMd : "descriptions <= ceiling"
+Export --> ExportOut : "only after the gate passes\n(adapter runs it)"
+Dlp --> ExportOut : "only after the scan passes"
+Llm --> Cloud : "<= internal, open access,\nwith opt-in only"
+
+rectangle "**Claude Code recall hook**\nmemory_recall_hook.py" as RHook
+RHook --> Recall : "memory-recall ~--stdin\nwith no ~--sensitivity-max:\nno ceiling"
+
+note right of Fm
+**RISK**
+* labels are filters, not access control
+* anyone who can read the folder reads every file
+* MEMORY.md without ~--viewer-tier shows every pointer
+* agents-md-gen ~--max-sensitivity privileged
+  includes privileged descriptions
+end note
+@enduml

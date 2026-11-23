@@ -26,11 +26,26 @@ Invocation:
 from __future__ import annotations
 
 import argparse
+import os
+import stat
 import subprocess
 import sys
+from contextlib import contextmanager
 from pathlib import Path
-from typing import Any, Optional
+from typing import Any, Iterator, Optional
 
+from memforge._terminal import terminal_safe, visible
+from memforge._programs import ProgramInFolder, find_program_outside, git_env
+from memforge.discovery import (
+    _OPEN_BY_FOLDER,
+    LinkReadRefused,
+    SymlinkWriteRefused,
+    _open_folder,
+    access_error,
+    read_text_no_follow,
+    walk_md_files,
+    write_text_inside,
+)
 from memforge.frontmatter import parse, render
 from memforge.cli._concurrency_audit import (
     _is_valid_slug,
@@ -52,23 +67,31 @@ def _default_paths() -> list[Path]:
     return default_memory_paths()
 
 
-def _read(path: Path) -> str:
-    return path.read_text(encoding="utf-8")
+def _read(root: Path, path: Path) -> str:
+    return read_text_no_follow(path, root=root)
 
 
 def _walk_memory(root: Path) -> list[tuple[Path, dict[str, Any], str]]:
     """Yield (path, frontmatter, body) for every .md file under root,
-    excluding MEMORY.md and archive/."""
+    excluding MEMORY.md and archive/.
+
+    A link or a file that is not regular is not part of the store and is
+    passed over. A file or folder that cannot be read may hold a live member
+    of the topic, so it ends the run before anything changes.
+    """
     out = []
-    for path in sorted(root.rglob("*.md")):
+    for path in sorted(walk_md_files(root)):
         if path.name == "MEMORY.md":
             continue
         if "archive" in path.parts:
             continue
         try:
-            text = path.read_text(encoding="utf-8")
-        except OSError:
+            text = read_text_no_follow(path, root=root)
+        except LinkReadRefused:
             continue
+        except OSError as exc:
+            print(f"error: cannot read {visible(path)}: {visible(exc)}; nothing changed.", file=sys.stderr)
+            sys.exit(2)
         fm, body = parse(text)
         if not fm:
             continue
@@ -90,7 +113,7 @@ def _find_group(
     by_root: dict[Path, list] = {}
     superseded_by_root: dict[Path, list] = {}
     for root in roots:
-        if not root.is_dir():
+        if not os.path.isdir(root) and access_error(root) is None:
             continue
         for path, fm, body in _walk_memory(root):
             if fm.get("decision_topic") != topic:
@@ -103,7 +126,7 @@ def _find_group(
     if not by_root:
         return (None, [], [])
     if len(by_root) > 1:
-        roots_with = ", ".join(str(r) for r in by_root)
+        roots_with = ", ".join(visible(r) for r in by_root)
         print(
             f"error: live members of decision_topic '{topic}' span multiple memory roots:",
             file=sys.stderr,
@@ -135,13 +158,13 @@ def _present_members(members: list[tuple[Path, dict[str, Any], str]]) -> None:
         if len(first_line) > 100:
             first_line = first_line[:97] + "..."
         print(
-            f"  [{i}] uid={fm.get('uid', '<missing>')}"
-            f" owner={fm.get('owner', '<missing>')}"
-            f" status={fm.get('status', '<missing>')}"
-            f" updated={fm.get('updated', '<missing>')}"
+            f"  [{i}] uid={visible(fm.get('uid', '<missing>'))}"
+            f" owner={visible(fm.get('owner', '<missing>'))}"
+            f" status={visible(fm.get('status', '<missing>'))}"
+            f" updated={visible(fm.get('updated', '<missing>'))}"
         )
-        print(f"      {first_line}")
-        print(f"      file: {path}")
+        print(f"      {visible(first_line)}")
+        print(f"      file: {visible(path)}")
     print()
 
 
@@ -172,12 +195,14 @@ def _choose_winner_uid(members: list[tuple[Path, dict[str, Any], str]], winner_u
 
 
 def _apply_mutations(
+    root: Path,
     members: list[tuple[Path, dict[str, Any], str]],
     winner_idx: int,
     dry_run: bool,
     prior_superseded: Optional[list[tuple[Path, dict[str, Any], str]]] = None,
 ) -> tuple[Path, list[Path]]:
-    """Apply the v0.4 resolve post-conditions to disk. Returns (winner_path, touched_paths).
+    """Apply the v0.4 resolve post-conditions to disk under the memory folder
+    ``root``. Returns (winner_path, touched_paths).
 
     `prior_superseded` is the set of members of the same decision_topic that
     were already status:superseded from an earlier resolve. Their UIDs are
@@ -240,7 +265,7 @@ def _apply_mutations(
     new_winner_fm["ever_multi_member"] = True
     if new_winner_fm.get("status") != "active":
         new_winner_fm["status"] = "active"
-    new_winner_text = render(new_winner_fm, winner_body, original=_read(winner_path))
+    new_winner_text = render(new_winner_fm, winner_body, original=_read(root, winner_path))
 
     writes: list[tuple[Path, str]] = []
     # Current losers: status -> superseded, superseded_by -> [winner_uid].
@@ -249,7 +274,7 @@ def _apply_mutations(
         new_fm["status"] = "superseded"
         new_fm["superseded_by"] = [winner_uid]
         new_fm["ever_multi_member"] = True
-        writes.append((path, render(new_fm, body, original=_read(path))))
+        writes.append((path, render(new_fm, body, original=_read(root, path))))
     # Prior-superseded members: re-point superseded_by at the new winner so the
     # audit symmetry check (each superseded member points to the sole active
     # winner, and the winner's replaces lists it) holds after a re-resolve.
@@ -258,74 +283,139 @@ def _apply_mutations(
         new_fm["status"] = "superseded"
         new_fm["superseded_by"] = [winner_uid]
         new_fm["ever_multi_member"] = True
-        writes.append((path, render(new_fm, body, original=_read(path))))
+        writes.append((path, render(new_fm, body, original=_read(root, path))))
 
     if dry_run:
         print("dry-run: would write the following:")
-        print(f"  WINNER {winner_path}: status=active, replaces={replaces}, ever_multi_member=true")
+        print(f"  WINNER {visible(winner_path)}: status=active, replaces={replaces}, ever_multi_member=true")
         for path, fm, _ in losers:
-            print(f"  LOSER  {path}: status=superseded, superseded_by=[{winner_uid}]")
+            print(f"  LOSER  {visible(path)}: status=superseded, superseded_by=[{visible(winner_uid)}]")
         for path, fm, _ in prior_superseded:
-            print(f"  REPOINT {path}: superseded_by re-pointed to [{winner_uid}]")
+            print(f"  REPOINT {visible(path)}: superseded_by re-pointed to [{visible(winner_uid)}]")
         return (winner_path, [p for p, _ in writes])
 
-    winner_path.write_text(new_winner_text, encoding="utf-8")
+    # Members come from a walk that never yields a symlink; the write refuses
+    # one all the same, so a link swapped in after the walk is not followed.
+    write_text_inside(root, winner_path, new_winner_text)
     for path, text in writes:
-        path.write_text(text, encoding="utf-8")
+        write_text_inside(root, path, text)
 
     return (winner_path, [p for p, _ in writes])
 
 
-def _delete_snooze(root: Path, topic: str, dry_run: bool) -> Optional[Path]:
-    snoozes_dir = (root / ".memforge" / "snoozes").resolve()
-    snooze = root / ".memforge" / "snoozes" / f"{topic}.yaml"
-    # Defense in depth: refuse any path that escapes the snoozes directory even
-    # if a malformed topic slipped past the slug check in main().
-    resolved = snooze.resolve()
-    if resolved.parent != snoozes_dir:
-        print(
-            f"error: refusing to delete snooze outside {snoozes_dir}: {resolved}",
-            file=sys.stderr,
-        )
+_SNOOZE_FOLDERS = (".memforge", "snoozes")
+
+
+@contextmanager
+def _snooze_folder(root: Path, snooze: Path) -> Iterator[Optional[int]]:
+    """The folder a snooze is found and deleted in, reached from ``root`` one
+    name at a time without following a link: a linked or non-folder
+    `.memforge` or `.memforge/snoozes` would aim the delete at a file the
+    store does not hold.
+
+    Yields a descriptor of the folder, or None where ``os.open`` takes no
+    ``dir_fd`` (Windows), after the same checks by path with the residual
+    :func:`memforge.discovery.write_text_inside` states. Raises
+    SymlinkWriteRefused for a link or a non-folder, FileNotFoundError when a
+    folder is absent.
+    """
+    if _OPEN_BY_FOLDER:
+        fd = _open_folder(root, _SNOOZE_FOLDERS, snooze, SymlinkWriteRefused, "delete")
+        try:
+            yield fd
+        finally:
+            os.close(fd)
+        return
+    for depth in range(1, len(_SNOOZE_FOLDERS) + 1):
+        folder = root.joinpath(*_SNOOZE_FOLDERS[:depth])
+        if not os.path.lexists(folder):
+            raise FileNotFoundError(folder)
+        if os.path.islink(folder) or not os.path.isdir(folder):
+            raise SymlinkWriteRefused(
+                f"refusing to delete {snooze}: the folder {folder.name} on its way "
+                "is a symlink or not a folder"
+            )
+    yield None
+
+
+def _snooze(root: Path, topic: str, *, delete: bool) -> Optional[Path]:
+    """The snooze file for ``topic`` when one is present, deleted when
+    ``delete`` is set. Raises SymlinkWriteRefused when its folder is refused
+    (see :func:`_snooze_folder`) or the snooze is a link or not a regular file."""
+    snooze = root.joinpath(*_SNOOZE_FOLDERS, f"{topic}.yaml")
+    # Defense in depth: a malformed topic that slipped past the slug check in
+    # main() would name a file outside the snoozes folder.
+    if not _is_valid_slug(topic):
+        print(f"error: refusing to delete snooze outside {snooze.parent}: {snooze}",
+              file=sys.stderr)
         sys.exit(2)
-    if not snooze.is_file():
+    try:
+        with _snooze_folder(root, snooze) as fd:
+            name = snooze if fd is None else snooze.name
+            try:
+                found = os.stat(name, dir_fd=fd, follow_symlinks=False)
+            except FileNotFoundError:
+                return None
+            if not stat.S_ISREG(found.st_mode):
+                raise SymlinkWriteRefused(
+                    f"refusing to delete {snooze}: a symlink or not a regular file"
+                )
+            if delete:
+                os.unlink(name, dir_fd=fd)
+    except FileNotFoundError:
         return None
-    if dry_run:
-        print(f"dry-run: would delete snooze at {snooze}")
-        return snooze
-    snooze.unlink()
     return snooze
 
 
-def _git(root: Path, *args: str, check: bool = True) -> subprocess.CompletedProcess:
+def _delete_snooze(root: Path, topic: str, dry_run: bool) -> Optional[Path]:
+    snooze = _snooze(root, topic, delete=not dry_run)
+    if snooze is not None and dry_run:
+        print(f"dry-run: would delete snooze at {visible(snooze)}")
+    return snooze
+
+
+def _git(git: str, root: Path, *args: str, check: bool = True) -> subprocess.CompletedProcess:
+    # Every path given here is a file name: a member named `*.md` read as a
+    # pathspec would sweep other files into the scope-locked commit.
     return subprocess.run(
-        ["git", "-C", str(root), *args],
+        [git, "--literal-pathspecs", "-C", str(root), *args],
+        env=git_env(),
         capture_output=True,
         text=True,
         check=check,
     )
 
 
-def _git_toplevel(start: Path) -> Optional[Path]:
-    """Return the toplevel of the git repo containing `start`, or None if not in a repo."""
+def _git_toplevel(git: str, start: Path) -> Optional[Path]:
+    """Return the toplevel of the git repo containing `start`, or None if not in a repo.
+
+    Raises ValueError when git answers with a path that is empty, relative, or
+    not a folder at or above `start`: a relative answer is read against the
+    current folder, so the commit would land in whatever repository that is.
+    """
     try:
         result = subprocess.run(
-            ["git", "-C", str(start), "rev-parse", "--show-toplevel"],
+            [git, "-C", str(start), "rev-parse", "--show-toplevel"],
+            env=git_env(),
             capture_output=True,
             text=True,
             check=True,
         )
-        return Path(result.stdout.strip())
     except (subprocess.CalledProcessError, FileNotFoundError):
         return None
+    top = result.stdout.strip()
+    if not os.path.isabs(top) or not start.resolve().is_relative_to(Path(top).resolve()):
+        raise ValueError(f"git reports {top!r} as the top level of {start}, "
+                         "which is not a folder at or above it")
+    return Path(top)
 
 
-def _commit_resolution(memory_root: Path, topic: str, paths: list[Path], dry_run: bool) -> None:
+def _commit_resolution(memory_root: Path, topic: str, paths: list[Path], dry_run: bool,
+                       git: Optional[str], repo_root: Optional[Path]) -> None:
     if dry_run:
         print(f"dry-run: would commit with message 'memforge: resolve {topic}'")
         return
-    repo_root = _git_toplevel(memory_root)
-    if repo_root is None:
+    if git is None or repo_root is None:
         print(
             f"warn: {memory_root} is not inside a git repository; mutations applied but not committed.",
             file=sys.stderr,
@@ -347,8 +437,8 @@ def _commit_resolution(memory_root: Path, topic: str, paths: list[Path], dry_run
                 file=sys.stderr,
             )
             sys.exit(2)
-    _git(repo_root, "add", "--", *relpaths)
-    diff = _git(repo_root, "diff", "--cached", "--quiet", "--", *relpaths, check=False)
+    _git(git, repo_root, "add", "--", *relpaths)
+    diff = _git(git, repo_root, "diff", "--cached", "--quiet", "--", *relpaths, check=False)
     if diff.returncode == 0:
         print(f"warn: no changes staged in {repo_root}; nothing to commit.", file=sys.stderr)
         return
@@ -356,10 +446,11 @@ def _commit_resolution(memory_root: Path, topic: str, paths: list[Path], dry_run
     # Commit with an explicit pathspec (--only semantics via trailing `-- <paths>`)
     # so an unrelated pre-staged change cannot ride along in the scope-locked
     # resolve commit (SPEC.md post-condition 6).
-    _git(repo_root, "commit", "-o", "-m", msg, "--", *relpaths)
+    _git(git, repo_root, "commit", "-o", "-m", msg, "--", *relpaths)
     print(f"committed: {msg} (in {repo_root})")
 
 
+@terminal_safe
 def main(argv: Optional[list[str]] = None) -> int:
     parser = argparse.ArgumentParser(
         prog="memforge-resolve",
@@ -426,18 +517,40 @@ def main(argv: Optional[list[str]] = None) -> int:
         if winner_idx is None:
             return 1
 
+    # Found before any member changes: a git committed to the store, or a
+    # repository top that does not hold it, is refused while there is still
+    # nothing to undo.
+    try:
+        git = None if args.dry_run else find_program_outside("git", root)
+        repo_root = _git_toplevel(git, root) if git is not None else None
+        _snooze(root, args.topic, delete=False)
+    except ProgramInFolder as exc:
+        print(f"error: {exc}; refusing to run it, nothing changed.", file=sys.stderr)
+        return 2
+    except ValueError as exc:
+        print(f"error: {exc}; refusing to commit there, nothing changed.", file=sys.stderr)
+        return 2
+    except OSError as exc:
+        print(f"error: {exc}; nothing changed.", file=sys.stderr)
+        return 2
+
     winner_path, loser_paths = _apply_mutations(
-        members, winner_idx, args.dry_run, prior_superseded
+        root, members, winner_idx, args.dry_run, prior_superseded
     )
-    snooze_path = _delete_snooze(root, args.topic, args.dry_run)
+    try:
+        snooze_path = _delete_snooze(root, args.topic, args.dry_run)
+    except OSError as exc:
+        print(f"error: {exc}; the members are rewritten but nothing is committed.",
+              file=sys.stderr)
+        return 2
 
     touched = [winner_path, *loser_paths]
     if snooze_path is not None:
         touched.append(snooze_path)
-    _commit_resolution(root, args.topic, touched, args.dry_run)
+    _commit_resolution(root, args.topic, touched, args.dry_run, git, repo_root)
 
-    print(f"resolved '{args.topic}': winner={members[winner_idx][1].get('uid')}, "
-          f"superseded={[fm.get('uid') for i, (_, fm, _) in enumerate(members) if i != winner_idx]}")
+    print(f"resolved '{args.topic}': winner={visible(members[winner_idx][1].get('uid'))}, "
+          f"superseded={[visible(fm.get('uid')) for i, (_, fm, _) in enumerate(members) if i != winner_idx]}")
     return 0
 
 

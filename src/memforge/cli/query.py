@@ -1,4 +1,4 @@
-# memory-query — first-class dynamic query layer for MemForge (Phase 1 T5).
+# memory-query: first-class dynamic query layer for MemForge (Phase 1 T5).
 #
 # ADR: 0001 §Phase 1 T5
 # Spec: 0.3.0
@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import re
 import sys
 from dataclasses import dataclass, field
@@ -21,6 +22,8 @@ from datetime import date, datetime, timedelta
 from pathlib import Path
 from typing import Optional
 
+from memforge._terminal import terminal_safe, visible
+from memforge.discovery import access_error, read_text_no_follow, walk_md_files  # noqa: E402
 from memforge.frontmatter import parse as _mf_parse  # noqa: E402
 
 
@@ -42,14 +45,14 @@ def parse_frontmatter(text: str) -> dict:
 def discover(folder: Path) -> list[Hit]:
     out: list[Hit] = []
     skip = {"archive", ".git", "__pycache__"}
-    for path in sorted(folder.rglob("*.md")):
+    for path in sorted(walk_md_files(folder)):
         parts = path.relative_to(folder).parts
         if any(p in skip for p in parts):
             continue
         if path.name == "MEMORY.md":
             continue
         try:
-            text = path.read_text(encoding="utf-8")
+            text = read_text_no_follow(path, root=folder)
         except (OSError, UnicodeDecodeError):
             continue
         fm, body = _mf_parse(text)
@@ -177,11 +180,11 @@ def emit_markdown(hits: list[Hit], matched_topic: Optional[str] = None) -> str:
             topic = matched_topic
         else:
             topic = ", ".join(topic_values)
-        suffix = f" — *topic:{topic}*" if topic else ""
+        suffix = f" (*topic:{visible(topic)}*)" if topic else ""
         if desc:
-            lines.append(f"- [{name}]({h.rel}): {desc}{suffix}")
+            lines.append(f"- [{visible(name)}]({visible(h.rel)}): {visible(desc)}{suffix}")
         else:
-            lines.append(f"- [{name}]({h.rel}){suffix}")
+            lines.append(f"- [{visible(name)}]({visible(h.rel)}){suffix}")
     return "\n".join(lines) + "\n"
 
 
@@ -199,18 +202,27 @@ def emit_json(hits: list[Hit]) -> str:
     return json.dumps(out, indent=2, default=str) + "\n"
 
 
+def _sort_name(hit: Hit) -> str:
+    """The name to sort a hit by; a name that is not text (`name: 2024`) sorts
+    as text rather than stopping the query."""
+    name = hit.fm.get("name")
+    return (hit.path.stem if name is None else str(name)).lower()
+
+
 def emit_count(hits: list[Hit]) -> str:
     return f"{len(hits)}\n"
 
 
 def default_paths() -> list[Path]:
     """Default memory folders via the centralized, IDE/OS-neutral resolver
-    (existence-filtered)."""
+    (existence-filtered; one that cannot be looked at is kept, so it is
+    reported)."""
     from memforge.paths import default_memory_paths
 
-    return [p for p in default_memory_paths() if p.exists()]
+    return [p for p in default_memory_paths() if os.path.exists(p) or access_error(p)]
 
 
+@terminal_safe
 def main() -> int:
     p = argparse.ArgumentParser(
         prog="memory-query",
@@ -249,15 +261,21 @@ def main() -> int:
         return 2
 
     all_hits: list[Hit] = []
+    rc = 0
     for f in folders:
-        if not f.exists():
+        err = access_error(f)
+        if err is not None:
+            sys.stderr.write(f"error: cannot read {f}: {err}\n")
+            rc = 1
+            continue
+        if not os.path.exists(f):
             sys.stderr.write(f"warning: skipping nonexistent {f}\n")
             continue
         for h in discover(f):
             if matches(h, args):
                 all_hits.append(h)
 
-    all_hits.sort(key=lambda h: (h.fm.get("name", h.path.stem).lower(), h.rel))
+    all_hits.sort(key=lambda h: (_sort_name(h), h.rel))
     if args.limit > 0:
         all_hits = all_hits[: args.limit]
 
@@ -267,7 +285,7 @@ def main() -> int:
         sys.stdout.write(emit_count(all_hits))
     else:
         sys.stdout.write(emit_markdown(all_hits, matched_topic=args.topic))
-    return 0
+    return rc
 
 
 if __name__ == "__main__":

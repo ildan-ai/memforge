@@ -31,8 +31,11 @@ import sys
 from pathlib import Path
 from typing import Iterable, Optional
 
+from memforge._terminal import terminal_safe
+from memforge._programs import ProgramInFolder, find_program_outside
 from memforge.cli._llm_dispatch import is_local_dispatcher
 from memforge.cli.audit import audit_target
+from memforge.discovery import access_error, read_text_no_follow, walk_md_files
 from memforge.paths import default_memory_paths
 
 
@@ -67,7 +70,7 @@ def _item_id(category: str, detail: str) -> str:
 
 def _load_queue(queue_path: Path) -> list[dict]:
     """Load the existing queue. Returns [] if absent or malformed."""
-    if not queue_path.is_file():
+    if not os.path.isfile(queue_path):
         return []
     try:
         data = json.loads(queue_path.read_text(encoding="utf-8"))
@@ -139,16 +142,23 @@ def _write_queue(queue_path: Path, queue: list[dict]) -> None:
 
 # ---------- local LLM dispatcher ----------
 
-def _default_dispatcher() -> Optional[str]:
-    """Return the first available local dispatcher executable, or None."""
-    import shutil
+def _default_dispatcher(targets: list[Path]) -> Optional[str]:
+    """Return the first available local dispatcher executable from the
+    absolute PATH entries, or None. One inside a scanned folder is refused
+    with a warning, and the LLM pass is skipped."""
     for cli, extra_args in (
         ("ollama", "run gemma2:2b"),
         ("llama-cli", ""),
         ("llamafile", ""),
         ("lms", "chat"),
     ):
-        path = shutil.which(cli)
+        try:
+            path = find_program_outside(cli, *targets)
+        except ProgramInFolder as exc:
+            sys.stderr.write(
+                f"[memforge-detect] warning: {exc}; semantic triage and dedup LLM pass will be skipped\n"
+            )
+            return None
         if path:
             return f"{path} {extra_args}".strip()
     return None
@@ -233,7 +243,7 @@ def _parse_lessons(lessons_path: Path) -> list[dict]:
     Splits on level-2+ markdown headers. Returns list of dicts:
       {index: int, text: str}
     """
-    if not lessons_path.is_file():
+    if not os.path.isfile(lessons_path):
         return []
     text = lessons_path.read_text(encoding="utf-8", errors="replace")
     entries: list[dict] = []
@@ -264,9 +274,9 @@ def _build_rule_catalog(targets: list[Path]) -> list[str]:
     rules: list[str] = []
     seen: set[str] = set()
     for target in targets:
-        if not target.is_dir():
+        if not os.path.isdir(target):
             continue
-        for md in sorted(target.rglob("*.md")):
+        for md in sorted(walk_md_files(target)):
             if md.name == "MEMORY.md":
                 continue
             try:
@@ -276,7 +286,7 @@ def _build_rule_catalog(targets: list[Path]) -> list[str]:
             if rel.parts and rel.parts[0] == "archive":
                 continue
             try:
-                text = md.read_text(encoding="utf-8")
+                text = read_text_no_follow(md, root=target)
             except OSError:
                 continue
             if not has_frontmatter(text):
@@ -290,6 +300,39 @@ def _build_rule_catalog(targets: list[Path]) -> list[str]:
     return rules
 
 
+# ---------- child interpreters ----------
+
+# Runs one package module the way `python -m` would, after replacing the
+# child's import path with the one handed over on the command line.
+_CHILD_BOOTSTRAP = (
+    "import json, runpy, sys; "
+    "sys.path[:] = json.loads(sys.argv.pop(1)); "
+    "runpy.run_module(sys.argv.pop(1), run_name='__main__', alter_sys=True)"
+)
+
+
+def _run_module(
+    module: str, args: list[str], timeout: int
+) -> subprocess.CompletedProcess[str]:
+    """Run a package module in a child interpreter that cannot import from the
+    working directory.
+
+    `python -m` puts the working directory first on the import path, and this
+    tool is run from inside memory folders, so a module planted there would run
+    as code. Isolated mode (-I) keeps the working directory, PYTHONPATH and the
+    user site folder off the child's path. Isolated mode alone would also lose
+    the package in a source checkout or a per-user install, so the child is
+    given this process's own absolute import path: it imports exactly what this
+    process imports and nothing else.
+    """
+    import_path = [entry for entry in sys.path if os.path.isabs(entry)]
+    cmd = [
+        sys.executable, "-I", "-c", _CHILD_BOOTSTRAP,
+        json.dumps(import_path), module, *args,
+    ]
+    return subprocess.run(cmd, capture_output=True, text=True, timeout=timeout)
+
+
 # ---------- collect findings from primitives ----------
 
 def _collect_audit_findings(targets: list[Path]) -> list[dict]:
@@ -299,7 +342,9 @@ def _collect_audit_findings(targets: list[Path]) -> list[dict]:
 
     findings: list[dict] = []
     for target in targets:
-        if not target.is_dir():
+        # A folder that cannot be looked at is audited, so the audit's
+        # violation for it becomes a finding.
+        if not os.path.isdir(target) and access_error(target) is None:
             continue
         buf = io.StringIO()
         try:
@@ -346,17 +391,13 @@ def _collect_dedup_findings(targets: list[Path], dispatcher: Optional[str]) -> l
         return []
     findings: list[dict] = []
     for target in targets:
-        if not target.is_dir():
+        if not os.path.isdir(target):
             continue
-        cmd = [
-            sys.executable, "-m", "memforge.cli.dedup",
-            "--path", str(target),
-            "--dispatcher", dispatcher,
-            "--json",
-        ]
         try:
-            proc = subprocess.run(
-                cmd, capture_output=True, text=True, timeout=120
+            proc = _run_module(
+                "memforge.cli.dedup",
+                ["--path", str(target), "--dispatcher", dispatcher, "--json"],
+                timeout=120,
             )
         except (subprocess.TimeoutExpired, OSError) as exc:
             sys.stderr.write(f"[memforge-detect] dedup failed on {target}: {exc}\n")
@@ -392,16 +433,11 @@ def _collect_recall_weakness_findings(targets: list[Path]) -> list[dict]:
     """
     findings: list[dict] = []
     for target in targets:
-        if not target.is_dir():
+        if not os.path.isdir(target):
             continue
-        cmd = [
-            sys.executable, "-m", "memforge.cli.lint",
-            "--path", str(target),
-            "--json",
-        ]
         try:
-            proc = subprocess.run(
-                cmd, capture_output=True, text=True, timeout=60
+            proc = _run_module(
+                "memforge.cli.lint", ["--path", str(target), "--json"], timeout=60
             )
         except (subprocess.TimeoutExpired, OSError) as exc:
             sys.stderr.write(f"[memforge-detect] lint failed on {target}: {exc}\n")
@@ -436,16 +472,13 @@ def _collect_cluster_findings(targets: list[Path]) -> list[dict]:
     """Run memory-cluster-suggest on each target and collect rollup candidates."""
     findings: list[dict] = []
     for target in targets:
-        if not target.is_dir():
+        if not os.path.isdir(target):
             continue
-        cmd = [
-            sys.executable, "-m", "memforge.cli.cluster_suggest",
-            "--path", str(target),
-            "--json",
-        ]
         try:
-            proc = subprocess.run(
-                cmd, capture_output=True, text=True, timeout=60
+            proc = _run_module(
+                "memforge.cli.cluster_suggest",
+                ["--path", str(target), "--json"],
+                timeout=60,
             )
         except (subprocess.TimeoutExpired, OSError) as exc:
             sys.stderr.write(f"[memforge-detect] cluster-suggest failed on {target}: {exc}\n")
@@ -521,6 +554,7 @@ def _collect_lessons_findings(
 
 # ---------- main ----------
 
+@terminal_safe
 def main(argv: list[str] | None = None) -> int:
     p = argparse.ArgumentParser(
         prog="memforge-detect",
@@ -567,7 +601,7 @@ def main(argv: list[str] | None = None) -> int:
     targets: list[Path] = (
         [pp.expanduser().resolve() for pp in args.path]
         if args.path
-        else [pp for pp in default_memory_paths() if pp.exists()]
+        else [pp for pp in default_memory_paths() if os.path.exists(pp) or access_error(pp)]
     )
     if not targets:
         print("No memory folders found. Pass --path to specify one.")
@@ -577,7 +611,7 @@ def main(argv: list[str] | None = None) -> int:
     dispatcher: Optional[str] = (
         args.dispatcher
         or os.environ.get("MEMFORGE_DETECT_DISPATCHER")
-        or _default_dispatcher()
+        or _default_dispatcher(targets)
     )
     if dispatcher and not is_local_dispatcher(dispatcher):
         sys.stderr.write(
@@ -615,11 +649,11 @@ def main(argv: list[str] | None = None) -> int:
                 Path.cwd() / "tasks" / "lessons.md",
                 Path.cwd().parent / "tasks" / "lessons.md",
             ):
-                if candidate.is_file():
+                if os.path.isfile(candidate):
                     lessons_path = candidate
                     break
 
-        if lessons_path and lessons_path.is_file():
+        if lessons_path and os.path.isfile(lessons_path):
             print(
                 f"[memforge-detect] triaging lessons: {lessons_path}",
                 file=sys.stderr,

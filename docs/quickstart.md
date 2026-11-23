@@ -54,25 +54,36 @@ memforge init-store --mode ssh
 
 For `ssh` and `gpg` it puts your own configured git signing key in the list when it can find one. Otherwise it writes a comment-only file you fill in before the first sync. If any signer list file already exists it changes nothing and exits 2. Skip `--mode` if the store is only yours.
 
-Add a memory file (see the README for the shape), then check it:
+Add a memory file (see the README for the shape), generate the index, then check the store:
 
 ```bash
-memory-audit --strict
+memory-index-gen --path .
+memory-audit --strict --path .
 ```
+
+`--path` names the store to check. Without it, both commands use the default folders (the resolution order is under "60-second install" in the README), not the folder you are in.
+
+After a `memforge-resolve`, run this routine again: the resolve commit leaves `MEMORY.md` alone, so its competing-claims block is stale until `memory-index-gen` runs. The superseded memory keeps its pointer in `MEMORY.md`, as every top-level memory outside `archive/` does.
 
 ## Step 3: share it (optional)
 
-A store that several people or agents write to is protected by signed commits and a signer list, checked by `memforge sync`. Setup for two people, a company with single sign-on, and keyless signing is in [Team setup](./team-bootstrap.md). The short version for `ssh` mode:
+A store that several people or agents write to is protected by signed commits and a signer list, checked by `memforge sync`. Setup for two people, a company with single sign-on, and keyless signing is in [Team setup](./team-bootstrap.md). The short version for `ssh` mode, run inside the store's repository (after `git init`, or after `git clone` for everyone but the creator):
 
 ```bash
 git config gpg.format ssh
 git config user.signingkey ~/.ssh/id_ed25519.pub
 git config commit.gpgsign true
-# put every signer's public key in .memforge/allowed_signers, commit it signed, push
+# add one line per signer to .memforge/allowed_signers:
+#   <name> namespaces="git" <public key>
+# then commit it signed and push with an upstream: git push -u origin <branch>
 memforge sync --adopt-local              # the creator, first time
 memforge sync --trust-head <commit>      # everyone else, first time, after cloning
 memforge sync                            # every time after
 ```
+
+Do not paste only the `.pub` file's content (`ssh-ed25519 AAAA... you@host`). Sync accepts a list with such a line, but `ssh-keygen` cannot match it to a signer, so every commit that signer makes is refused with `ssh_not_verified`. Put a name and `namespaces="git"` in front of the key, as above.
+
+Push with `-u` (or set the upstream with `git branch --set-upstream-to`). Without an upstream, `memforge sync` exits 1 with `no_upstream`.
 
 Only `memforge sync` checks anything. Plain `git pull` is not checked.
 
@@ -82,14 +93,16 @@ You will see "now run `git add` + `git commit -m 'memforge: ...'`" instructions 
 
 **MemForge does not install git hooks.** The reference CLI writes files to disk + tells you what to commit. Pre-commit hooks, post-commit hooks, server-side hooks: those are your responsibility. The spec keeps it that way so MemForge works on every git host (GitHub, GitLab, Gitea, self-hosted, even bare-bones working trees) without injecting machinery you did not ask for.
 
-**The `memforge:` commit-message prefix is parsed.** Audit and resolve walk the commit log and key behavior off the prefix:
+**The `memforge:` commit-message prefix is parsed.** The spec gives each operation its own prefix and scope:
 
-- `memforge: resolve <decision_topic>` - the only commit that may transition memories to `status: superseded` for that topic; cross-topic mutations in the same commit are BLOCKER.
-- `memforge: snooze <decision_topic>` / `memforge: config` / `memforge: alias <topic>` - each scoped to its own file. Wrong-prefix-or-out-of-scope commits are BLOCKER.
+- `memforge: resolve <decision_topic>` - the only commit that may transition memories to `status: superseded` for that topic.
+- `memforge: snooze <decision_topic>` / `memforge: config` / `memforge: alias <topic>` / `memforge: waiver` - each scoped to its own file.
 
-If you commit resolve, snooze, config or alias changes under a different prefix, MemForge's audit will not parse them and downstream behavior breaks (memories never supersede, etc.). Always use the prefix the CLI suggests.
+What `memory-audit` checks of this, over the last 30 days of commits: a resolve commit may touch only its topic's members and snooze file; a change to `status: superseded`, a `superseded_by` write, a `decision_topic` change or the deletion of a topic member outside that topic's resolve commit is a BLOCKER; so is a `.memforge/config.yaml` change outside a config-only `memforge: config` commit, and a `.memforge/audit-waivers.yaml` change outside a waiver-only `memforge: waiver` commit. A snooze file change outside a single-file `memforge: snooze <topic>` commit, and a `topic_aliases` change outside resolve or a single-file `memforge: alias <topic>` commit, are MAJORs. Waivers are read only as committed at HEAD. The commit-msg hook below catches a wrong prefix before the commit lands.
 
-**Automation: Claude Code users get this for free.** If you drive MemForge through Claude Code's auto-memory system, the PostToolUse `memory-auto-commit.sh` hook commits every Write/Edit inside a memory folder automatically. You still need to honor the `memforge:`-prefix convention for the operations above (resolves, snoozes, config edits, alias edits); those run through the `memforge` CLI which prints the right commit message for you. Exclude the signer list files (`.memforge/allowed_signers`, `.memforge/allowed_gpg_fingerprints`, `.memforge/allowed_identities`) from any auto-commit hook: a change to the list must land in a deliberate commit signed by an already listed signer.
+Always use the prefix the CLI suggests.
+
+**Automation: Claude Code users get this for free.** If you drive MemForge through Claude Code's auto-memory system, the PostToolUse `memory-auto-commit.sh` hook commits every Write/Edit inside a memory folder automatically. You still need to honor the `memforge:`-prefix convention for the operations above (resolves, snoozes, config edits, alias edits); those run through the `memforge` CLI which prints the right commit message for you. The shipped hook, `memory-watch` and the example watchers never commit the signer list files (`.memforge/allowed_signers`, `.memforge/allowed_gpg_fingerprints`, `.memforge/allowed_identities`). Keep that rule in any hook you write: a change to the list must land in a deliberate commit signed by an already listed signer.
 
 **Automation: non-Claude-Code users.** Wire your own. Two reasonable patterns with drop-in example scripts in the repo at [`examples/`](../examples/). Every example ships in bash (macOS / Linux / Git Bash on Windows / WSL) and PowerShell (native Windows + cross-platform pwsh 7+); install whichever matches your shell.
 
@@ -104,97 +117,30 @@ cp examples/git-hooks/commit-msg .git/hooks/commit-msg
 chmod +x .git/hooks/commit-msg
 ```
 
-Source of the bash version (also at the path above):
+Read the hook in that file before you install it; this page does not keep a copy, so what you read is what runs. For each commit it reads the first line of the message and the staged file names, and rejects the commit (exit 1, staged changes kept) when:
 
-```bash
-#!/usr/bin/env bash
-# MemForge commit-msg hook. Enforces the memforge: prefix grammar for
-# scoped Tier-2 paths per spec. Reject = exit 1; staged changes are
-# preserved so the operator can fix the message and try again.
-set -e
+- `.memforge/config.yaml` is staged and the message does not start `memforge: config`;
+- `.memforge/audit-waivers.yaml` is staged and the message is neither `memforge: waiver` nor starts with `memforge: waiver` and a space, or other files are staged with it;
+- a `.memforge/snoozes/<topic>.yaml` file is staged and the message does not start with `memforge: snooze` and a space.
 
-msg_file="$1"
-msg=$(head -n1 "$msg_file" 2>/dev/null || true)
-staged=$(git diff --cached --name-only)
-
-touches_exact()   { echo "$staged" | grep -q "^$1$"; }
-touches_pattern() { echo "$staged" | grep -qE "$1"; }
-starts_with()     { [[ "$msg" =~ ^"$1" ]]; }
-
-fail() {
-  echo "MemForge commit-msg hook: rejecting commit." >&2
-  echo "  $1" >&2
-  [ -n "${2:-}" ] && echo "  Hint: $2" >&2
-  exit 1
-}
-
-# .memforge/config.yaml -> memforge: config (Tier 2 BLOCKER per spec)
-if touches_exact ".memforge/config.yaml"; then
-  if ! starts_with "memforge: config"; then
-    fail ".memforge/config.yaml staged but commit prefix is not 'memforge: config'." \
-         "Per spec: config edits MUST land in 'memforge: config' commits that touch ONLY the config file."
-  fi
-fi
-
-# .memforge/snoozes/<topic>.yaml -> memforge: snooze <topic>
-if touches_pattern "^\.memforge/snoozes/.*\.yaml$"; then
-  if ! starts_with "memforge: snooze "; then
-    fail "Snooze file staged but commit prefix is not 'memforge: snooze <topic>'." \
-         "Snooze edits MUST land in 'memforge: snooze <topic>' commits."
-  fi
-fi
-
-exit 0
-```
+The hook checks prefixes, and that a waiver commit holds only the waiver file. It does not check that a config commit touches only the config file, and it misses a snooze file whose name holds a newline; `memory-audit` reports both.
 
 Extend the hook for `memforge: resolve <topic>` and `memforge: alias <topic>` as your team starts using those operations.
 
 ### Pattern 2: auto-commit watcher for plain markdown memories
 
-Use a file-system watcher to auto-commit memory `.md` writes (the common case). The watcher explicitly skips Tier 2 scoped paths so it does not race the `memforge` CLI.
+Use a file-system watcher to auto-commit memory `.md` writes (the common case). The watcher skips everything under `.memforge/` (config, snoozes, waivers, signer lists), so those change only in deliberate commits and it does not race the `memforge` CLI.
 
-bash drop-in at [`examples/scripts/memforge-auto-commit-watcher.sh`](../examples/scripts/memforge-auto-commit-watcher.sh) (requires fswatch on macOS or inotifywait on Linux). PowerShell drop-in at [`examples/scripts/memforge-auto-commit-watcher.ps1`](../examples/scripts/memforge-auto-commit-watcher.ps1) (uses `System.IO.FileSystemWatcher`; no external dependencies on Windows). Source of the bash version (also at the path above):
+bash drop-in at [`examples/scripts/memforge-auto-commit-watcher.sh`](../examples/scripts/memforge-auto-commit-watcher.sh) (requires fswatch on macOS or inotifywait on Linux). PowerShell drop-in at [`examples/scripts/memforge-auto-commit-watcher.ps1`](../examples/scripts/memforge-auto-commit-watcher.ps1) (uses `System.IO.FileSystemWatcher`; no external dependencies on Windows). Run the shipped file, not a copy: it carries the safety lines a copy tends to lose. The bash version:
 
-```bash
-#!/usr/bin/env bash
-# MemForge auto-commit watcher. macOS: requires fswatch (brew install fswatch).
-# Linux: requires inotify-tools (apt install inotify-tools). Skips Tier 2
-# scoped paths so the memforge CLI's own commits are not raced.
-set -e
-ROOT="${1:-$PWD}"
-cd "$ROOT"
+- unsets `GIT_DIR`, `GIT_WORK_TREE`, `GIT_INDEX_FILE` and the other variables `git rev-parse --local-env-vars` lists, so a watcher started from a git hook or a shell with them set still commits to the watched folder and not to another repository;
+- names each file to git with the `:(literal)` pathspec magic, so a file name is never read as a git pattern, and removes `GIT_LITERAL_PATHSPECS` from the environment of the commit, so your pre-commit hooks see the files;
+- skips any path under `.memforge/` in any letter case and any file that does not end in `.md`;
+- commits each changed file alone (`git commit -- <file>`), so anything else you staged stays staged.
 
-scoped_path() {
-  case "$1" in
-    .memforge/config.yaml) return 0 ;;
-    .memforge/snoozes/*) return 0 ;;
-    *) return 1 ;;
-  esac
-}
+Start it from the memory folder, or pass the folder: `examples/scripts/memforge-auto-commit-watcher.sh <memory-root> &`.
 
-handle() {
-  local path="$1"
-  [ -f "$path" ] || return 0
-  local rel
-  rel=$(python3 -c "import os,sys; print(os.path.relpath(sys.argv[1], sys.argv[2]))" "$path" "$ROOT" 2>/dev/null || echo "$path")
-  scoped_path "$rel" && return 0
-  case "$rel" in *.md) ;; *) return 0 ;; esac
-  git add -- "$rel" 2>/dev/null || return 0
-  git diff --cached --quiet -- "$rel" && return 0
-  git commit -m "memory: auto-commit $rel" >/dev/null 2>&1 || true
-}
-
-if command -v fswatch >/dev/null 2>&1; then
-  fswatch -0 -r "$ROOT" | while IFS= read -r -d '' path; do handle "$path"; done
-elif command -v inotifywait >/dev/null 2>&1; then
-  inotifywait -m -r -e close_write --format '%w%f' "$ROOT" | while read -r path; do handle "$path"; done
-else
-  echo "Install fswatch (macOS) or inotify-tools (Linux), or use the Claude Code PostToolUse hook." >&2
-  exit 1
-fi
-```
-
-The Claude Code PostToolUse `memory-auto-commit.sh` hook (operator-side; not shipped in this repo) implements roughly the same shape, scoped to Claude Code's tool-call lifecycle rather than fs-level events. Fork either as a starting point.
+The Claude Code PostToolUse hook at [`adapters/claude-code/hooks/memory-auto-commit.sh`](../adapters/claude-code/hooks/memory-auto-commit.sh) implements roughly the same shape, scoped to Claude Code's tool-call lifecycle rather than fs-level events. Fork either as a starting point.
 
 **Bottom line.** Commits are the audit trail. Hygiene is yours; MemForge works cleanly as long as the commits land with the right prefixes. For a shared store, signed commits are also the trust control (see [Team setup](./team-bootstrap.md)); do not auto-commit changes to the signer list files, because they must land in a deliberate signed commit. The commit-msg hook above is enough to catch the bulk of the common mistakes; the watcher pattern is the easy step beyond.
 
@@ -217,13 +163,16 @@ Wire it as a git pre-commit hook so a malformed write never enters history (`.gi
 
 ```bash
 #!/usr/bin/env bash
-staged=$(git diff --cached --name-only --diff-filter=ACM -- '*.md')
+unset GIT_LITERAL_PATHSPECS
+staged=$(git diff --cached --name-only --diff-filter=ACMT -- '*.md')
 [ -z "$staged" ] && exit 0
-echo "$staged" | xargs memory-validate || {
+git diff --cached --name-only -z --diff-filter=ACMT -- '*.md' | xargs -0 memory-validate -- || {
   echo "memory-validate: blocked commit; fix the frontmatter above and re-stage" >&2
   exit 1
 }
 ```
+
+Keep the `unset` line: `memory-watch`, the example watchers and the Claude Code hook do not set `GIT_LITERAL_PATHSPECS` (each names files with `:(literal)` instead), but your own shell or tooling may set it. It makes git read `'*.md'` as a literal file name that matches nothing, so without the `unset` the hook sees no staged files and lets a malformed memory in.
 
 This works for **any** IDE (every adapter versions via git). Claude Code can gate one step earlier, before the bytes hit disk, with a `PreToolUse` shim. Both wirings, plus per-IDE specifics (Cursor, VS Code Copilot, Aider, Codex, Cline, Continue, Windsurf), are in [`adapter-implementation-guide.md`](./adapter-implementation-guide.md) §"Write-boundary gate".
 
@@ -231,7 +180,7 @@ This works for **any** IDE (every adapter versions via git). Claude Code can gat
 
 As a memory set grows, loading the whole `MEMORY.md` into every session gets expensive and the one-line pointers are too terse to reliably surface the right memory. Recall is an alternative: on a query (for example the user's prompt), surface only the descriptions of the memories whose triggers match.
 
-Build the recall index (a derived artifact at `.memforge/recall-index.json`):
+Build the recall index (a derived local cache at `.memforge/recall-index.json`; no tool commits it):
 
 ```bash
 memory-index-gen --with-recall-index --path ~/.memforge/global-memory
@@ -243,9 +192,11 @@ Query it:
 memory-recall "how do I resolve a competing claim" --path ~/.memforge/global-memory
 ```
 
-Recall surfaces `description` text only (never bodies), honors `sensitivity` / `access`, and is fail-open-empty (it never blocks the caller). Mark a memory `always: true` to surface it on every query; mark it `do_not_inject: true` to exclude it from recall (for example, content already loaded by another path). Explicit `triggers: [...]` refine matching; without them, triggers are derived from the name, tags, and description.
+`memory-recall` compares a fingerprint of the memory files (name, size, modification time) with the one stored in the index before every query and rebuilds the index when they differ or when `.memforge/recall-synonyms.yaml` changed, or when a memory file was modified within 2 seconds of the time the index was built (the index records it), so a stale index, one that came in with a `git pull` or one edited by hand is never served. If your repository tracks the index from an earlier version, run `git rm --cached .memforge/recall-index.json`, commit that, and add `.memforge/recall-index.json` to the folder's `.gitignore`.
 
-For Claude Code, register `adapters/claude-code/hooks/memory_recall_hook.py` under `UserPromptSubmit` to inject matches automatically, and let the auto-commit hook keep the index fresh via `memory-recall --rebuild`. See `adapters/claude-code/README.md`.
+Recall surfaces `description` text only (never bodies), filters on `sensitivity` only when you pass `--sensitivity-max`, and is fail-open-empty (it never blocks the caller). With no `--sensitivity-max` there is no sensitivity ceiling: a `restricted` or `privileged` memory's description can be returned. On a per-prompt path, pass a ceiling, for example `memory-recall "<query>" --sensitivity-max internal --path ~/.memforge/global-memory`. Mark a memory `always: true` to surface it on every query; mark it `do_not_inject: true` to exclude it from recall (for example, content already loaded by another path). Explicit `triggers: [...]` refine matching; without them, triggers are derived from the name, tags, and description.
+
+For Claude Code, register `adapters/claude-code/hooks/memory_recall_hook.py` under `UserPromptSubmit`, run by the absolute path of the Python interpreter in the environment you installed `ildan-memforge` into, to inject matches automatically, and, if you like, let the auto-commit hook refresh the index ahead of the next prompt via `memory-recall --rebuild`. See `adapters/claude-code/README.md`.
 
 ### Check recall-readiness (`memory-lint`)
 
@@ -270,4 +221,5 @@ For multi-person setup, see [`team-bootstrap.md`](./team-bootstrap.md).
 ## Troubleshooting
 
 - **`memforge sync` says `no_pin`**: this is a first sync. Pass `--trust-head <commit>` or `--adopt-local`. See [Team setup](./team-bootstrap.md#troubleshooting).
+- **`memforge sync` says `no_upstream`**: the branch has no upstream. Push with `git push -u origin <branch>`, or run `git branch --set-upstream-to origin/<branch>`, then sync again.
 - **A removed command prints a removal notice**: 1.0 removed the old key-system commands. See [Migrating to 1.0](./migrating-to-1.0.md).

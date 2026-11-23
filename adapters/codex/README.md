@@ -8,16 +8,16 @@ This adapter also covers other AGENTS.md-aware agents that don't have their own 
 
 1. Pick a memory folder. `git init` if not already.
 2. Seed `MEMORY.md` (or copy from an existing memory folder).
-3. **Load on session start** — copy `AGENTS.md.template` to your repo root as `AGENTS.md`, edit the memory-folder path. The agent will pick up `AGENTS.md` automatically on session start (the AGENTS.md spec defines this as a "README for agents").
-4. **Auto-commit on writes** — install and run the cross-platform watcher:
+3. **Load on session start**: copy `AGENTS.md.template` to your repo root as `AGENTS.md`, edit the memory-folder path. The agent will pick up `AGENTS.md` automatically on session start (the AGENTS.md spec defines this as a "README for agents").
+4. **Auto-commit on writes**: install and run the cross-platform watcher:
    ```bash
-   python3 -m pip install watchdog        # one-time, all platforms
-   ~/claude-projects/memforge/tools/memory-watch
+   memory-watch --path <memory folder>
    ```
+   `memory-watch` is installed with `ildan-memforge`, `watchdog` included.
    For daemon-style operation pick the template from `../cursor/`:
-   - **macOS** — `daemon-launchd.plist` (LaunchAgent)
-   - **Linux** — `daemon-systemd.service` (user systemd)
-   - **Windows** — `daemon-windows-task.ps1` (PowerShell registers a Scheduled Task)
+   - **macOS**: `daemon-launchd.plist` (LaunchAgent)
+   - **Linux**: `daemon-systemd.service` (user systemd)
+   - **Windows**: `daemon-windows-task.ps1` (PowerShell registers a Scheduled Task)
 5. Restart your agent.
 
 ## What works
@@ -36,8 +36,8 @@ This adapter also covers other AGENTS.md-aware agents that don't have their own 
 
 ## Files in this adapter
 
-- `AGENTS.md.template` — drop-in template that points at the memory folders. Copy to your repo root as `AGENTS.md` and edit paths.
-- `daemon-launchd.plist` and `daemon-systemd.service` — for daemon-style memory-watch, see `../cursor/` (the same files work for any agent).
+- `AGENTS.md.template`: drop-in template that points at the memory folders. Copy to your repo root as `AGENTS.md` and edit paths.
+- `daemon-launchd.plist` and `daemon-systemd.service`: for daemon-style memory-watch, see `../cursor/` (the same files work for any agent).
 
 ## Write-boundary gate (spec v0.7.0)
 

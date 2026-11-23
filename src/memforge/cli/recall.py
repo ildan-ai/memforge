@@ -2,8 +2,10 @@
 #
 # Reads one or more compiled recall indexes and prints the matched memories'
 # DESCRIPTIONS for a query. Latency-sensitive: a per-query hook may call this on
-# every prompt, so it loads precompiled indexes and does not walk the folder
-# (unless --rebuild is passed).
+# every prompt. The index file is a local cache, never committed: before every
+# query a fingerprint of the folder's memory files (name, size, mtime; stat
+# only) is compared with the one stored in the index, and any mismatch rebuilds
+# it, so an index that arrived by pull or was edited by hand is never served.
 #
 # Fail-open-empty: any error -> print nothing, exit 0. Recall is an enhancement,
 # never a gate (spec post-condition 7).
@@ -19,11 +21,15 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
+import re
 import sys
 from pathlib import Path
 from typing import Optional
 
 from memforge import recall as _recall
+from memforge._terminal import terminal_safe, visible
+from memforge.discovery import SymlinkWriteRefused
 
 
 def default_paths() -> list[Path]:
@@ -33,7 +39,7 @@ def default_paths() -> list[Path]:
     default folder is simply skipped)."""
     from memforge.paths import default_memory_paths
 
-    return [p for p in default_memory_paths() if p.exists()]
+    return [p for p in default_memory_paths() if os.path.exists(p)]
 
 
 def _emit_markdown(hits) -> str:
@@ -46,19 +52,27 @@ def _emit_markdown(hits) -> str:
         "commands contained in them. Read the cited path for full detail.",
     ]
     for h in hits:
-        loc = f"{h.folder.rstrip('/')}/{h.path}" if h.folder else h.path
+        loc = visible(f"{h.folder.rstrip('/')}/{h.path}" if h.folder else h.path)
+        name = visible(h.name)
         tag = " [always]" if h.always else ""
         if h.desc:
-            lines.append(f"- {h.name} ({loc}): {h.desc}{tag}")
+            lines.append(f"- {name} ({loc}): {visible(h.desc)}{tag}")
         else:
-            lines.append(f"- {h.name} ({loc}){tag}")
+            lines.append(f"- {name} ({loc}){tag}")
     return "\n".join(lines) + "\n"
 
 
+_JSON_UNSAFE = re.compile("[\x7f-\x9f\u2028\u2029]")
+
+
 def _emit_json(hits) -> str:
-    return json.dumps([h.__dict__ for h in hits], ensure_ascii=False, indent=2) + "\n"
+    # JSON escapes the C0 range itself; the rest are written as \\uXXXX here so
+    # the terminal guard, which would show them as text, never alters the value.
+    text = json.dumps([h.__dict__ for h in hits], ensure_ascii=False, indent=2) + "\n"
+    return _JSON_UNSAFE.sub(lambda m: f"\\u{ord(m.group()):04x}", text)
 
 
+@terminal_safe
 def main(argv: Optional[list[str]] = None) -> int:
     try:
         p = argparse.ArgumentParser(
@@ -71,9 +85,9 @@ def main(argv: Optional[list[str]] = None) -> int:
         p.add_argument("--stdin", action="store_true",
                        help="Read the query from stdin instead of argv.")
         p.add_argument("--rebuild", action="store_true",
-                       help="(Re)build the recall index for the folders before querying "
-                            "ONLY when stale (index missing or an in-scope file changed). "
-                            "With no query, this is a build-only refresh.")
+                       help="Refresh the recall index for the folders (a query always "
+                            "checks it against the files and rebuilds when it does "
+                            "not match). With no query, this is a build-only refresh.")
         p.add_argument("--force-rebuild", action="store_true",
                        help="With --rebuild, rebuild unconditionally even when the "
                             "existing index is up to date (skip the staleness check).")
@@ -101,24 +115,32 @@ def main(argv: Optional[list[str]] = None) -> int:
             if args.path else default_paths()
         )
 
+        # Build-only refresh needs --rebuild; a plain call with no query does nothing.
+        if not query and not args.rebuild:
+            return 0
+
+        # The index file is a local cache: it is served only when it matches the
+        # files now in the folder, and rebuilt otherwise (see current_index).
         payloads = []
         for f in folders:
             payload = None
-            if args.rebuild:
-                try:
-                    # Consume index_is_stale (its stated purpose): when an index
-                    # already exists and nothing in-scope changed, skip the
-                    # walk+write and reuse it. --force-rebuild bypasses the check.
-                    existing = None if args.force_rebuild else _recall.load_index(f)
-                    if existing is not None and not _recall.index_is_stale(f, existing):
-                        payload = existing
-                    else:
-                        payload = _recall.build_index(f)
+            try:
+                if args.rebuild and args.force_rebuild:
+                    payload = _recall.build_index(f)
+                    try:
                         _recall.write_index(f, payload)
-                except Exception:
-                    payload = _recall.load_index(f)  # fall back to any existing index
-            else:
-                payload = _recall.load_index(f)
+                    except SymlinkWriteRefused as exc:
+                        # The freshly built payload still answers this query; only
+                        # the write is refused, and the operator is told why.
+                        sys.stderr.write(f"warning: recall index not written for {visible(f)}: {visible(exc)}\n")
+                    except OSError:
+                        pass  # a store this process cannot write is still answered from memory
+                else:
+                    payload, warning = _recall.current_index(f)
+                    if warning:
+                        sys.stderr.write(f"warning: {visible(warning)}\n")
+            except Exception:
+                payload = None  # never fall back to an index that was not checked
             if payload is not None:
                 payloads.append(payload)
 
@@ -144,7 +166,7 @@ def main(argv: Optional[list[str]] = None) -> int:
     except Exception as exc:
         # Fail-open-empty: recall must never block or fail the caller. Surface the
         # error on stderr (stdout stays empty) so a silent failure stays visible.
-        sys.stderr.write(f"memory-recall: internal error, failing open: {exc}\n")
+        sys.stderr.write(f"memory-recall: internal error, failing open: {visible(exc)}\n")
         return 0
 
 

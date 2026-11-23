@@ -1,0 +1,76 @@
+@startuml topology
+!include _style.iuml
+title MemForge deployment topology
+
+rectangle "**User's machine**\noperated by the user" as Machine #F0F9FF {
+  actor "Person" as Person
+  component "**Agents**\nClaude Code, Cursor, Aider,\nCodex, Copilot Chat" as Agents
+  rectangle "**Claude Code hooks**\nadapters/claude-code/hooks/" as Hooks #FFFFFF {
+    component "gate-memory-frontmatter.py\nPreToolUse Write|Edit" as Gate
+    component "memory-auto-commit.sh\nPostToolUse Write|Edit" as AutoCommit
+    component "memory-read-tracker.sh\nPostToolUse Read" as ReadTracker
+    component "memory_recall_hook.py\nUserPromptSubmit" as RecallHook
+  }
+  rectangle "**ildan-memforge package**\nconsole scripts" as Pkg #FFFFFF {
+    component "**memforge**\ninit-store, sync, paths" as Dispatcher
+    component "memory-validate\nmemory-index-gen\nmemory-recall\nagents-md-gen" as Gen
+    component "memory-audit\nmemory-audit-deep\nmemory-dlp-scan\nmemory-audit-log" as Check
+    component "memforge-resolve\nmemory-promote, memory-rollup\nmemory-link-rewriter" as Writers
+    component "**memory-watch**\nwatchdog observer" as Watch
+    component "memory-dedup, memory-lint\nmemforge-detect" as Llm
+  }
+  node "**Throwaway verifier dir**\nmemforge-sync-*\nbare git, alternates,\nempty home, tmp, programdata" as Iso
+  component "git, ssh-keygen, jq\n(gpg, gitsign, detect-secrets,\nlocal model runner)" as Bin
+  component "Operator-supplied\nLLM dispatcher" as Dispatch
+}
+
+rectangle "**Memory store folders**\nmemforge paths order:\n1 MEMFORGE_MEMORY_PATH\n2 $HOME/.claude/projects/<project>/memory/\n   $HOME/.claude/global-memory/ (if present)\n3 $HOME/.memforge/memory/, $HOME/.memforge/global-memory/" as Folders #FEFCE8 {
+  database "**Memory files**\n<name>.md, <topic>/README.md,\narchive/, MEMORY.md" as Files
+  database "**.memforge/**\nallowed_signers, config.yaml,\naudit-waivers.yaml, snoozes/,\nrecall-synonyms.yaml,\nrecall-index.json (local cache)" as Control
+  database "**.git/**\nhistory, memforge.verifiedHead\nin .git/config" as Repo
+}
+
+cloud "**Git remote**\noperated by the store owner and the git host" as Remote {
+  database "Shared branch\nbranch protection,\nrequired signed commits" as Branch
+  actor "Teammates\n(listed signers)" as Mates
+}
+
+rectangle "**Release pipeline**\noperated by the maintainer and GitHub" as Release #FAF5FF {
+  component "**release.yml**\ntest, build, pdf, attest,\npublish, github-release\npdf: no raw content, no network" as Workflow
+  component "GitHub Release\nsdist, wheel, SBOM,\narchitecture PDF, sha256 list" as GhRelease
+  component "Build provenance\nattestation (Sigstore)" as Attestation
+}
+cloud "**PyPI**\nildan-memforge" as Pypi
+
+Person --> Agents : "prompts"
+Agents --> Files : "Write, Edit, Read"
+Gate -[dashed,#B91C1C]-> Agents : "**deny** malformed write"
+AutoCommit --> Repo : "git commit"
+ReadTracker --> Files : ".last_used.json"
+RecallHook --> Gen : "memory-recall ~--stdin by absolute path:\nown environment, else absolute PATH;\nnever inside a store"
+Watch --> Repo : "git commit"
+Gen --> Files : "MEMORY.md, AGENTS.md"
+Gen --> Control : "recall-index.json"
+Check --> Files : "read"
+Writers --> Repo : "scoped git commit\nmemforge: resolve <topic>"
+Dispatcher --> Iso : "verify-commit"
+Iso --> Repo : "objects via alternates"
+Pkg --> Bin : "absolute PATH only, never inside the store\nnor its repository"
+Hooks --> Bin : "absolute PATH only, never under a store root;\nreadlink a regular file, not a link"
+Llm --> Dispatch : "stdin, local by default"
+Person --> Branch : "git push"
+Dispatcher --> Branch : "**git fetch**\nupstream branch only"
+Mates --> Branch : "signed commits"
+Workflow --> Pypi : "**trusted publishing**\nOIDC, pypi environment"
+Workflow --> GhRelease : "gh release create"
+Workflow --> Attestation : "attest job, OIDC:\ndist, SBOM, PDF"
+Pypi --> Pkg : "pip install"
+
+note right of Repo
+**RISK**
+* plain git pull bypasses sync
+* a pin vouches for unchecked history
+* a local user can edit verifiedHead
+* any listed signer can add a signer
+end note
+@enduml

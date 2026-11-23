@@ -28,22 +28,22 @@ Adapters implement UX on top of these contracts. UX is non-normative; the contra
 
 The package ships these binaries (after `pip install ildan-memforge`):
 
-- `memforge-resolve <topic>` - runs the resolve operation. Interactive by default; non-interactive via `--winner-uid <uid>`. Writes the atomic `memforge: resolve <topic>` commit.
+- `memforge-resolve <topic> [--memory-root <store>]` - runs the resolve operation. Interactive by default; non-interactive via `--winner-uid <uid>`. Writes the atomic `memforge: resolve <topic>` commit. Without `--memory-root` it searches the folders `memforge paths` prints, not the current folder, and when the group is elsewhere it prints `no live members of decision_topic '<topic>' found.` and exits 0. An adapter passes `--memory-root <store>` every time.
 - `memory-audit` - runs Tier 1 + Tier 2 audit. Use as a CI gate.
-- `memforge-migrate-claim-block` - rewrites legacy per-group `status:` to canonical `state:` in `MEMORY.md`. One-shot fixer for v4-shape data.
+- `memforge-migrate-claim-block [--memory-root <store>]` - rewrites legacy per-group `status:` to canonical `state:` in `MEMORY.md`. One-shot fixer for v4-shape data. Without `--memory-root` it searches the folders `memforge paths` prints, not the current folder.
 - `memory-promote`, `memory-rollup`, `memory-cluster-suggest`, `memory-link-rewriter`, etc. - pre-existing v0.3.x tools that work unchanged.
 
 Every other adapter is, ideally, a thin wrapper over these binaries. If your UX is shell-able, just shell out.
 
 ### Claude Code skill
 
-A reference skill ships at `~/.claude/skills/consolidate-memory/SKILL.md` (in the operator's home, not in the public repo). The skill walks the memory folders to find competing-claim groups, asks the operator to pick a winner in chat, then invokes `memforge-resolve <topic> --winner-uid <picked-uid>`. The CLI handles all mutations + commit.
+The repo's `adapters/claude-code/skills/consolidate-memory/` skill runs `memory-audit` and `memory-dedup` and applies fixes one at a time. No shipped skill wraps `memforge-resolve`. A skill that does would walk the memory folders to find competing-claim groups, ask the operator to pick a winner in chat, then run `memforge-resolve <topic> --memory-root <store> --winner-uid <picked-uid>`. The CLI handles all mutations + commit.
 
-The trigger phrasing in the skill description tells Claude when to invoke (`/consolidate-memory`, `resolve competing claims on <topic>`, etc.). Adapt for your terminology.
+The trigger phrasing in a skill's description tells Claude when to invoke it (for such a skill, `resolve competing claims on <topic>`). Adapt for your terminology.
 
 ### Cursor / Continue.dev / Aider
 
-These tools support project-level slash commands or rules. Add a project rule that runs `memforge-resolve <topic>` (interactive) or implement a slash command that prompts for the topic + winner inside the tool's chat UI, then invokes `memforge-resolve <topic> --winner-uid <picked-uid>`.
+These tools support project-level slash commands or rules. Add a project rule that runs `memforge-resolve <topic> --memory-root <store>` (interactive) or implement a slash command that prompts for the topic + winner inside the tool's chat UI, then invokes `memforge-resolve <topic> --memory-root <store> --winner-uid <picked-uid>`.
 
 ### Plain shell, vim, emacs
 
@@ -51,7 +51,7 @@ Direct invocation is fine. Nothing to wrap.
 
 ### Web UI
 
-POST-to-shell pattern. The button POSTs `{topic, winner_uid}` to a server-side handler that invokes `memforge-resolve --winner-uid <uid>`. The server-side handler runs in the same git working tree as the memory folder so the atomic commit lands correctly.
+POST-to-shell pattern. The button POSTs `{topic, winner_uid}` to a server-side handler that invokes `memforge-resolve <topic> --memory-root <store> --winner-uid <uid>`. Running the handler in the store's working tree is not enough: without `--memory-root` the command searches the folders `memforge paths` prints, not the working folder, and exits 0 with `no live members` when the group is elsewhere, so the handler would report success and resolve nothing.
 
 ## UX patterns for the resolve operation
 
@@ -80,6 +80,8 @@ After mutations are applied but before the atomic commit fires, show the operato
 ### 5. After commit: run audit
 
 Always run `memory-audit --path <root>` after a resolve. Expect zero new BLOCKERs. If any fire, surface them - the resolve ran but the result has a problem the spec catches.
+
+The resolve commit may not touch `MEMORY.md` (post-condition 4), so right after it the index still lists both members and its competing-claims block still says `state: competing`. Run `memory-index-gen` as the next, separate step: it clears the block and keeps a pointer for the superseded member, because every `tier: index` file outside `archive/` needs one whatever its status (integrity invariant 7). `memory-audit --strict` passes both before and after that step. Do not move the superseded file to `archive/` by hand: in 1.0.0 audit then reports the winner's `replaces:` as dangling, an integrity violation, so `memory-audit --strict` fails.
 
 ### 6. Interaction with snooze
 
@@ -125,7 +127,7 @@ A secure-mode adapter additionally MUST (these are obligations 4 through 6, in a
 
 - Run `memory-audit --export-tier=<level> --strict` as a CI / pre-export gate when the adapter exports memory to any external surface. The level is whatever the adapter's destination accepts. The gate fails BLOCKER on any file whose declared `sensitivity` exceeds `<level>`. Privileged-tier files always block when the gate runs, regardless of `audit.enforce_sensitivity_export_gate` config.
 - Run `memory-dlp-scan --strict` (default `dlp.enforce_sensitivity_cross_check: true`) before any export. The cross-check emits a BLOCKER `sensitivity_label_mismatch` finding when body content's implied tier exceeds the declared label. The check cannot be disabled when implied tier is `privileged`.
-- Pass the conformance suite at `tests/conformance/sensitivity/`. Five scenarios: `export_tier_public`, `export_tier_internal`, `export_tier_restricted`, `export_tier_privileged`, `label_mismatch_blocked`. Adapter authors run `pytest tests/test_conformance_sensitivity.py` to verify (the fixtures live under `tests/conformance/sensitivity/`; the test module that drives them is `tests/test_conformance_sensitivity.py`).
+- Pass the conformance suite at `tests/conformance/sensitivity/`. Five scenarios: `export_tier_public`, `export_tier_internal`, `export_tier_restricted`, `export_tier_privileged`, `label_mismatch_blocked`. Adapter authors run `pytest tests/test_conformance_sensitivity.py` to verify (the fixtures live under `tests/conformance/sensitivity/`; the test module that drives them is `tests/test_conformance_sensitivity.py`). The tests ship in the source distribution and the repository, not in the wheel that `pip install ildan-memforge` installs: run them from a clone or an unpacked sdist, with `pytest` installed.
 
 Operators MAY disable the export-tier gate or the DLP cross-check at non-privileged levels by setting `audit.enforce_sensitivity_export_gate: false` and / or `dlp.enforce_sensitivity_cross_check: false` in `.memforge/config.yaml`. Privileged enforcement is a hard floor that no config knob can override.
 
@@ -138,7 +140,7 @@ Before declaring your adapter v0.4-conformant, run the following test scenarios.
 1. Create two memories with the same `decision_topic`, both `status: active`.
 2. Invoke your adapter's resolve flow.
 3. Operator picks member 1 as winner.
-4. **Assert**: post-state has member 1 active, member 2 superseded with `superseded_by: [member-1-UID]`, member 1's `replaces:` lists member 2's UID, both have `ever_multi_member: true`, single commit with message `memforge: resolve <topic>`, `memory-audit` passes.
+4. **Assert**: post-state has member 1 active, member 2 superseded with `superseded_by: [member-1-UID]`, member 1's `replaces:` lists member 2's UID, both have `ever_multi_member: true`, single commit with message `memforge: resolve <topic>`, `memory-audit --strict` passes, and passes again after `memory-index-gen`, whose `MEMORY.md` still points at member 2 and has no competing-claims block for the topic.
 
 ### T2 - Two competing memories, write new winner
 
@@ -166,23 +168,23 @@ Before declaring your adapter v0.4-conformant, run the following test scenarios.
 
 ### T6 - Audit catches asymmetric supersession
 
-1. Manually edit a memory: `status: superseded` with `superseded_by: [does-not-exist]`.
-2. Run `memory-audit`.
-3. **Assert**: BLOCKER fires citing the dangling reference.
+1. Manually edit a member of a `decision_topic` group: `status: superseded` with `superseded_by: [does-not-exist]`.
+2. Run `memory-audit --path <store>`.
+3. **Assert**: BLOCKER fires citing the dangling reference. A memory with no `decision_topic` is not checked by `memory-audit`; `memory-audit-deep` reports its dangling `superseded_by`.
 
 ### T7 - Audit catches alias non-mutuality
 
 1. Anchor of topic A lists topic B in `topic_aliases:`. Anchor of topic B does NOT list A.
-2. Run `memory-audit`.
+2. Run `memory-audit --path <store>`.
 3. **Assert**: WARN fires; alias is inactive; both groups continue to be treated as separate.
 
 ### T8 - Migrate-claim-block on legacy data
 
 1. Hand-craft a `MEMORY.md` with `status: competing` (legacy v4 shape) at the per-group level inside the fenced block.
-2. Run `memforge-migrate-claim-block`.
+2. Run `memforge-migrate-claim-block --memory-root <store>`. Without `--memory-root` it searches the folders `memforge paths` prints, not the current folder, and reports `No legacy per-group status: lines found.` for any other store.
 3. **Assert**: per-group `status:` rewritten to `state:`; per-member `status:` (under `members:`) untouched; running again is a no-op.
 
-A reference test fixture set is at `tests/conformance/sensitivity/` (covers spec §"Sensitivity enforcement (v0.4.0+)" with five scenarios: `export_tier_public`, `export_tier_internal`, `export_tier_restricted`, `export_tier_privileged`, `label_mismatch_blocked`). Run `pytest tests/test_conformance_sensitivity.py` to verify your secure-mode adapter honors the export-tier gate and the DLP label-vs-implied-tier cross-check. Adapters claiming secure-mode MUST pass all five.
+A reference test fixture set is at `tests/conformance/sensitivity/` (covers spec §"Sensitivity enforcement (v0.4.0+)" with five scenarios: `export_tier_public`, `export_tier_internal`, `export_tier_restricted`, `export_tier_privileged`, `label_mismatch_blocked`). From a clone or an unpacked sdist (the wheel holds no tests), run `pytest tests/test_conformance_sensitivity.py` to verify your secure-mode adapter honors the export-tier gate and the DLP label-vs-implied-tier cross-check. Adapters claiming secure-mode MUST pass all five.
 
 ## Authority threat model summary (for adapter authors)
 
@@ -218,15 +220,22 @@ Install in the memory folder's git repo at `.git/hooks/pre-commit` (or wire via 
 
 ```bash
 #!/usr/bin/env bash
+unset GIT_LITERAL_PATHSPECS
 # Reject a commit that would version a memory file with unparseable frontmatter.
-staged=$(git diff --cached --name-only --diff-filter=ACM -- '*.md')
+staged=$(git diff --cached --name-only --diff-filter=ACMT -- '*.md')
 [ -z "$staged" ] && exit 0
+# Names are passed NUL-separated so a name with a space stays one name, and
+# T (type change) covers a symlink replaced by a regular file.
 # HARD failures (invariant 27) exit nonzero; SOFT findings do not block (no --strict).
-echo "$staged" | xargs memory-validate || {
-  echo "memory-validate: blocked commit (fix the frontmatter above and re-stage)" >&2
+git diff --cached --name-only -z --diff-filter=ACMT -- '*.md' | xargs -0 memory-validate -- || {
+  echo "memory-validate: blocked commit; fix the frontmatter above and re-stage" >&2
   exit 1
 }
 ```
+
+Keep the `unset` line: `memory-watch`, the example watchers and the Claude Code hook do not set `GIT_LITERAL_PATHSPECS` (each names files with `:(literal)` instead), but your own shell or tooling may set it. It makes git read `'*.md'` as a literal file name that matches nothing, so without the `unset` the hook sees no staged files and lets a malformed memory in.
+
+This is the same hook as the one in [`quickstart.md`](./quickstart.md) §"Pattern 3: write-boundary validation gate (`memory-validate`)".
 
 This is the recommended gate for Cursor, VS Code Copilot, Aider, Codex, Cline, Continue, Windsurf, and any future adapter - they all already commit through git (most via `memory-watch`), so the hook fires regardless of which agent did the write. Add `--strict` if you want SOFT findings (pointer-cap, missing fields, bad enums) to block too; the default blocks only the HARD frontmatter-parse failure.
 
@@ -245,13 +254,27 @@ Claude Code can deny a `Write`/`Edit` before it lands. The shim reconstructs the
 import json, sys
 from pathlib import Path
 from memforge.frontmatter import validate_frontmatter   # the same primitive memory-validate uses
+from memforge.paths import default_memory_paths         # the folders `memforge paths` prints
+
+def under_memory_root(fp: str) -> bool:
+    # MEMORY.md is the folder index and carries no frontmatter.
+    if not fp.endswith(".md") or Path(fp).name == "MEMORY.md":
+        return False
+    target = Path(fp).expanduser().resolve()
+    for root in default_memory_paths():
+        try:
+            target.relative_to(Path(root).expanduser().resolve())
+            return True
+        except ValueError:
+            continue
+    return False
 
 def main() -> int:
     try:
         data = json.loads(sys.stdin.read() or "{}")
         ti = data.get("tool_input") or {}
         fp = ti.get("file_path") or ""
-        if not fp.endswith(".md") or "/.claude/" not in fp:   # scope to memory trees
+        if not under_memory_root(fp):   # scope to the memory folders
             return 0
         if data.get("tool_name") == "Write":
             text = ti.get("content") or ""
@@ -273,13 +296,15 @@ if __name__ == "__main__":
 
 Call the installed package's `validate_frontmatter`, not a vendored copy, so the gate tracks spec updates. Always fail open on internal error: a write-gate that wedges on its own bug is worse than the break it prevents.
 
+The scope comes from `default_memory_paths()`, so the shim gates the same folders every memforge tool uses: `MEMFORGE_MEMORY_PATH` if set, else an existing Claude Code store, else `~/.memforge/memory` and `~/.memforge/global-memory`. A test on the path text alone (for example `"/.claude/" in fp`) misses the 1.0 default store.
+
 ### Tier C - editor-on-save
 
 For an editor integration, run `memory-validate <file>` on save and surface failures inline (a red squiggle / problems-panel entry). This is advisory: it informs the author but does not stop the save. Pair it with Tier B so the authoritative rejection still happens at commit time.
 
 ### Per-IDE specifics
 
-- **Claude Code** - Tier A. Register the shim above under `PreToolUse` matching `Write|Edit`. This is the only adapter today that pre-empts the on-disk write. (The interim hand-written CC hook that motivated this operation is now exactly this shim over the shared primitive.)
+- **Claude Code** - Tier A. The shipped hook is [`adapters/claude-code/hooks/gate-memory-frontmatter.py`](../adapters/claude-code/hooks/gate-memory-frontmatter.py); register it under `PreToolUse` matching `Write|Edit`. It is a fuller form of the shim above: it also denies a write that lacks `name`, `description` or `type` (`validate_required_fields`), honors `replace_all` on an Edit, declines to judge an Edit to a file over 4 MiB, and takes its roots from `MEMFORGE_MEMORY_ROOTS` when that is set. This is the only adapter today that pre-empts the on-disk write.
 - **Cursor** - Tier B. Cursor exposes no pre-write hook (writes are surfaced after the fact via `memory-watch`), so the git pre-commit hook is the gate. Optionally extend the `memory-watch` invocation to run `memory-validate` on a settled write and skip the auto-commit on failure, surfacing the reason in the watcher log.
 - **VS Code Copilot** - Tier B (+ optional Tier C via a VS Code task bound to `onSave`). Same constraint as Cursor: no pre-write hook, so gate at commit. The VS Code "Problems" panel is the natural Tier C surface.
 - **Aider** - Tier B. Aider's native auto-commit fires the pre-commit hook for files it edits via `/add`; `memory-watch` covers external edits, and its commit fires the same hook. No Aider-specific pre-write hook exists.
@@ -296,8 +321,8 @@ Recall is an alternative to bulk-loading the `tier: index` hotlist (`MEMORY.md`)
 
 **Two operations, kept separate.** Recall has a heavy compile-time step and a latency-sensitive query-time step. Do not fuse them:
 
-- **Build** (compile-time): walk the folder, derive each memory's trigger set from `triggers` UNION name + tags + description, and emit a derived inverted-index artifact. The reference implementation is `memory-index-gen --with-recall-index`, which writes `<memory-root>/.memforge/recall-index.json`. Rebuild on memory change (the Claude Code auto-commit hook calls `memory-recall --rebuild`).
-- **Query** (run-time): load the prebuilt index, match, rank, emit. The reference implementation is the `memory-recall` reader. It does no folder walk on the hot path.
+- **Build** (compile-time): walk the folder, derive each memory's trigger set from `triggers` UNION name + tags + description, and emit a derived inverted-index artifact. The reference implementation is `memory-index-gen --with-recall-index`, which writes `<memory-root>/.memforge/recall-index.json`. The index is a local cache: store a fingerprint of the memory files (name, size, modification time) in it, never commit it, and rebuild it when the fingerprint no longer matches (the Claude Code auto-commit hook also calls `memory-recall --rebuild` after a write).
+- **Query** (run-time): check the index against the folder, match, rank, emit. The reference implementation is the `memory-recall` reader. Before each query it stats every memory file to compute the fingerprint and rebuilds the index on a mismatch, or when a file's modification time is within 2 seconds (inclusive, either side) of the build time the index records, which covers an edit that keeps its size in the same file-clock tick as the build; it opens a memory file only to rebuild.
 
 **Honor the post-conditions.** Always-set inclusion (`always: true`), `do_not_inject` suppression, body exclusion (surface `description` only, never bodies), `sensitivity` / `access` filtering, liveness, and fail-open-empty. Because `description` is public-classification metadata that MUST be free of secrets / PII / codenames, recall injection is safe by construction.
 

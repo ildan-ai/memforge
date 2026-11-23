@@ -193,3 +193,40 @@ def test_force_flag_is_gone(root):
 
 def test_missing_memory_root_is_refused(tmp_path, capsys):
     assert _dispatch.main(["init-store", "--memory-root", str(tmp_path / "nope")]) == 2
+
+
+@pytest.mark.parametrize("kind", ["link", "file"])
+def test_a_linked_or_non_folder_store_dir_is_refused(root, tmp_path, capsys, kind):
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    if kind == "link":
+        (root / ".memforge").symlink_to(outside, target_is_directory=True)
+    else:
+        (root / ".memforge").write_text("not a folder\n", encoding="utf-8")
+    assert _run(root, "--mode", "ssh") == 2
+    assert list(outside.iterdir()) == []
+    assert "Nothing was changed" in capsys.readouterr().err
+
+
+@needs_sh
+def test_git_is_never_run_from_the_store_folder(root, tmp_path, monkeypatch):
+    marker = tmp_path / "ran"
+    fake = root / "git"
+    fake.write_text(f'#!/bin/sh\necho ran >> "{marker}"\n')
+    fake.chmod(0o755)
+    monkeypatch.chdir(root)
+    monkeypatch.setenv("PATH", f".{os.pathsep}{os.environ['PATH']}")
+    assert _run(root, "--mode", "ssh") == 0
+    assert not marker.exists()
+
+
+def test_a_tool_inside_the_store_is_never_run(root, tmp_path, monkeypatch):
+    """The store folder as an absolute PATH entry: a `git` committed to the
+    store must not run, as sync refuses it."""
+    marker = tmp_path / "ran"
+    fake = root / "git"
+    fake.write_text(f'#!/bin/sh\necho ran >> "{marker}"\n')
+    fake.chmod(0o755)
+    monkeypatch.setenv("PATH", f"{root}{os.pathsep}{os.environ['PATH']}")
+    assert _run(root, "--mode", "ssh") == 0
+    assert not marker.exists()

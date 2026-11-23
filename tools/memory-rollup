@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Thin shim — invokes memforge.cli.rollup.main()."""
+"""Thin shim: invokes memforge.cli.rollup.main()."""
 import sys
 from memforge.cli.rollup import main
 

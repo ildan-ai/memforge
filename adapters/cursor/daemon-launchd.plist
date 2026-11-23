@@ -3,11 +3,12 @@
   macOS LaunchAgent for memforge memory-watch.
 
   Setup:
-    1. Edit the ProgramArguments path below to point at your installed
-       memory-watch script. If you `pip install memforge`, use the
-       wrapper from your venv (e.g. /usr/local/bin/memory-watch). If
-       you cloned the repo, point at <repo>/tools/memory-watch.
-    2. Replace USER_HOME with your actual home directory ($HOME).
+    1. Install the package (`pip install ildan-memforge`). It installs the
+       `memory-watch` command, `watchdog` included. Replace MEMORY_WATCH
+       below with its absolute path (`command -v memory-watch` in the
+       environment you installed into), and MEMORY_FOLDER with the
+       absolute path of your memory folder.
+    2. Replace USER_HOME with your actual home directory.
     3. Copy to ~/Library/LaunchAgents/com.memforge.memory-watch.plist.
     4. Load:
          launchctl load ~/Library/LaunchAgents/com.memforge.memory-watch.plist
@@ -24,7 +25,9 @@
 
   <key>ProgramArguments</key>
   <array>
-    <string>USER_HOME/claude-projects/memforge/tools/memory-watch</string>
+    <string>MEMORY_WATCH</string>
+    <string>--path</string>
+    <string>MEMORY_FOLDER</string>
     <string>--quiet</string>
   </array>
 

@@ -1,0 +1,28 @@
+skinparam shadowing false
+skinparam dpi 150
+skinparam backgroundColor #FFFFFF
+skinparam defaultFontName "Arial"
+skinparam defaultFontSize 12
+skinparam roundCorner 15
+skinparam rectangle {
+    BorderColor #1E40AF
+    BorderThickness 2.5
+    BackgroundColor #F0F9FF
+}
+skinparam node {
+    BorderColor #C2410C
+    BackgroundColor #FEFCE8
+}
+skinparam cloud {
+    BorderColor #6B21A8
+    BackgroundColor #FAF5FF
+}
+skinparam note {
+    BackgroundColor #FEE2E2
+    BorderColor #B91C1C
+    FontColor #991B1B
+}
+skinparam database {
+    BorderColor #065F46
+    BackgroundColor #ECFDF5
+}

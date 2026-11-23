@@ -28,7 +28,9 @@ Two checks, in order:
 FAIL-OPEN is mandatory and unconditional: any unexpected error, an
 un-importable package, an unreadable file, a surprising payload shape, all
 return 0 and allow the write. A memory gate that wedges the editor is worse
-than the drift it prevents.
+than the drift it prevents. An internal error (not an unreadable file or an
+Edit the Edit tool will reject itself) also prints one stderr line naming
+the error class, so the failure is not silent.
 
 Scope: `Write` and `Edit` on `*.md` under a memory root only. `MEMORY.md` is
 skipped by spec (it is the folder index, not a memory, and carries no
@@ -45,6 +47,17 @@ from pathlib import Path
 #: prose with a small frontmatter block; a few megabytes is already far past
 #: anything legitimate.
 MAX_VALIDATED_BYTES = 4 * 1024 * 1024
+
+
+def _report_internal_error(exc: BaseException) -> None:
+    """One stderr line naming the error class. The write is still allowed; the
+    line is there so a gate that failed open is not mistaken for one that
+    checked and passed."""
+    print(
+        f"gate-memory-frontmatter: internal error ({type(exc).__name__}); "
+        "write allowed unchecked",
+        file=sys.stderr,
+    )
 
 
 def _memory_roots() -> list[Path]:
@@ -76,7 +89,8 @@ def _memory_roots() -> list[Path]:
         from memforge.paths import default_memory_paths  # type: ignore
 
         return [Path(p) for p in default_memory_paths()]
-    except Exception:
+    except Exception as exc:
+        _report_internal_error(exc)
         return []
 
 
@@ -134,7 +148,8 @@ def _post_write_text(tool: str, tool_input: dict) -> str | None:
 def main() -> int:
     try:
         data = json.loads(sys.stdin.read() or "{}")
-    except Exception:
+    except Exception as exc:
+        _report_internal_error(exc)
         return 0  # fail open
 
     try:
@@ -176,7 +191,8 @@ def main() -> int:
             }
         }))
         return 0
-    except Exception:
+    except Exception as exc:
+        _report_internal_error(exc)
         return 0  # fail open, unconditionally
 
 

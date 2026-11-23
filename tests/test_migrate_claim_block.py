@@ -79,7 +79,7 @@ def test_idempotent():
 
 
 def test_no_block_no_op():
-    text = "# Just a normal MEMORY.md\n\n- [pointer](file.md) — hook\n"
+    text = "# Just a normal MEMORY.md\n\n- [pointer](file.md): hook\n"
     new_text, count, _ = migrate_text(text)
     assert count == 0
     assert new_text == text

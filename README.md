@@ -4,7 +4,7 @@
 
 [![CI](https://github.com/ildan-ai/memforge/actions/workflows/ci.yml/badge.svg)](https://github.com/ildan-ai/memforge/actions/workflows/ci.yml) [![PyPI version](https://img.shields.io/pypi/v/ildan-memforge)](https://pypi.org/project/ildan-memforge/) [![Python versions](https://img.shields.io/pypi/pyversions/ildan-memforge)](https://pypi.org/project/ildan-memforge/) [![License: Apache 2.0](https://img.shields.io/badge/license-Apache%202.0-blue.svg)](./LICENSE) [![DOI](https://img.shields.io/badge/DOI-10.5281%2Fzenodo.20113963-blue)](https://doi.org/10.5281/zenodo.20113963)
 
-Docs: [PyPI](https://pypi.org/project/ildan-memforge/) | [CHANGELOG](./CHANGELOG.md) | [spec](./spec/SPEC.md) | [examples](./examples/)
+Docs: [PyPI](https://pypi.org/project/ildan-memforge/) | [CHANGELOG](./CHANGELOG.md) | [spec](./spec/SPEC.md) | [examples](./examples/) | [architecture](./docs/architecture/overview.md) | [diagrams](./docs/architecture/diagrams.md)
 
 > **Status: 1.0; contributions welcome.** Issues and pull requests are open. Every commit needs a DCO sign-off (`git commit -s`). See [CONTRIBUTING.md](./CONTRIBUTING.md). Security reports go through the private channel in [SECURITY.md](./SECURITY.md).
 
@@ -15,13 +15,15 @@ pip install ildan-memforge
 memforge --version                  # prints the installed package version
 cd /path/to/memory-root
 memforge init-store                 # creates the .memforge/ layout
-memory-audit --strict               # check the store
+memory-index-gen --path .           # writes MEMORY.md, which the audit requires
+memory-audit --strict --path .      # check this store (no --path checks the default folders)
 ```
 
-For a store shared by several people or agents, add commit trust: every writer signs commits, the store commits a signer list, and everyone takes in new history with `memforge sync`.
+For a store shared by several people or agents, add commit trust: every writer signs commits, the store commits a signer list, and everyone takes in new history with `memforge sync`. Run these at the top level of the store's git repository, with signing set up in git (see [`docs/team-bootstrap.md`](./docs/team-bootstrap.md)).
 
 ```bash
 memforge init-store --mode ssh      # writes .memforge/allowed_signers
+# commit the list signed, then push with an upstream: git push -u origin <branch>
 memforge sync --adopt-local         # the creator, first time
 memforge sync --trust-head <commit> # everyone else, first time
 memforge sync                       # every time after
@@ -53,7 +55,7 @@ That state belongs in *memory*: typed entries that the agent can read, write, au
 - **Four memory types:** `user` (facts about the developer), `feedback` (rules they have given), `project` (state about ongoing work), `reference` (pointers to external systems).
 - **A `MEMORY.md` index** any agent loads at session start.
 - **Rollup subfolders** for topic clusters of five or more memories, so the index stays scannable.
-- **Audit + integrity tooling** that runs in CI: schema checks, link integrity, DLP scan, tamper-evident audit log.
+- **Audit + integrity tooling** that runs in CI: schema checks, link integrity, DLP scan, hash-chained audit log.
 - **Adapters** for Claude Code, Cursor, Aider, OpenAI Codex, and GitHub Copilot Chat (VS Code).
 
 ## 60-second install
@@ -104,11 +106,21 @@ Pick a folder for your memory. The IDE-neutral default the tooling resolves to:
 ~/.memforge/memory/          # per-cwd state
 ```
 
-Resolution order is: the `MEMFORGE_PATHS` environment override, then a
+Resolution order is: the `MEMFORGE_MEMORY_PATH` environment override, then a
 grandfathered Claude Code layout (`~/.claude/global-memory/` plus
-`~/.claude/projects/<USER>-claude-projects/memory/`) **if it already exists**,
-then the `~/.memforge` default above. So an existing Claude Code store keeps
-working untouched, and a fresh install lands under `~/.memforge`.
+`~/.claude/projects/<project>/memory/`) **if it already exists**, then the
+`~/.memforge` default above. So an existing Claude Code store keeps working
+untouched, and a fresh install lands under `~/.memforge`.
+
+`<project>` is the git root of the current folder: the nearest folder up the
+tree that holds a `.git` entry (a directory, or the `.git` file a linked
+worktree has). Outside a repository it is the current folder. Its absolute
+path is then named the way Claude Code names it, with every character other
+than an ASCII letter or digit replaced by `-`. So running a tool from a
+subfolder of a repository finds the same store as running it from the root.
+For a linked worktree this uses the worktree's own folder; whether Claude Code
+does the same or uses the main checkout is unconfirmed, so set
+`MEMFORGE_MEMORY_PATH` if your worktree's store is not found.
 
 Other layouts work too; the tooling takes a `--path` argument everywhere.
 
@@ -121,7 +133,7 @@ description: Bun is the package manager for this monorepo
 type: feedback
 uid: mem-2026-04-12-use-bun-not-npm
 tier: index
-tags: [topic:tooling, topic:javascript]
+tags: [topic:tooling]
 owner: web-platform
 status: active
 created: 2026-04-12
@@ -180,21 +192,24 @@ flowchart LR
     AdapterCopilot --> Agent5[GitHub Copilot Chat]
     Folder -->|CI gate| Tools[memory-audit<br/>memory-dlp-scan<br/>memory-link-rewriter<br/>memory-audit-log]
     Tools -->|fail PR on violation| GH[GitHub Actions]
-    Folder -->|append-only| ChainLog[(.memforge-audit-log.jsonl<br/>tamper-evident chain)]
+    Folder -->|append-only| ChainLog[(.memforge-audit-log.jsonl<br/>hash chain)]
 ```
 
 Adapters are thin: they translate "load this folder at session start" into the agent's native rules surface. Adding an agent means writing a new adapter, not changing the format.
+
+The diagrams with a description of each are in [docs/architecture/diagrams.md](./docs/architecture/diagrams.md). Each release also attaches the full document as a PDF, built by the release workflow and covered by a build provenance attestation.
 
 ## Key tools
 
 Run `--help` on any of them.
 
-### Commit trust (under the `memforge` dispatcher)
+### Commit trust and store folders (under the `memforge` dispatcher)
 
 | Subcommand | What it does |
 | --- | --- |
 | `memforge sync` | Fetch the upstream branch, verify every first-parent commit against the committed signer list, fast-forward, record where verification stopped. Flags: `--check` (verify, change nothing local), `--trust-head <commit>` and `--adopt-local` (first-sync pins). Exit 0 verified, 2 refused by verification or history rules, 1 any other error. |
 | `memforge init-store` | Create the `.memforge/` layout. With `--mode ssh\|gpg\|keyless`, also write the signer list for that mode. Never overwrites. |
+| `memforge paths` | Print the default memory folders, one per line, in the order every memforge tool searches them, and nothing else on stdout. Prints each folder whether or not it exists; the caller tests each one. For scripts and adapters that cannot import the package. Exit 0; 1 if a folder name holds a newline. |
 
 The 13 key-system commands from 0.5.x (`init-operator`, `operator-registry`, `rotate-key`, `revoke`, `revocation-snapshot`, `revoke-cache-refresh`, `memories-by-key`, `revoke-memories`, `upgrade-v04-memories`, `recovery-init`, `recovery-backup-confirm`, `attest-agent`, `messaging-doctor`) are removed. Each prints a removal notice and exits non-zero. See [`docs/migrating-to-1.0.md`](./docs/migrating-to-1.0.md).
 
@@ -205,21 +220,21 @@ The 13 key-system commands from 0.5.x (`init-operator`, `operator-registry`, `ro
 | `memory-audit` | Schema + integrity check. Pass `--strict` in CI. Honors `.memforge/audit-waivers.yaml` (v0.7.0): an explicit, reported allowlist for immutable migration-era commit-log findings (fail-closed when absent). |
 | `memory-validate` | Syntax-aware write-boundary gate (v0.7.0). Fast single-file subset of audit: HARD-fails a frontmatter block that does not parse as a YAML mapping (the unquoted-colon break, invariant 27); SOFT-flags caps / required fields / enums. Read-only. Wire it as a git pre-commit hook (any IDE) or a Claude Code PreToolUse shim. |
 | `memory-audit-deep` | Recursive audit: UID uniqueness, taxonomy membership, supersedes resolution, link integrity. |
-| `memory-index-gen` | Build `MEMORY.md` from frontmatter as a CI artifact. RBAC-aware filtering for shared folders. `--with-recall-index` also emits the recall inverted index. |
+| `memory-index-gen` | Build `MEMORY.md` from frontmatter as a CI artifact. RBAC-aware filtering for shared folders. The `_memforge.yaml` preamble is copied as literal text in a code block. `--with-recall-index` also emits the recall inverted index (a local cache, never committed). |
 | `memory-cluster-suggest` | Suggest rollup subfolders when a topic accumulates five or more memories. |
 | `memory-dlp-scan` | Pre-commit scanner for secrets, credentials, and PII in memory bodies. |
 | `memory-link-rewriter` | UID-based cross-folder link integrity (`check`, `rename`, `rename-batch`, `upgrade`). `rename`/`rename-batch` also rewrite `[[wikilinks]]` (including `[[token\|display]]`) so a rename does not orphan inbound wikilinks. |
-| `memory-audit-log` | Append-only tamper-evident hash chain. JSONL on disk, exports CEF for SIEM. |
+| `memory-audit-log` | Append-only hash chain. `verify` detects accidental corruption and an edit that does not recompute the chain. It does not detect a rewrite or truncation by someone who can write the file; keep the log in the signed store or ship it off the machine for that. JSONL on disk, exports CEF for SIEM. |
 | `memory-dedup` | LLM-backed near-duplicate detection. Local-only by default; reports candidates, never writes. |
 | `memory-rollup` | Bulk-move primitive: create / undo / list. Maintains an undo ledger. |
 | `memory-query` | Filter memories by topic, type, tag, status, owner, date range, or text. |
-| `memory-recall` | Query-triggered recall (v0.6.0): inject the descriptions of memories whose triggers match a query. Reads a precompiled index; fail-open-empty. |
+| `memory-recall` | Query-triggered recall (v0.6.0): inject the descriptions of memories whose triggers match a query. Reads the recall index, a local cache it rebuilds when the memory files changed; fail-open-empty. |
 | `memory-lint` | Recall-readiness + token-cost quality analysis (v0.6.1). Collision-based recall scoring, always-set / description-length / body-length findings. Read-only; local-only by default, optional model-assisted suggestions behind explicit opt-in. |
 | `memory-watch` | Filesystem watcher (Linux + macOS via watchdog). |
 | `memory-promote` | Move a memory between folders with index fixup. |
 | `memory-frontmatter-backfill` | Populate v0.3.0 frontmatter on existing memory files (migration helper). |
-| `memory-preamble-extract` | Extract the `MEMORY.md` preamble into `_memforge.yaml` (Phase 1 migration helper). |
-| `agents-md-gen` | Generate an `AGENTS.md` surface from memory frontmatter, filtered by a sensitivity ceiling + byte budget. |
+| `memory-preamble-extract` | Extract the `MEMORY.md` preamble into `_memforge.yaml` (Phase 1 migration helper). Reads back a preamble that `memory-index-gen` wrote inside a code block and unwraps it. |
+| `agents-md-gen` | Generate an `AGENTS.md` surface from memory frontmatter and the repo's own `CLAUDE.md`, filtered by a sensitivity ceiling + byte budget. Nothing else is read: no file in the home folder, such as `~/.claude/CLAUDE.md`, is opened. Reads every store folder, in order, that `memforge paths` prints when run in the repo named by `--cwd`; a `MEMFORGE_MEMORY_PATH` folder with no memories is named on stderr. Inlines the body of a memory marked `pinned: true` (public ones only, unless `--inline-above-public`) as literal text in a code block, so nothing in it (a heading, a fence, HTML) changes the generated file around it; every other memory is a description-only entry on one line. A memory with a non-text `sensitivity`, or a name, description or topic it cannot place on one line, is left out and named on stderr. Writes nothing and exits 2 if the rendered file holds a BLOCKER or MAJOR secret finding. |
 
 ### Competing-claim consolidation (standalone console scripts)
 
@@ -227,8 +242,8 @@ These ship as standalone console scripts today, not as `memforge` dispatcher sub
 
 | Tool | What it does |
 | --- | --- |
-| `memforge-resolve <topic>` | Resolve a competing-claim group on a `decision_topic`: pick a winner, apply the superseded / superseded_by / ever_multi_member invariants, and emit a scope-locked `memforge: resolve <topic>` commit. |
-| `memforge-migrate-claim-block` | Rewrite legacy `status:` to the canonical `state:` key inside the competing-claim fenced block of `MEMORY.md`. |
+| `memforge-resolve <topic> [--memory-root <store>]` | Resolve a competing-claim group on a `decision_topic`: pick a winner, apply the superseded / superseded_by / ever_multi_member invariants, and emit a scope-locked `memforge: resolve <topic>` commit. Without `--memory-root` it searches the folders `memforge paths` prints, not the current folder. |
+| `memforge-migrate-claim-block [--memory-root <store>]` | Rewrite legacy `status:` to the canonical `state:` key inside the competing-claim fenced block of `MEMORY.md`. Without `--memory-root` it searches the folders `memforge paths` prints, not the current folder. |
 
 `memforge <subcommand> --help` (dispatcher subcommands), `<tool> --help` (standalone console scripts), and `tools/README.md` have the long-form references.
 
@@ -252,7 +267,7 @@ Format invariants are in [`spec/SPEC.md`](./spec/SPEC.md). Topic taxonomy is in 
 | v0.7.0 | 2026-06-15 | `memory-lint` quality CLI (recall-readiness + token-cost scoring; local-only-by-default cloud safety with sensitivity/access filtering) + `memory-audit` recall-field / always-set budget WARNs (spec/VERSION 0.6.0 -> 0.6.1; new §"Recall-readiness lint"). Broad security + correctness hardening: path-traversal containment (resolve/rollup/index-gen), recall/lint/dedup RBAC fail-closed, cryptographic-attribution trust root + RSA-4096 subkey verify + superseded-key refusal, revocation-snapshot floor disabled, broadened DLP coverage. Portability: IDE/OS-neutral default paths. Signed release tags + CycloneDX SBOM + a `pip-audit` supply-chain gate. Additive and backward-compatible. |
 | v0.8.0 | 2026-06-27 | `memory-link-rewriter rename`/`rename-batch` now rewrite `[[wikilinks]]` (`[[token]]` and `[[token\|display]]`) so a rename no longer orphans inbound wikilinks: an alias-set guard (stem/name/uid) prevents false rewrites of prose or code tokens, cross-root ambiguity is skipped and listed, every rewrite is logged, and the pass is idempotent. `memory-audit` now warns on non-spec `tier` values (`index`/`detail` only; such files were previously dropped from the index with no diagnostic). Pointer-line and MEMORY.md caps raised 150 -> 180 so descriptive filename slugs leave room for the hook text (spec/VERSION 0.6.1 -> 0.6.2). Additive and backward-compatible; upgrade with `pip install --upgrade ildan-memforge`, no data migration required. |
 | v0.8.1 | 2026-06-28 | `memory-index-gen` now keeps every generated `MEMORY.md` pointer line within the 180-byte cap by truncating the hook on a UTF-8 boundary (`...`); the full `description` stays in frontmatter + the recall index, so truncation is lossless for recall. Reconciles the generator with the existing 180-byte audit check (spec/VERSION 0.6.2 -> 0.6.3). Backward-compatible; regenerate indexes with `memory-index-gen --write`. |
-| v0.9.0 | 2026-06-28 | Write-boundary hardening. New `memory-validate` operation: the agent-neutral pre-write gate that HARD-rejects a frontmatter block which does not parse as a YAML mapping (the recurring unquoted-colon break, new integrity invariant 27) at the write boundary instead of at the next audit, plus SOFT caps / required-field / enum checks. New `memory-audit` waiver mechanism (`.memforge/audit-waivers.yaml`): an explicit, reported, fail-closed allowlist that drives a clean corpus's commit-log floor to zero. `memory-detect` hygiene orchestrator + audit convention-drift health check. `MEMORY.md` caps single-sourced (audit + validate + index-gen can no longer drift). Adapter guide documents the write-boundary gate per IDE (git pre-commit = universal; Claude Code PreToolUse shim = pre-write). spec/VERSION 0.6.3 -> 0.7.0; additive and backward-compatible. |
+| v0.9.0 | 2026-06-28 | Write-boundary hardening. New `memory-validate` operation: the agent-neutral pre-write gate that HARD-rejects a frontmatter block which does not parse as a YAML mapping (the recurring unquoted-colon break, new integrity invariant 27) at the write boundary instead of at the next audit, plus SOFT caps / required-field / enum checks. New `memory-audit` waiver mechanism (`.memforge/audit-waivers.yaml`): an explicit, reported, fail-closed allowlist that drives a clean corpus's commit-log floor to zero. `memforge-detect` hygiene orchestrator + audit convention-drift health check. `MEMORY.md` caps single-sourced (audit + validate + index-gen can no longer drift). Adapter guide documents the write-boundary gate per IDE (git pre-commit = universal; Claude Code PreToolUse shim = pre-write). spec/VERSION 0.6.3 -> 0.7.0; additive and backward-compatible. |
 | v0.9.1 | 2026-07-29 | Closes a class of SILENT memory loss. `memory-audit` now FAILS a rollup subfolder that has files but no `README.md` parent: such files contribute nothing to the pointer comparison, so every memory in them was unreachable from `MEMORY.md` while the audit reported clean. Also stops the audit fabricating an accounted-for status it had not verified. spec/VERSION unchanged at 0.7.0. Breaking for `--strict` on a store that already has a parentless rollup subfolder, deliberately: the condition it now fails on was previously passing while memories were lost. |
 | v0.9.2 | 2026-07-30 | Closes the SECOND class of the same loss. `memory-audit` now detects an INCOMPLETE rollup `README.md`, not just a missing one: a README that EXISTS but omits a sibling leaves that memory exactly as unreachable, and 0.9.1's check could not see it. Reports both gap directions (unreachable siblings, dangling pointers) plus a fail-closed violation when a README cannot be read at all. Set-based comparison, never count-based, because a duplicate pointer alongside an omission yields equal counts while a memory is still lost. New integrity invariant 28; the pointer set is CLOSED to wikilink + markdown-inline-link and read from prose only (fenced blocks, code spans, HTML comments excluded) so the check is deterministic across adapters. spec/VERSION 0.7.0 -> 0.8.0. Breaking for `--strict` on a store whose rollup README omits a sibling. |
 | v0.10.0 | 2026-08-02 | Ships the pre-write half of the 0.9.0 write-boundary gate, which had been described but never written. New `validate_required_fields` primitive: required-field conformance, kept SEPARATE from `validate_frontmatter` because that one's contract is parse-only and adapters depend on it. A block can be perfectly valid YAML and still be missing a field no tool can derive, so a parse gate cannot see it and no backfill can repair it. Ships the Claude Code `PreToolUse` shim that calls both checks, validating the reconstructed file on an `Edit` so a removal is caught, and failing open on every error path. `memory-frontmatter-backfill` now hoists an existing nested `metadata.type` to the required top-level `type` (lossless; still refuses to invent one). spec/VERSION unchanged at 0.8.0; additive and backward-compatible. |

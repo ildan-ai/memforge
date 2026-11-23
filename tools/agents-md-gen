@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Thin shim — invokes memforge.cli.agents_md_gen.main()."""
+"""Thin shim: invokes memforge.cli.agents_md_gen.main()."""
 import sys
 from memforge.cli.agents_md_gen import main
 

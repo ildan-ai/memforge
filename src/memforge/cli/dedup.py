@@ -1,4 +1,4 @@
-"""memory-dedup — flag near-duplicate entries in a memory folder via LLM.
+"""memory-dedup: flag near-duplicate entries in a memory folder via LLM.
 
 Reports candidate pairs/groups for the user to review; never modifies files.
 
@@ -25,12 +25,14 @@ import argparse
 import json
 import os
 import re
-import shutil
 import subprocess
 import sys
 from pathlib import Path
 from typing import Optional
 
+from memforge._terminal import terminal_safe, visible
+from memforge._programs import ProgramInFolder, find_program_outside  # noqa: E402
+from memforge.discovery import access_error, read_text_no_follow  # noqa: E402
 from memforge.frontmatter import parse  # noqa: E402
 
 
@@ -87,19 +89,16 @@ def cloud_egress_eligible(fm: dict) -> Optional[str]:
     return None
 
 
-def _which(name: str) -> Optional[str]:
-    """Return the absolute path to `name` on $PATH, or None."""
-    return shutil.which(name)
-
-
-def default_dispatcher() -> str:
-    """Pick a dispatcher by probing $PATH for known local-model CLIs."""
+def default_dispatcher(folder: Path) -> str:
+    """Pick a dispatcher by probing the absolute $PATH entries for known
+    local-model CLIs. Raises ProgramInFolder for one inside `folder`, the
+    memory folder being scanned."""
     for cli, args in (
         ("ollama", "run gemma2:2b"),
         ("llama.cpp", ""),
         ("lms", "chat"),
     ):
-        path = _which(cli)
+        path = find_program_outside(cli, folder)
         if path:
             return f"{path} {args}".strip()
     # No local dispatcher on PATH. Return a placeholder that fails the
@@ -142,7 +141,7 @@ def collect_catalog(
         if f.name == "MEMORY.md":
             continue
         try:
-            text = f.read_text(encoding="utf-8")
+            text = read_text_no_follow(f, root=folder)
         except (OSError, UnicodeDecodeError):
             continue
         fm, _ = parse(text)
@@ -167,20 +166,20 @@ def collect_catalog(
                 f"cloud-egress ceiling"
             )
         elif redact_descriptions:
-            desc_to_ship = "[redacted — pass --no-redact-descriptions to include]"
+            desc_to_ship = "[redacted: pass --no-redact-descriptions to include]"
         else:
             desc_to_ship = desc
 
         idx += 1
         files.append(f)
-        lines.append(f"{idx} | {f.name} | [{type_}] {name} — {desc_to_ship}")
+        lines.append(f"{idx} | {f.name} | [{type_}] {name}: {desc_to_ship}")
 
     return files, lines, warnings
 
 
 PROMPT_TEMPLATE = """You are auditing a personal knowledge base for near-duplicate entries.
 
-Each entry has: id | filename | [type] name — description
+Each entry has: id | filename | [type] name: description
 
 CATALOG ({n} entries):
 {catalog}
@@ -198,6 +197,7 @@ Example output:
 """
 
 
+@terminal_safe
 def main() -> int:
     parser = argparse.ArgumentParser(
         prog="memory-dedup",
@@ -241,11 +241,20 @@ content. See SPEC.md §sensitivity-and-redaction.
     args = parser.parse_args()
 
     target: Path = args.path.expanduser().resolve()
-    if not target.is_dir():
+    err = access_error(target)
+    if err is not None:
+        sys.stderr.write(f"error: cannot read {target}: {err}\n")
+        return 2
+    if not os.path.isdir(target):
         sys.stderr.write(f"error: path not a directory: {target}\n")
         return 2
 
-    dispatcher = args.dispatcher or os.environ.get("MEMORY_DEDUP_DISPATCHER") or default_dispatcher()
+    try:
+        dispatcher = (args.dispatcher or os.environ.get("MEMORY_DEDUP_DISPATCHER")
+                      or default_dispatcher(target))
+    except ProgramInFolder as exc:
+        sys.stderr.write(f"error: {exc}; refusing to run it\n")
+        return 2
 
     if not args.allow_cloud_dispatcher and not is_local_dispatcher(dispatcher):
         sys.stderr.write(
@@ -355,8 +364,8 @@ content. See SPEC.md §sensitivity-and-redaction.
         if not names:
             continue
         print(f"- {', '.join(str(i) for i in ids)}")
-        print(f"    files: {', '.join(names)}")
-        print(f"    reason: {reason}")
+        print(f"    files: {', '.join(visible(n) for n in names)}")
+        print(f"    reason: {visible(reason)}")
         print()
 
     print("Review each group and decide: merge, keep both, or drop one.")

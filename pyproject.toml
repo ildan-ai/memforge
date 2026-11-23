@@ -72,4 +72,6 @@ memforge-detect = "memforge.cli.detect:main"
 where = ["src"]
 
 [tool.setuptools.package-data]
-memforge = ["py.typed"]
+# The tag taxonomy `memory-audit-deep` checks against. A copy of
+# spec/taxonomy.yaml; a test keeps the two identical.
+memforge = ["spec/taxonomy.yaml"]

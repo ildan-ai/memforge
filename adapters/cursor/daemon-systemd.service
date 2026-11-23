@@ -1,9 +1,13 @@
 # Linux systemd user-service for memforge memory-watch.
 #
 # Setup:
-#   1. Edit ExecStart to point at your memory-watch script.
-#   2. Copy to ~/.config/systemd/user/memforge-watch.service.
-#   3. Enable + start:
+#   1. Install the package (`pip install ildan-memforge`). It installs the
+#      `memory-watch` command, `watchdog` included. Find its absolute path
+#      with `command -v memory-watch` in the environment you installed into.
+#   2. Edit ExecStart: put that path first, and name your memory folder after
+#      --path. systemd needs absolute paths and does not expand `~`.
+#   3. Copy to ~/.config/systemd/user/memforge-watch.service.
+#   4. Enable + start:
 #        systemctl --user daemon-reload
 #        systemctl --user enable --now memforge-watch.service
 #      Status:
@@ -11,8 +15,8 @@
 #      Stop:
 #        systemctl --user stop memforge-watch.service
 #
-# inotify-tools must be installed (apt install inotify-tools or distro
-# equivalent).
+# inotify-tools is not needed: memory-watch uses the watchdog library, which
+# comes with the package.
 
 [Unit]
 Description=MemForge memory-folder filesystem watcher (auto-commit on write)
@@ -20,7 +24,7 @@ After=default.target
 
 [Service]
 Type=simple
-ExecStart=%h/claude-projects/memforge/tools/memory-watch --quiet
+ExecStart=<absolute path to memory-watch> --path <absolute path to your memory folder> --quiet
 Restart=on-failure
 RestartSec=5
 

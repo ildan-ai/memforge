@@ -1,0 +1,62 @@
+@startuml sequence-auto-commit
+!include _style.iuml
+title MemForge automatic commits: memory-auto-commit.sh and memory-watch
+
+actor "Agent" as Agent
+participant "Claude Code" as CC
+participant "**memory-auto-commit.sh**\nPostToolUse Write|Edit" as Hook
+participant "memory-frontmatter-backfill\nmemory-recall ~--rebuild\n(when found)" as Helpers
+participant "**memory-watch**\nCommitDebouncer" as Watch
+database "Memory folder repository" as Repo
+
+== Claude Code hook ==
+Agent -> CC : Write or Edit file_path
+CC -> Hook : payload on stdin
+Hook -> Hook : keep absolute PATH entries only; find readlink\n(a regular file, not a link), cat, jq, git, tr outside\n$HOME/.claude/projects and $HOME/.claude/global-memory (SC-06)
+alt one is missing or inside a store, or no readlink qualifies
+  Hook --> CC : exit 0, nothing done
+end
+Hook -> Hook : read tool_name, tool_input.file_path with jq
+alt path has a "." or ".." segment
+  Hook --> CC : exit 0, nothing done (SC-13)
+else not under $HOME/.claude/projects/<project>/memory/\nor $HOME/.claude/global-memory/
+  Hook --> CC : exit 0
+else empty <project> name
+  Hook --> CC : exit 0 (SC-13)
+else folder has no .git
+  Hook --> CC : exit 0
+end
+Hook -> Hook : cd to the store; unset GIT_DIR, GIT_WORK_TREE,\nGIT_INDEX_FILE and the other repository-local\ngit variables (SC-05)
+Hook -> Helpers : backfill ~--apply, recall ~--rebuild
+Helpers -> Repo : frontmatter fixes; the recall index is rewritten\nlocally as a cache and never staged (SC-41)
+Hook -> Repo : git add -A ~-- :(literal)<file> ':(exclude,icase).memforge'\ngit add -A ~-- '*.md' ':(exclude,icase).memforge'
+Hook -> Repo : git diff ~--cached ~--name-only -z (same pathspecs)
+Hook -> Hook : message "memory: <tool> <path>",\ncontrol characters -> ? (SC-12)
+Hook -> Repo : git commit -q -m <msg>\n~-- :(literal)<listed names>\nGIT_LITERAL_PATHSPECS unset (SC-10, SC-40)
+Hook --> CC : exit 0 (failures swallowed, never pushes)
+
+== memory-watch ==
+Repo -> Watch : watchdog event (not under .git/)
+Watch -> Watch : debounce (~--debounce-ms); git runs without\nthe repository-local git variables (SC-05)
+Watch -> Repo : git -C <repo> ls-files -z ~--modified ~--deleted ~--others\n~--exclude-standard ~-- '*.md'
+Watch -> Watch : keep *.md not under .memforge/ (casefold) (SC-11)
+Watch -> Repo : git -C <repo> add -A ~-- :(literal)<names> (SC-40)
+Watch -> Repo : git -C <repo> commit -q\n-m "memory: filesystem write (<UTC time>)" ~-- :(literal)<names>
+
+ref over Hook, Repo
+**Never committed by either:**
+.memforge/recall-index.json (a local cache),
+.memforge/allowed_signers, allowed_gpg_fingerprints,
+allowed_identities, config.yaml, audit-waivers.yaml,
+snoozes/, recall-synonyms.yaml. A file staged by hand
+outside the scope stays staged. Commits are signed only
+if the user's git config signs them.
+end ref
+
+note right of Repo
+**RISK**
+* commits carry the user's signature
+* no DLP scan before the commit
+* a hand-run git add -A still takes .memforge/
+end note
+@enduml

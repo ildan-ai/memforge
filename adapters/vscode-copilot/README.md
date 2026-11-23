@@ -8,7 +8,7 @@ This adapter is for **GitHub Copilot Chat in VS Code** specifically. Other VS Co
 
 1. Pick a memory folder. `git init` if not already.
 2. Seed `MEMORY.md` (or copy from an existing memory folder).
-3. **Load on session start** — choose one of:
+3. **Load on session start**: choose one of:
 
    **Option A: per-repo `.github/copilot-instructions.md` (recommended).** Copy `copilot-instructions.md.template` into `<repo>/.github/copilot-instructions.md`, edit the memory-folder paths. Copilot Chat reads this file automatically when enabled.
 
@@ -23,15 +23,15 @@ This adapter is for **GitHub Copilot Chat in VS Code** specifically. Other VS Co
    ```
    The `file` reference inlines the file content into every Copilot Chat request.
 
-4. **Auto-commit on writes** — install and run the cross-platform watcher:
+4. **Auto-commit on writes**: install and run the cross-platform watcher:
    ```bash
-   python3 -m pip install watchdog        # one-time, all platforms
-   ~/claude-projects/memforge/tools/memory-watch
+   memory-watch --path <memory folder>
    ```
+   `memory-watch` is installed with `ildan-memforge`, `watchdog` included.
    For daemon-style operation pick the template from `../cursor/`:
-   - **macOS** — `daemon-launchd.plist`
-   - **Linux** — `daemon-systemd.service`
-   - **Windows** — `daemon-windows-task.ps1`
+   - **macOS**: `daemon-launchd.plist`
+   - **Linux**: `daemon-systemd.service`
+   - **Windows**: `daemon-windows-task.ps1`
 5. Restart VS Code (or reload the Copilot Chat session).
 
 ## What works
@@ -54,8 +54,8 @@ Copilot Chat exposes no pre-write hook, so the gate is the **git pre-commit hook
 
 ## Files in this adapter
 
-- `copilot-instructions.md.template` — drop-in template for `.github/copilot-instructions.md`. Edit the memory-folder paths.
-- `vscode-settings.snippet.json` — copy/paste-ready snippet for VS Code user or workspace `settings.json` to wire the user-level memory load.
+- `copilot-instructions.md.template`: drop-in template for `.github/copilot-instructions.md`. Edit the memory-folder paths.
+- `vscode-settings.snippet.json`: copy/paste-ready snippet for VS Code user or workspace `settings.json` to wire the user-level memory load.
 
 ## Operator-side prompts variants
 

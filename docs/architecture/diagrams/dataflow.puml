@@ -1,0 +1,61 @@
+@startuml dataflow
+!include _style.iuml
+title MemForge data flow
+
+actor "Person" as Person
+actor "Agent" as Agent
+rectangle "**Claude Code hooks**\nmemory-auto-commit.sh\ngate-memory-frontmatter.py\nmemory_recall_hook.py" as Hooks
+rectangle "**memory-watch**" as Watch
+rectangle "**memory-index-gen**\n**memory-recall**" as IndexGen
+rectangle "**agents-md-gen**" as AgentsGen
+rectangle "**memory-dlp-scan**" as Dlp
+rectangle "**memory-audit**" as Audit
+rectangle "**memforge sync**" as Sync
+rectangle "**memory-dedup**\n**memory-lint**" as Llm
+database "**Memory folder**\nmemory files, MEMORY.md,\n.memforge/" as Folder
+database "**Store repository**\n.git history,\nverifiedHead" as Repo
+database "**Project repository**\n<cwd>/CLAUDE.md,\n<cwd>/AGENTS.md" as AgentsMd
+cloud "**Git remote**\nhost and teammates" as Remote
+cloud "**LLM dispatcher**\noperator-supplied" as Model
+
+Person --> Folder : "memory files (edit)"
+Agent --> Folder : "memory files (Write, Edit)"
+Hooks -[dashed,#B91C1C]-> Agent : "**deny**: unparseable frontmatter,\nmissing name, description, type"
+Folder --> IndexGen : "frontmatter"
+IndexGen --> Folder : "MEMORY.md,\n.memforge/recall-index.json\n(local cache, rebuilt on\nfingerprint mismatch, SC-41)"
+Hooks --> IndexGen : "prompt text"
+IndexGen --> Agent : "descriptions only,\nuntrusted preamble"
+Folder --> Agent : "MEMORY.md at session start"
+Folder --> AgentsGen : "memories <= ~--max-sensitivity"
+AgentsGen --> Dlp : "rendered AGENTS.md"
+AgentsGen --> AgentsMd : "AGENTS.md (DLP clean)"
+AgentsMd --> AgentsGen : "CLAUDE.md, no link;\nnothing from the home folder"
+Folder --> Dlp : "staged content, files, folders"
+Folder --> Audit : "frontmatter, MEMORY.md"
+Repo --> Audit : "30 days of commits,\nwaivers at HEAD"
+Hooks --> Repo : "**git commit**\nwritten file, *.md outside\n.memforge/"
+Watch --> Repo : "**git commit**\n*.md outside .memforge/"
+Person --> Repo : "git commit (signed)"
+Repo --> Remote : "**git push** (user)"
+Remote --> Sync : "**git fetch**\nupstream branch"
+Sync --> Repo : "fast-forward after\nevery commit passes"
+Folder --> Llm : "metadata"
+Llm --> Model : "local runner by default;\ncloud only with opt-in"
+
+Hooks -[dashed,#B91C1C]-> Repo : "**never committed by hooks**\nrecall-index.json, signer lists,\nconfig.yaml, snoozes, waivers"
+Llm -[dashed,#B91C1C]-> Model : "**withheld from cloud**\nrestricted, privileged,\naccess-restricted"
+Remote -[dashed,#B91C1C]-> Folder : "**git pull bypasses sync**\nunverified content"
+
+Audit .[#854D0E].> Folder : "**findings** (stdout)"
+Dlp .[#854D0E].> Folder : "**findings** (stdout)"
+
+rectangle "**Never leaves the machine on its own:**\n.last_used.json, .memforge-rollup-history/,\nrecall-index.json, memforge-hygiene-queue.json, the throwaway\nverifier directory, private keys.\nNo telemetry." as Stay #FFFFFF
+Folder -[hidden]- Stay
+
+note right of Remote
+**RISK**
+* every committed file is visible to the host
+* deleted content stays in history
+* a refused commit blocks every receiver
+end note
+@enduml

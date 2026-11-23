@@ -124,7 +124,7 @@ def test_cross_check_no_findings_returns_none():
 
 
 def test_cross_check_non_memforge_file_returns_none():
-    # Plain markdown, no frontmatter — should not emit mismatch even with findings
+    # Plain markdown, no frontmatter: should not emit mismatch even with findings
     text = "Just markdown with arn:aws:iam::1:role/x"
     assert check_sensitivity_mismatch(text, Path("x"), [_finding("aws_arn")]) is None
 
