@@ -2,7 +2,7 @@
 
 This file tracks MemForge's defensive-publication artifacts: the citable archival deposits + timestamped operator-brand disclosures + GitHub release tags that together establish the prior-art record for the format and tooling. The cadence: every minor spec bump (v0.3 → v0.4 → v0.5 → ...) gets a new Zenodo deposit version; major architectural pivots trigger a fresh deposit bundle.
 
-## Channel 1 — Zenodo + Software Heritage (citable archival deposits)
+## Channel 1: Zenodo + Software Heritage (citable archival deposits)
 
 ### v0.5.0
 
@@ -23,18 +23,18 @@ This file tracks MemForge's defensive-publication artifacts: the citable archiva
 - **Bundle SHA-256:** `c5b9775838f6130ba9c144c2ea31f763a1c60cce86df8423e77ad3b1df104023`
 - **Maintainer note:** v0.5.1 and v0.5.2 were skipped for Zenodo by maintainer decision; v0.5.3 is the first end-to-end-baked release in the v0.5.x line. Patch-release-no-Zenodo cadence rule below is suspended for the v0.5.x line; resumes from v0.6 minor bump.
 - **Software Heritage SWHIDs:** minted 2026-05-11 via save-code-now (request 2327338; ingestion completed 9 seconds after submission, visit_status=full).
-  - Release-level (the v0.5.3 tag): `swh:1:rel:bdd321df0d1a57b7bb1e5bae4c68bd7c237beea1` — canonical prior-art anchor for "what we tagged as v0.5.3".
-  - Commit-level (the v0.5.3 tagged commit): `swh:1:rev:2c9a6f41e0112bdf7fefcdd40c0e877e87d0474a` — anchor for the underlying source-tree state.
-  - Snapshot-level (whole repo at ingestion): `swh:1:snp:834e3bf3b276f5fa5017cb725308aabdb5719215` — anchor for "the whole memforge repo as it existed when the v0.5.3 ingestion ran".
+  - Release-level (the v0.5.3 tag): `swh:1:rel:bdd321df0d1a57b7bb1e5bae4c68bd7c237beea1`: canonical prior-art anchor for "what we tagged as v0.5.3".
+  - Commit-level (the v0.5.3 tagged commit): `swh:1:rev:2c9a6f41e0112bdf7fefcdd40c0e877e87d0474a`: anchor for the underlying source-tree state.
+  - Snapshot-level (whole repo at ingestion): `swh:1:snp:834e3bf3b276f5fa5017cb725308aabdb5719215`: anchor for "the whole memforge repo as it existed when the v0.5.3 ingestion ran".
 
 ### v0.5.4
 
-- **Zenodo DOI:** *(none; patch-release-no-Zenodo cadence rule from §"Re-publication cadence" applies — v0.5.4 is a reference-CLI bug fix with no spec change, so it flows through Channel 3 GitHub release tag + Channel 1 Software Heritage only)*
+- **Zenodo DOI:** *(none; patch-release-no-Zenodo cadence rule from §"Re-publication cadence" applies; v0.5.4 is a reference-CLI bug fix with no spec change, so it flows through Channel 3 GitHub release tag + Channel 1 Software Heritage only)*
 - **Tag pushed:** 2026-05-11
 - **PyPI published:** 2026-05-11 (verified via https://pypi.org/pypi/ildan-memforge/json)
 - **Software Heritage SWHIDs:** minted 2026-05-11 via save-code-now (request 2327403; ingestion succeeded on first poll, visit_status=full).
-  - Release-level (the v0.5.4 tag): `swh:1:rel:d25a13163db64530921a3bf96e7903f00ce4d272` — canonical prior-art anchor for "what we tagged as v0.5.4".
-  - Commit-level (the v0.5.4 tagged commit): `swh:1:rev:1943ee451d1ea8ad876f885c78008a73577403fd` — anchor for the underlying source-tree state.
+  - Release-level (the v0.5.4 tag): `swh:1:rel:d25a13163db64530921a3bf96e7903f00ce4d272`: canonical prior-art anchor for "what we tagged as v0.5.4".
+  - Commit-level (the v0.5.4 tagged commit): `swh:1:rev:1943ee451d1ea8ad876f885c78008a73577403fd`: anchor for the underlying source-tree state.
   - Snapshot-level: `swh:1:snp:7508cf252667e1a640aaad3bc58da65de1546113`.
 
 ### v0.5.6
@@ -197,18 +197,18 @@ This file tracks MemForge's defensive-publication artifacts: the citable archiva
   - Commit-level (the v0.9.1 tagged commit): `swh:1:rev:700f6c22c18e01e9092fceb19942aff715588794`.
   - Snapshot-level: `swh:1:snp:8a8bf2642cc2c2181606fb05f3c1514ba0406833`.
 
-## Channel 2 — Operator-brand timestamped disclosure
+## Channel 2: Operator-brand timestamped disclosure
 
 ### v0.4.0
 
 - **LinkedIn launch post:** 2026-05-07
-- **ildan.ai blog post:** 2026-05-08 — https://ildan.ai/blog/memforge-typed-memory/
+- **ildan.ai blog post:** 2026-05-08, https://ildan.ai/blog/memforge-typed-memory/
 
 ### v0.5.0
 
 - *(planned; coordinated with the v0.5.0 ship narrative)*
 
-## Channel 3 — GitHub releases as continuous prior art
+## Channel 3: GitHub releases as continuous prior art
 
 | Version | Tag    | Date                | Release notes |
 | ------- | ------ | ------------------- | ------------- |
@@ -252,9 +252,9 @@ The continuous-prior-art commitment: every spec-bumping commit is tagged with se
 
 The current minimal v0.5.0 bundle is sufficient to anchor a Zenodo DOI for prior-art purposes. Future deposits SHOULD enrich the bundle per the governance contract:
 
-- Sanitized ADR-0001 (memory cluster discipline) — substantive content scrub for counsel/legal/patent topic references; folded into a future deposit.
-- Generator + Audit Specification technical report — extracted from SPEC.md substance.
-- Claim skeleton — explicit enumeration of patterns + prior-art citations (Dendron, Obsidian, adr-tools, MADR, Sphinx, Hugo, Jekyll, Eleventy, Foam, Logseq, Roam, Notion, Confluence, Yjs, Automerge).
+- Sanitized ADR-0001 (memory cluster discipline): substantive content scrub for counsel/legal/patent topic references; folded into a future deposit.
+- Generator + Audit Specification technical report, extracted from SPEC.md substance.
+- Claim skeleton: explicit enumeration of patterns + prior-art citations (Dendron, Obsidian, adr-tools, MADR, Sphinx, Hugo, Jekyll, Eleventy, Foam, Logseq, Roam, Notion, Confluence, Yjs, Automerge).
 - Software Heritage SWHID for the v0.5.0 GitHub repo snapshot.
 
 The minimum-viable bundle anchors the DOI today; the heavier artifacts strengthen the deposit cumulatively in subsequent versions.

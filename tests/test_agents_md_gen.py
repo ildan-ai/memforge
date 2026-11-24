@@ -3,7 +3,7 @@
   - the rendered AGENTS.md is DLP-scanned before write and a BLOCKER finding
     refuses the write (AGENTS.md is committed and shared with five external
     tools);
-  - critical bodies above 'public' sensitivity are NOT inlined into the
+  - pinned bodies above 'public' sensitivity are NOT inlined into the
     committed file unless --inline-above-public is passed (local-only-by-default
     posture).
 """
@@ -33,7 +33,7 @@ def test_scan_rendered_for_secrets_clean_on_benign():
 
 
 def test_main_refuses_write_when_secret_present(tmp_path, monkeypatch):
-    """A critical memory carrying a secret must NOT be written to AGENTS.md;
+    """A pinned memory carrying a secret must NOT be written to AGENTS.md;
     main() returns 2 and does not create the file (agentsmd-01)."""
     home = tmp_path / "home"
     (home / ".claude").mkdir(parents=True)
@@ -42,12 +42,12 @@ def test_main_refuses_write_when_secret_present(tmp_path, monkeypatch):
 
     global_mem = home / ".claude" / "global-memory"
     global_mem.mkdir(parents=True)
-    # A public critical memory whose body inlines a secret -> the rendered output
+    # A public pinned memory whose body inlines a secret -> the rendered output
     # carries the secret -> DLP refuses the write.
     _write_mem(
-        global_mem, "feedback_no_keys_in_files.md",
+        global_mem, "no_keys_in_files.md",
         "name: No keys in files\ndescription: never commit keys\n"
-        "type: feedback\nsensitivity: public",
+        "type: feedback\nsensitivity: public\npinned: true",
         "Example of what NOT to do: AKIAIOSFODNN7EXAMPLE\n",
     )
 
@@ -115,16 +115,16 @@ def test_main_refuses_write_when_scanner_unavailable(tmp_path, monkeypatch):
 
 def test_inline_above_public_default_excludes_above_public(tmp_path):
     """render_critical_rules defaults to PUBLIC-only inline; an internal-labeled
-    critical memory body is not inlined unless inline_above_public=True."""
+    pinned memory body is not inlined unless inline_above_public=True."""
     e_pub = amg.MemoryEntry(
-        path=Path("feedback_no_keys_in_files.md"), name="Pub rule",
+        path=Path("pub_rule.md"), name="Pub rule",
         description="d", type="feedback", sensitivity="public",
-        body="PUBLIC BODY TEXT", mtime=0.0,
+        body="PUBLIC BODY TEXT", mtime=0.0, pinned=True,
     )
     e_int = amg.MemoryEntry(
-        path=Path("assistant_name.md"), name="Internal rule",
+        path=Path("internal_rule.md"), name="Internal rule",
         description="d", type="feedback", sensitivity="internal",
-        body="INTERNAL BODY TEXT", mtime=0.0,
+        body="INTERNAL BODY TEXT", mtime=0.0, pinned=True,
     )
     default_out = amg.render_critical_rules([e_pub, e_int])
     assert "PUBLIC BODY TEXT" in default_out

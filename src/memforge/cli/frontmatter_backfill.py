@@ -1,4 +1,4 @@
-# memory-frontmatter-backfill — populate v0.3.0 frontmatter on existing
+# memory-frontmatter-backfill: populate v0.3.0 frontmatter on existing
 # memory files (Phase 1 migration support).
 #
 # ADR: 0001 §Phase 0 schema migration
@@ -37,6 +37,7 @@
 from __future__ import annotations
 
 import argparse
+import os
 import re
 import sys
 from dataclasses import dataclass, field
@@ -44,6 +45,15 @@ from datetime import date, datetime
 from pathlib import Path
 from typing import Optional
 
+from memforge._terminal import terminal_safe, visible
+from memforge.discovery import (
+    LinkReadRefused,
+    SymlinkWriteRefused,
+    access_error,
+    read_text_no_follow,
+    walk_md_files,
+    write_text_inside,
+)
 from memforge.frontmatter import (  # noqa: E402
     parse as _mf_parse,
     has_frontmatter as _mf_has_fm,
@@ -85,7 +95,7 @@ def _frontmatter_present_but_unparseable(text: str) -> bool:
     but yaml.safe_load returned an empty dict.
 
     Distinguishes broken YAML (unquoted colon-space, duplicate keys, etc.)
-    from genuinely empty frontmatter blocks. Backfill must skip these — the
+    from genuinely empty frontmatter blocks. Backfill must skip these: the
     line-based field-append in apply_change otherwise produced duplicate
     keys (observed 2026-05-08 on a rollup README whose `description` value
     contained `: `, which yaml.safe_load rejects as a nested mapping)."""
@@ -157,7 +167,7 @@ def file_mtime_date(path: Path) -> str:
 
 def plan_change(path: Path, folder_root: Path) -> Optional[PlannedChange]:
     try:
-        text = path.read_text(encoding="utf-8")
+        text = read_text_no_follow(path, root=folder_root)
     except (OSError, UnicodeDecodeError):
         return None
     if _frontmatter_present_but_unparseable(text):
@@ -275,7 +285,7 @@ def plan_change(path: Path, folder_root: Path) -> Optional[PlannedChange]:
 def discover_files(folder: Path) -> list[Path]:
     out: list[Path] = []
     skip = {"archive", ".git", "__pycache__"}
-    for p in sorted(folder.rglob("*.md")):
+    for p in sorted(walk_md_files(folder)):
         parts = p.relative_to(folder).parts
         if any(part in skip for part in parts):
             continue
@@ -293,9 +303,11 @@ def render_value(v) -> str:
     return str(v)
 
 
-def apply_change(path: Path, additions: dict) -> None:
+def apply_change(path: Path, additions: dict, root: Optional[Path] = None) -> bool:
     """Merge `additions` into the file's existing frontmatter and re-render
-    via memforge.frontmatter.render (PyYAML safe_dump round-trip).
+    via memforge.frontmatter.render (PyYAML safe_dump round-trip). Returns
+    True when the file was written; a symlinked path is refused, never written
+    through.
 
     The previous implementation appended new field lines to the raw
     frontmatter text. That worked when YAML parsed cleanly, but on broken
@@ -303,16 +315,23 @@ def apply_change(path: Path, additions: dict) -> None:
     fields again, producing growing blocks of duplicate keys. Round-trip
     rendering avoids that class entirely: the dict-level merge can't have
     duplicate keys, and PyYAML quotes any value that needs it.
+
+    ``root`` is the memory folder the file was found in; the read and the
+    write are held inside it. It defaults to the file's own folder.
     """
+    folder = path.parent if root is None else root
     try:
-        text = path.read_text(encoding="utf-8")
+        text = read_text_no_follow(path, root=folder)
+    except LinkReadRefused as exc:
+        sys.stderr.write(f"warning: {exc}\n")
+        return False
     except (OSError, UnicodeDecodeError):
-        return
+        return False
     if not _mf_has_fm(text):
-        return
+        return False
     if _frontmatter_present_but_unparseable(text):
         # Defense in depth: should already be filtered in plan_change.
-        return
+        return False
     fm, body = _mf_parse(text)
     field_order = [
         "name", "description", "type", "sensitivity", "uid", "tier", "tags",
@@ -326,18 +345,29 @@ def apply_change(path: Path, additions: dict) -> None:
         if key in additions and key not in merged:
             merged[key] = additions[key]
     new_text = _mf_render(merged, body, original=text)
-    path.write_text(new_text, encoding="utf-8")
+    try:
+        write_text_inside(folder, path, new_text)
+    except SymlinkWriteRefused as exc:
+        sys.stderr.write(f"warning: {exc}\n")
+        return False
+    return True
 
 
 def cmd_run(folders: list[Path], apply: bool, limit: int) -> int:
     total_files = 0
     total_changed = 0
     total_would_change = 0
+    rc = 0
     for folder in folders:
-        if not folder.exists():
+        err = access_error(folder)
+        if err is not None:
+            sys.stderr.write(f"error: cannot read {folder}: {err}\n")
+            rc = 1
+            continue
+        if not os.path.exists(folder):
             sys.stderr.write(f"warning: skipping nonexistent {folder}\n")
             continue
-        print(f"\n====== {folder} ======")
+        print(f"\n====== {visible(folder)} ======")
         files = discover_files(folder)
         total_files += len(files)
         plans: list[PlannedChange] = []
@@ -357,33 +387,34 @@ def cmd_run(folders: list[Path], apply: bool, limit: int) -> int:
         shown = plans if limit <= 0 else plans[:limit]
         for plan in shown:
             keys = ", ".join(f"{k}={render_value(v)}" for k, v in plan.additions.items())
-            print(f"    {plan.rel}")
+            print(f"    {visible(plan.rel)}")
             for k, v in plan.additions.items():
-                print(f"      + {k}: {render_value(v)}")
+                print(f"      + {visible(k)}: {visible(render_value(v))}")
         if limit > 0 and len(plans) > limit:
             print(f"    ... and {len(plans) - limit} more (use --limit 0 to show all)")
 
         if apply:
-            for plan in plans:
-                apply_change(plan.path, plan.additions)
-            print(f"  WROTE additions to {len(plans)} file(s)")
-            total_changed += len(plans)
+            written = sum(apply_change(plan.path, plan.additions, folder) for plan in plans)
+            print(f"  WROTE additions to {written} file(s)")
+            total_changed += written
         else:
             print(f"  (dry-run; pass --apply to write)")
 
     print(f"\nTotal files inspected: {total_files}; "
           f"{'changed' if apply else 'would change'}: "
           f"{total_changed if apply else total_would_change}")
-    return 0
+    return rc
 
 
 def default_paths() -> list[Path]:
     # Centralized in memforge.paths (env override -> grandfathered .claude layout
-    # if present -> ~/.memforge). Preserve the .exists() filter.
+    # if present -> ~/.memforge). Preserve the .exists() filter; one that cannot
+    # be looked at is kept, so it is reported.
     from memforge.paths import default_memory_paths
-    return [p for p in default_memory_paths() if p.exists()]
+    return [p for p in default_memory_paths() if os.path.exists(p) or access_error(p)]
 
 
+@terminal_safe
 def main() -> int:
     p = argparse.ArgumentParser(
         prog="memory-frontmatter-backfill",

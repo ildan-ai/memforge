@@ -22,11 +22,20 @@ get a clean exit while dangling links remain. Run `memory-link-rewriter check`
 from __future__ import annotations
 
 import argparse
+import os
 import re
-import shutil
 import subprocess
 import sys
 from pathlib import Path
+
+from memforge._programs import ProgramInFolder, find_program_outside, git_env
+from memforge._terminal import terminal_safe, visible
+from memforge.discovery import (
+    copy_file_inside,
+    read_text_no_follow,
+    walk_md_files,
+    write_text_inside,
+)
 
 
 # Distinct nonzero exit so automated callers can tell "promote succeeded but
@@ -50,20 +59,24 @@ def _default_target() -> Path:
     return default_memory_paths()[-1]
 
 
-def _scan_inbound_path_links(folder: Path, moved_file: Path) -> list[tuple[Path, str]]:
-    """Return [(linking_file, link_target), ...] for every path-form markdown
-    link in `folder` (excluding MEMORY.md and archive/) that resolves to
-    `moved_file`. Used post-move to detect links left dangling by promote."""
+def _scan_inbound_path_links(folder: Path, moved_file: Path) -> tuple[list[tuple[Path, str]], list[Path]]:
+    """Return ([(linking_file, link_target), ...], unreadable) for every
+    path-form markdown link in `folder` (excluding MEMORY.md and archive/)
+    that resolves to `moved_file`, and every file or folder that could not be
+    read. Run before the move: an unreadable file may hold such a link, so the
+    caller refuses rather than leave it dangling unreported."""
     moved_resolved = moved_file.resolve()
     out: list[tuple[Path, str]] = []
-    for path in sorted(folder.rglob("*.md")):
+    unreadable: list[Path] = []
+    for path in sorted(walk_md_files(folder, skip_dirs=("archive", ".git"))):
         if path.name == "MEMORY.md":
             continue
         if "archive" in path.parts or ".git" in path.parts:
             continue
         try:
-            text = path.read_text(encoding="utf-8")
+            text = read_text_no_follow(path, root=folder)
         except (OSError, UnicodeDecodeError):
+            unreadable.append(path)
             continue
         for m in _LINK_RE.finditer(text):
             target = m.group(2).strip()
@@ -78,7 +91,7 @@ def _scan_inbound_path_links(folder: Path, moved_file: Path) -> list[tuple[Path,
                 continue
             if resolved == moved_resolved:
                 out.append((path, target))
-    return out
+    return out, unreadable
 
 
 def _find_pointer_line(index_text: str, filename: str) -> tuple[int, str, int]:
@@ -105,12 +118,12 @@ def _find_pointer_line(index_text: str, filename: str) -> tuple[int, str, int]:
     return matches[0][0], matches[0][1], len(matches)
 
 
-def _commit_folder(folder: Path, message: str, paths: list[Path]) -> None:
+def _commit_folder(git: str, folder: Path, message: str, paths: list[Path]) -> None:
     """Commit ONLY the specific paths promote modified, mirroring resolve.py's
     scope-locked commit (`git commit -o -m <msg> -- <paths>`) so an unrelated
     pre-staged or untracked file in the memory folder cannot ride along in a
     promote commit (SPEC commit-scope discipline; promote-scope-01)."""
-    if not (folder / ".git").is_dir():
+    if not os.path.isdir(folder / ".git"):
         return
     relpaths: list[str] = []
     for p in paths:
@@ -121,19 +134,29 @@ def _commit_folder(folder: Path, message: str, paths: list[Path]) -> None:
             continue
     if not relpaths:
         return
-    subprocess.run(["git", "-C", str(folder), "add", "--", *relpaths], check=True)
+    # The paths are file names, never patterns: a memory named `*.md` read as
+    # a pathspec would sweep other files into the scope-locked commit.
+    subprocess.run(
+        [git, "--literal-pathspecs", "-C", str(folder), "add", "--", *relpaths],
+        env=git_env(),
+        check=True,
+    )
     # `-o` (== --only) plus the trailing pathspec commits exactly these paths.
     subprocess.run(
-        ["git", "-C", str(folder), "commit", "-q", "-o", "-m", message, "--", *relpaths],
+        [git, "--literal-pathspecs", "-C", str(folder), "commit", "-q", "-o", "-m", message,
+         "--", *relpaths],
+        env=git_env(),
         check=True,
     )
     head = subprocess.check_output(
-        ["git", "-C", str(folder), "log", "--oneline", "-1"],
+        [git, "-C", str(folder), "log", "--oneline", "-1"],
+        env=git_env(),
         text=True,
     ).strip()
-    print(f"  committed in {folder.name}: {head}")
+    print(f"  committed in {visible(folder.name)}: {visible(head)}")
 
 
+@terminal_safe
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(
         prog="memory-promote",
@@ -163,11 +186,11 @@ def main(argv: list[str] | None = None) -> int:
     if source == target:
         print("error: source and target are the same directory", file=sys.stderr)
         return 2
-    if not source.is_dir():
-        print(f"error: source directory missing: {source}", file=sys.stderr)
+    if not os.path.isdir(source):
+        print(f"error: source directory missing: {visible(source)}", file=sys.stderr)
         return 2
-    if not target.is_dir():
-        print(f"error: target directory missing: {target}", file=sys.stderr)
+    if not os.path.isdir(target):
+        print(f"error: target directory missing: {visible(target)}", file=sys.stderr)
         return 2
 
     src_file = source / filename
@@ -175,54 +198,70 @@ def main(argv: list[str] | None = None) -> int:
     src_idx = source / "MEMORY.md"
     tgt_idx = target / "MEMORY.md"
 
-    if not src_file.is_file():
-        print(f"error: source file missing: {src_file}", file=sys.stderr)
+    if not os.path.isfile(src_file):
+        print(f"error: source file missing: {visible(src_file)}", file=sys.stderr)
         return 2
     # Refuse to follow a symlink for either endpoint. A hostile contributor can
     # land a symlink named like a memory file in the (auto-committed)
-    # source folder; shutil.copy2 would follow it and copy out-of-folder content
+    # source folder; a copy would follow it and copy out-of-folder content
     # into the destination MEMORY folder. Mirror index_gen's symlink guards
     # (closes adv-04).
-    if src_file.is_symlink():
-        print(f"error: refusing to promote a symlinked source file: {src_file}", file=sys.stderr)
+    if os.path.islink(src_file):
+        print(f"error: refusing to promote a symlinked source file: {visible(src_file)}", file=sys.stderr)
         return 2
-    if tgt_file.is_symlink():
-        print(f"error: refusing to write through a symlinked target path: {tgt_file}", file=sys.stderr)
+    if os.path.islink(tgt_file):
+        print(f"error: refusing to write through a symlinked target path: {visible(tgt_file)}", file=sys.stderr)
         return 2
-    if tgt_file.exists():
-        print(f"error: target already has a file with this name: {tgt_file}", file=sys.stderr)
+    if os.path.exists(tgt_file):
+        print(f"error: target already has a file with this name: {visible(tgt_file)}", file=sys.stderr)
         return 2
-    if not src_idx.is_file():
-        print(f"error: source MEMORY.md missing: {src_idx}", file=sys.stderr)
+    if not os.path.isfile(src_idx):
+        print(f"error: source MEMORY.md missing: {visible(src_idx)}", file=sys.stderr)
         return 2
 
-    tgt_idx_existed = tgt_idx.is_file()
+    tgt_idx_existed = os.path.isfile(tgt_idx)
 
-    src_idx_text = src_idx.read_text(encoding="utf-8")
+    try:
+        src_idx_text = read_text_no_follow(src_idx, root=source)
+        tgt_text = read_text_no_follow(tgt_idx, root=target) if tgt_idx_existed else ""
+    except (OSError, UnicodeDecodeError) as exc:
+        print(f"error: cannot read a MEMORY.md, nothing promoted: {visible(exc)}", file=sys.stderr)
+        return 2
     pointer_lineno, pointer_text, dupe_count = _find_pointer_line(src_idx_text, filename)
     if pointer_lineno == 0:
         print(
-            f"error: no pointer for {filename} in {src_idx} (nothing to promote)",
+            f"error: no pointer for {visible(filename)} in {visible(src_idx)} (nothing to promote)",
             file=sys.stderr,
         )
         return 2
 
     if dupe_count > 1:
         print(
-            f"warning: {filename} pointer appears {dupe_count} times in "
-            f"{src_idx}; will remove only the first. Re-run memory-audit-deep after.",
+            f"warning: {visible(filename)} pointer appears {dupe_count} times in "
+            f"{visible(src_idx)}; will remove only the first. Re-run memory-audit-deep after.",
             file=sys.stderr,
         )
 
-    src_in_git = (source / ".git").is_dir()
-    tgt_in_git = (target / ".git").is_dir()
+    # Scanned before anything moves (links resolve to the source path, which
+    # exists now): a file that cannot be read may link to the memory, and
+    # the move would leave that link dangling with nothing reported.
+    inbound_links, unreadable = _scan_inbound_path_links(source, src_file)
+    if unreadable:
+        print(f"error: cannot read {len(unreadable)} file(s) or folder(s) in {visible(source)} "
+              f"that could link to {visible(filename)}, nothing promoted:", file=sys.stderr)
+        for path in unreadable:
+            print(f"    {visible(path)}", file=sys.stderr)
+        return 2
+
+    src_in_git = os.path.isdir(source / ".git")
+    tgt_in_git = os.path.isdir(target / ".git")
 
     plan_lines = [
         "Planned promotion:",
-        f"  file:           {filename}",
-        f"  from:           {source}",
-        f"  to:             {target}",
-        f"  pointer:        {pointer_text}",
+        f"  file:           {visible(filename)}",
+        f"  from:           {visible(source)}",
+        f"  to:             {visible(target)}",
+        f"  pointer:        {visible(pointer_text)}",
         f"  src MEMORY.md:  remove line {pointer_lineno}",
         f"  tgt MEMORY.md:  "
         + ("append pointer" if tgt_idx_existed else "create index and add pointer"),
@@ -238,6 +277,20 @@ def main(argv: list[str] | None = None) -> int:
         print("--dry-run: no changes made.")
         return 0
 
+    # Found before anything moves, so a git committed to either folder is
+    # refused while there is still nothing to undo.
+    git: str | None = None
+    if not args.no_commit and (src_in_git or tgt_in_git):
+        try:
+            git = find_program_outside("git", source, target)
+        except ProgramInFolder as exc:
+            print(f"error: {visible(exc)}; refusing to run it, nothing promoted.", file=sys.stderr)
+            return 2
+        if git is None:
+            print("error: git not found on PATH, nothing promoted "
+                  "(--no-commit moves the file without committing).", file=sys.stderr)
+            return 2
+
     if not args.yes:
         try:
             ans = input("Proceed? [y/N] ").strip().lower()
@@ -248,54 +301,62 @@ def main(argv: list[str] | None = None) -> int:
             return 1
 
     # ---- execute ----
-    shutil.copy2(src_file, tgt_file)
-
-    src_lines = src_idx_text.splitlines()
-    del src_lines[pointer_lineno - 1]
-    src_idx.write_text("\n".join(src_lines) + ("\n" if src_idx_text.endswith("\n") else ""),
-                       encoding="utf-8")
-
-    if not tgt_idx_existed:
-        tgt_idx.write_text("# Memory Index\n\n", encoding="utf-8")
-
-    tgt_text = tgt_idx.read_text(encoding="utf-8")
-    if tgt_text and not tgt_text.endswith("\n"):
-        tgt_text += "\n"
-    tgt_text += pointer_text + "\n"
-    tgt_idx.write_text(tgt_text, encoding="utf-8")
-
-    # Scan for inbound path-form links to the moved file BEFORE unlinking it
-    # (links resolve to its source path, which still exists at this point).
-    inbound_links = _scan_inbound_path_links(source, src_file)
+    # Both indexes were read before anything changed, and every write below
+    # refuses a link, so a link swapped in after the checks above stops the
+    # promote at the step that meets it.
+    try:
+        copy_file_inside(source, src_file, target, tgt_file)
+        src_lines = src_idx_text.splitlines()
+        del src_lines[pointer_lineno - 1]
+        write_text_inside(
+            source,
+            src_idx,
+            "\n".join(src_lines) + ("\n" if src_idx_text.endswith("\n") else ""),
+        )
+        if not tgt_idx_existed:
+            tgt_text = "# Memory Index\n\n"
+        if tgt_text and not tgt_text.endswith("\n"):
+            tgt_text += "\n"
+        tgt_text += pointer_text + "\n"
+        write_text_inside(target, tgt_idx, tgt_text)
+    except OSError as exc:
+        print(
+            f"error: promote stopped: {visible(exc)}. {visible(src_file)} was not removed; check "
+            f"{visible(tgt_file)} and both MEMORY.md files before running it again.",
+            file=sys.stderr,
+        )
+        return 2
 
     src_file.unlink()
 
-    if not args.no_commit:
+    if git is not None:
         if src_in_git:
             _commit_folder(
+                git,
                 source,
                 f"memory: promote {filename} out to {target.name}/",
                 [src_file, src_idx],
             )
         if tgt_in_git:
             _commit_folder(
+                git,
                 target,
                 f"memory: promote {filename} in from {source.name}/",
                 [tgt_file, tgt_idx],
             )
 
     print()
-    print(f"Promoted {filename}.")
+    print(f"Promoted {visible(filename)}.")
     print("Next: run memory-audit-deep to confirm both folders are still well-formed,")
     print("run memory-link-rewriter check to catch links left dangling by the move")
     print("(promote does not rewrite inbound links or cross-folder mirror fields),")
-    print(f"and re-sort {tgt_idx} if your target index groups pointers by section.")
+    print(f"and re-sort {visible(tgt_idx)} if your target index groups pointers by section.")
 
     if inbound_links:
         print(file=sys.stderr)
         print(
-            f"warning: {len(inbound_links)} inbound path-form link(s) to {filename} "
-            f"in {source} are now dangling and were NOT rewritten by promote:",
+            f"warning: {len(inbound_links)} inbound path-form link(s) to {visible(filename)} "
+            f"in {visible(source)} are now dangling and were NOT rewritten by promote:",
             file=sys.stderr,
         )
         for linking_file, target_str in inbound_links:
@@ -303,7 +364,7 @@ def main(argv: list[str] | None = None) -> int:
                 rel = linking_file.relative_to(source)
             except ValueError:
                 rel = linking_file
-            print(f"    {rel}: {target_str}", file=sys.stderr)
+            print(f"    {visible(rel)}: {visible(target_str)}", file=sys.stderr)
         print(
             "       run `memory-link-rewriter check` (and fix) to reconcile. "
             f"Exiting {EXIT_UNRECONCILED_LINKS} so automated callers detect the "

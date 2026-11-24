@@ -33,12 +33,15 @@ from __future__ import annotations
 import argparse
 import json
 import math
+import os
 import re
 import subprocess
 import sys
 from pathlib import Path
 from typing import Any, Optional
 
+from memforge._terminal import terminal_safe, visible
+from memforge.discovery import access_error, read_text_no_follow
 from memforge.frontmatter import has_frontmatter, parse
 from memforge.recall import (
     DESC_MAX_CHARS,
@@ -129,10 +132,11 @@ _BROAD_SECRET_ENTROPY_FLOOR = 4.2
 
 def default_paths() -> list[Path]:
     """Default memory folders via the centralized, IDE/OS-neutral resolver
-    (existence-filtered)."""
+    (existence-filtered; one that cannot be looked at is kept, so it is
+    reported)."""
     from memforge.paths import default_memory_paths
 
-    return [p for p in default_memory_paths() if p.exists()]
+    return [p for p in default_memory_paths() if os.path.exists(p) or access_error(p)]
 
 
 def _iter_live_memories(folder: Path) -> list[tuple[str, dict, str]]:
@@ -150,7 +154,7 @@ def _iter_live_memories(folder: Path) -> list[tuple[str, dict, str]]:
     out: list[tuple[str, dict, str]] = []
     for path in _iter_memory_files(folder):
         try:
-            text = path.read_text(encoding="utf-8")
+            text = read_text_no_follow(path, root=folder)
         except (OSError, UnicodeDecodeError):
             continue
         if not has_frontmatter(text):
@@ -158,7 +162,9 @@ def _iter_live_memories(folder: Path) -> list[tuple[str, dict, str]]:
         fm, body = parse(text)
         if not fm:
             continue
-        if fm.get("status", "active") not in LIVE_STATUSES:
+        status = fm.get("status", "active")
+        # A status that is not text is kept so lint_folder can report it.
+        if isinstance(status, str) and status not in LIVE_STATUSES:
             continue
         out.append((path.relative_to(folder).as_posix(), fm, body))
     return out
@@ -189,6 +195,8 @@ def score_recall_context(
     tags = fm.get("tags") or []
     if isinstance(tags, str):
         tags = [tags]
+    if not isinstance(tags, list):
+        tags = []
 
     if not desc:
         return {"score": 0, "finding": "description_missing",
@@ -363,6 +371,9 @@ def lint_folder(
         rc = score_recall_context(fm, body, tokens_map, rev, canon, n_entries)
         findings = token_cost_findings(fm, body, rc["score"])
         findings += injected_file_findings(fm, injected_texts)
+        if not isinstance(fm.get("status", "active"), str):
+            findings.append({"code": "field_not_text", "dimension": "frontmatter",
+                             "evidence": "field 'status' must be text"})
 
         rec: dict[str, Any] = {
             "path": rel,
@@ -424,31 +435,32 @@ def lint_folder(
 
 def _render_text(report: dict[str, Any]) -> None:
     print()
-    print(f"====== {report['folder']} ======")
+    print(f"====== {visible(report['folder'])} ======")
     print(f"  live memories: {report['entries']}  | recall-weak: {report['weak_count']}")
     print()
     for rec in report["records"]:
         rc = rec["recall_context"]
         llm = rec.get("llm")
         if rc["score"] <= 3 or rec["findings"] or llm:
-            print(f"  {rec['path']}  recall={rc['score']}/5 ({rc['finding']})")
-            print(f"      {rc['evidence']}")
+            print(f"  {visible(rec['path'])}  recall={rc['score']}/5 ({visible(rc['finding'])})")
+            print(f"      {visible(rc['evidence'])}")
             for f in rec["findings"]:
-                print(f"      - [{f['dimension']}] {f['code']}: {f['evidence']}")
+                print(f"      - [{visible(f['dimension'])}] {visible(f['code'])}: {visible(f['evidence'])}")
             if isinstance(llm, dict) and "suggested_description" in llm:
-                print(f"      LLM suggested description: {llm['suggested_description']}")
+                print(f"      LLM suggested description: {visible(llm['suggested_description'])}")
                 if llm.get("suggested_triggers"):
                     print(f"      LLM suggested triggers: {llm['suggested_triggers']}")
                 if llm.get("canonical_queries"):
                     print(f"      LLM canonical queries: {llm['canonical_queries']}")
             elif isinstance(llm, dict) and llm.get("skipped"):
-                print(f"      LLM: skipped ({llm['skipped']})")
+                print(f"      LLM: skipped ({visible(llm['skipped'])})")
             print()
 
 
 # ---------- CLI ----------
 
 
+@terminal_safe
 def main(argv: list[str] | None = None) -> int:
     p = argparse.ArgumentParser(
         prog="memory-lint",
@@ -519,8 +531,14 @@ def main(argv: list[str] | None = None) -> int:
     reports: list[dict[str, Any]] = []
     total_weak = 0
     total_floor = 0
+    unreadable = False
     for t in targets:
-        if not t.is_dir():
+        err = access_error(t)
+        if err is not None:
+            sys.stderr.write(f"error: cannot read {t}: {err}\n")
+            unreadable = True
+            continue
+        if not os.path.isdir(t):
             sys.stderr.write(f"warn: {t} is not a directory; skipping\n")
             continue
         rep = lint_folder(
@@ -549,7 +567,7 @@ def main(argv: list[str] | None = None) -> int:
     # --strict trips ONLY on the deterministic floor, never the graded score
     # (lint-strict-01: SPEC keeps lint advisory; the graded score must not fail
     # CI on a conformance-correct but not-yet-recall-optimized store).
-    if args.strict and total_floor > 0:
+    if unreadable or (args.strict and total_floor > 0):
         return 1
     return 0
 

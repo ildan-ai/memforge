@@ -110,9 +110,26 @@ def _verify_range(iso: Isolation, tools, released: frozenset[str],
             print(f"mode {mode}: {MODE_LINES[mode]}")
 
 
+def _check_root_holds_git(root: Path) -> None:
+    """Refuse a root without its own `.git` before any tool runs.
+
+    The in-store tool check compares against the root, so a root below the
+    top level would let a program committed elsewhere in the same repository
+    run before the top-level check could refuse it.
+    """
+    if os.path.lexists(root / ".git"):
+        return
+    for parent in Path(os.path.abspath(root)).parents:
+        if os.path.lexists(parent / ".git"):
+            raise SyncError("root_not_toplevel",
+                            f"{root} is not the top level of its repository ({parent}); one verifiedHead serves one store")
+    raise SyncError("not_a_repository", f"{root} is not inside a git work tree")
+
+
 def _sync(root: Path, trust_head: str | None, adopt_local: bool, check: bool,
           released: frozenset[str]) -> None:
-    tools = resolve_tools()
+    _check_root_holds_git(root)
+    tools = resolve_tools(root)
     for tool in tools.values():
         print(tool_line(tool))
     if tools["git"].path is None:
@@ -122,7 +139,8 @@ def _sync(root: Path, trust_head: str | None, adopt_local: bool, check: bool,
     if top.rc != 0:
         raise SyncError("not_a_repository", f"{root} is not inside a git work tree")
     toplevel = top.out.decode("utf-8", "replace").strip()
-    if os.path.realpath(root) != os.path.realpath(toplevel):
+    # A relative answer would be read against the current folder, not the root.
+    if not os.path.isabs(toplevel) or os.path.realpath(root) != os.path.realpath(toplevel):
         raise SyncError("root_not_toplevel",
                         f"{root} is not the top level of its repository ({toplevel}); one verifiedHead serves one store")
 

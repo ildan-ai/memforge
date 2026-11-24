@@ -2,7 +2,7 @@
 
 Regression coverage: rollup-subfolder README.md files must be treated as
 pointer-comparable (per spec §"Rollup subfolders") so that legitimate
-parent-MEMORY.md pointers like `[Forge state](forge/README.md)` do not
+parent-MEMORY.md pointers like `[Gadgets state](gadgets/README.md)` do not
 fire `Orphan pointer (no file)`.
 """
 
@@ -52,12 +52,12 @@ def test_disk_md_files_returns_top_level(tmp_path: Path) -> None:
 
 def test_disk_md_files_includes_rollup_readmes(tmp_path: Path) -> None:
     _seed_top_level(tmp_path, "feedback_a.md")
-    _seed_rollup_readme(tmp_path, "forge")
+    _seed_rollup_readme(tmp_path, "gadgets")
     _seed_rollup_readme(tmp_path, "ildan")
 
     assert _disk_md_files(tmp_path) == [
         "feedback_a.md",
-        "forge/README.md",
+        "gadgets/README.md",
         "ildan/README.md",
     ]
 
@@ -76,7 +76,7 @@ def test_disk_md_files_excludes_archive(tmp_path: Path) -> None:
 
 def test_disk_md_files_skips_subfolders_without_readme(tmp_path: Path) -> None:
     _seed_top_level(tmp_path, "feedback_a.md")
-    sub = tmp_path / "forge"
+    sub = tmp_path / "gadgets"
     sub.mkdir()
     (sub / "feedback_detail.md").write_text(
         "---\nname: detail\ndescription: x\ntype: feedback\ntier: detail\n---\n",
@@ -96,8 +96,8 @@ def test_files_to_audit_returns_top_level(tmp_path: Path) -> None:
 
 def test_files_to_audit_recurses_into_rollups(tmp_path: Path) -> None:
     _seed_top_level(tmp_path, "feedback_a.md")
-    _seed_rollup_readme(tmp_path, "forge")
-    sub = tmp_path / "forge"
+    _seed_rollup_readme(tmp_path, "gadgets")
+    sub = tmp_path / "gadgets"
     (sub / "feedback_detail_one.md").write_text(
         "---\nname: detail one\ndescription: x\ntype: feedback\ntier: detail\n---\n",
         encoding="utf-8",
@@ -115,9 +115,9 @@ def test_files_to_audit_recurses_into_rollups(tmp_path: Path) -> None:
     actual = sorted(p.replace("\\", "/") for p in _files_to_audit(tmp_path))
     expected = sorted([
         "feedback_a.md",
-        "forge/README.md",
-        "forge/feedback_detail_one.md",
-        "forge/project_detail_two.md",
+        "gadgets/README.md",
+        "gadgets/feedback_detail_one.md",
+        "gadgets/project_detail_two.md",
     ])
     assert actual == expected
 
@@ -144,12 +144,12 @@ def test_files_to_audit_catches_yaml_parse_failure_in_detail_file(tmp_path: Path
     from memforge.cli.audit import audit_target
 
     _seed_top_level(tmp_path, "feedback_a.md")
-    _seed_rollup_readme(tmp_path, "forge")
-    sub = tmp_path / "forge"
+    _seed_rollup_readme(tmp_path, "gadgets")
+    sub = tmp_path / "gadgets"
     # Deliberately broken YAML: colon-space inside an unquoted name
     (sub / "feedback_broken.md").write_text(
         "---\n"
-        "name: FORGE: this colon-space breaks YAML parse\n"
+        "name: Widget: this colon-space breaks YAML parse\n"
         "description: x\n"
         "type: feedback\n"
         "---\n\n"
@@ -158,7 +158,7 @@ def test_files_to_audit_catches_yaml_parse_failure_in_detail_file(tmp_path: Path
     )
     (tmp_path / "MEMORY.md").write_text(
         "- [feedback A](feedback_a.md)\n"
-        "- [Forge](forge/README.md)\n",
+        "- [Gadgets](gadgets/README.md)\n",
         encoding="utf-8",
     )
 
@@ -176,7 +176,7 @@ def test_files_to_audit_catches_yaml_parse_failure_in_detail_file(tmp_path: Path
         )
 
     output = buf.getvalue()
-    assert "forge/feedback_broken.md: frontmatter YAML failed to parse" in output
+    assert "gadgets/feedback_broken.md: frontmatter YAML failed to parse" in output
 
 
 def test_no_orphan_pointer_for_rollup_readme(tmp_path: Path) -> None:
@@ -185,11 +185,11 @@ def test_no_orphan_pointer_for_rollup_readme(tmp_path: Path) -> None:
     from memforge.cli.audit import audit_target
 
     _seed_top_level(tmp_path, "feedback_a.md")
-    _seed_rollup_readme(tmp_path, "forge")
+    _seed_rollup_readme(tmp_path, "gadgets")
     (tmp_path / "MEMORY.md").write_text(
         "# Memory Index\n\n"
         "- [feedback A](feedback_a.md) - top-level entry\n"
-        "- [Forge state](forge/README.md) - rollup\n",
+        "- [Gadgets state](gadgets/README.md) - rollup\n",
         encoding="utf-8",
     )
 
@@ -207,8 +207,8 @@ def test_no_orphan_pointer_for_rollup_readme(tmp_path: Path) -> None:
         )
 
     output = buf.getvalue()
-    assert "Orphan pointer (no file): forge/README.md" not in output
-    assert "Orphan file (no pointer): forge/README.md" not in output
+    assert "Orphan pointer (no file): gadgets/README.md" not in output
+    assert "Orphan file (no pointer): gadgets/README.md" not in output
 
 
 def _seed_subfolder_detail(folder: Path, topic: str, name: str) -> None:
@@ -230,7 +230,7 @@ def _seed_subfolder_detail(folder: Path, topic: str, name: str) -> None:
 
 def test_no_orphan_pointer_for_subfolder_detail_file(tmp_path: Path) -> None:
     """End-to-end: a MEMORY.md pointer at a subfolder detail file that
-    EXISTS on disk (e.g., `forge/project_x_deploy_state.md`) must not be
+    EXISTS on disk (e.g., `gadgets/project_x_deploy_state.md`) must not be
     reported as `Orphan pointer (no file)`. The audit may downgrade to a
     health advisory recommending the rollup-README pattern, but the file
     is not missing and must not appear in the integrity-violation set.
@@ -238,11 +238,11 @@ def test_no_orphan_pointer_for_subfolder_detail_file(tmp_path: Path) -> None:
     from memforge.cli.audit import audit_target
 
     _seed_top_level(tmp_path, "feedback_a.md")
-    _seed_subfolder_detail(tmp_path, "forge", "project_x_deploy_state.md")
+    _seed_subfolder_detail(tmp_path, "gadgets", "project_x_deploy_state.md")
     (tmp_path / "MEMORY.md").write_text(
         "# Memory Index\n\n"
         "- [feedback A](feedback_a.md) - top-level entry\n"
-        "- [project X deploy](forge/project_x_deploy_state.md) - detail\n",
+        "- [project X deploy](gadgets/project_x_deploy_state.md) - detail\n",
         encoding="utf-8",
     )
 
@@ -260,7 +260,7 @@ def test_no_orphan_pointer_for_subfolder_detail_file(tmp_path: Path) -> None:
         )
 
     output = buf.getvalue()
-    assert "Orphan pointer (no file): forge/project_x_deploy_state.md" not in output
+    assert "Orphan pointer (no file): gadgets/project_x_deploy_state.md" not in output
     assert violations == 0, (
         f"expected 0 integrity violations for a pointer at an existing "
         f"subfolder detail file; got {violations}; output:\n{output}"
@@ -275,11 +275,11 @@ def test_subfolder_detail_pointer_emits_health_advisory(tmp_path: Path) -> None:
     from memforge.cli.audit import audit_target
 
     _seed_top_level(tmp_path, "feedback_a.md")
-    _seed_subfolder_detail(tmp_path, "forge", "project_x_deploy_state.md")
+    _seed_subfolder_detail(tmp_path, "gadgets", "project_x_deploy_state.md")
     (tmp_path / "MEMORY.md").write_text(
         "# Memory Index\n\n"
         "- [feedback A](feedback_a.md) - top-level entry\n"
-        "- [project X deploy](forge/project_x_deploy_state.md) - detail\n",
+        "- [project X deploy](gadgets/project_x_deploy_state.md) - detail\n",
         encoding="utf-8",
     )
 
@@ -310,11 +310,11 @@ def test_truly_missing_subfolder_pointer_still_violates(tmp_path: Path) -> None:
     from memforge.cli.audit import audit_target
 
     _seed_top_level(tmp_path, "feedback_a.md")
-    (tmp_path / "forge").mkdir()
+    (tmp_path / "gadgets").mkdir()
     (tmp_path / "MEMORY.md").write_text(
         "# Memory Index\n\n"
         "- [feedback A](feedback_a.md) - top-level entry\n"
-        "- [missing](forge/does_not_exist.md) - truly orphan\n",
+        "- [missing](gadgets/does_not_exist.md) - truly orphan\n",
         encoding="utf-8",
     )
 
@@ -332,7 +332,7 @@ def test_truly_missing_subfolder_pointer_still_violates(tmp_path: Path) -> None:
         )
 
     output = buf.getvalue()
-    assert "Orphan pointer (no file): forge/does_not_exist.md" in output
+    assert "Orphan pointer (no file): gadgets/does_not_exist.md" in output
     assert violations >= 1
 
 

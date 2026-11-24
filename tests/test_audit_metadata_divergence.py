@@ -37,7 +37,7 @@ def _write(folder: Path, name: str, extra: str) -> None:
         "type: reference\n"
         "sensitivity: internal\n"
         "tags:\n"
-        "- topic:forge\n"
+        "- topic:gadgets\n"
         f"{extra}"
         "---\n\n"
         "Body text.\n",

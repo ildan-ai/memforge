@@ -123,9 +123,9 @@ def test_em_dash_counted_as_3_bytes(tmp_path: Path) -> None:
     is counted (this catches regressions from a len(line) char count).
     """
     _make_memory_file(tmp_path)
-    # em-dash is '—', 3 bytes in UTF-8.
+    # The em dash (U+2014) is 3 bytes in UTF-8.
     # Build a line that would be <= 150 chars but > 150 bytes due to em-dashes.
-    base = "- [Test memory](feedback_x.md) — "
+    base = "- [Test memory](feedback_x.md) \u2014 "
     # base is len(base) chars but len(base.encode('utf-8')) = len(base) + 2 extra (3-1 per dash).
     em_dash_extra = len(base.encode("utf-8")) - len(base)  # extra bytes from em-dash
     # Pad to push byte count just over cap while keeping char count under cap.

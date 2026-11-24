@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Thin shim — invokes memforge.cli.watch.main()."""
+"""Thin shim: invokes memforge.cli.watch.main()."""
 import sys
 from memforge.cli.watch import main
 

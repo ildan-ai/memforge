@@ -19,6 +19,7 @@
 from __future__ import annotations
 
 import argparse
+import os
 import re
 import sys
 from dataclasses import dataclass, field
@@ -26,6 +27,8 @@ from datetime import date, datetime
 from pathlib import Path
 from typing import Optional
 
+from memforge._terminal import terminal_safe, visible
+from memforge.discovery import access_error, read_text_no_follow, walk_md_files
 from memforge.frontmatter import parse as _mf_parse  # noqa: E402
 
 try:
@@ -77,7 +80,7 @@ def _taxonomy_candidate_paths(memforge_root: Optional[Path]) -> list[Path]:
 def find_taxonomy_path(memforge_root: Optional[Path]) -> Optional[Path]:
     """Return the first existing taxonomy.yaml candidate, or None."""
     for cand in _taxonomy_candidate_paths(memforge_root):
-        if cand.exists():
+        if os.path.exists(cand):
             return cand
     return None
 
@@ -113,18 +116,26 @@ def known_namespace_values(taxonomy: dict) -> dict[str, set[str]]:
     return out
 
 
-def discover_files(folder: Path) -> list[FileRecord]:
+def discover_files(folder: Path, unreadable: Optional[list[str]] = None) -> list[FileRecord]:
+    """Return a record for each memory file under `folder`.
+
+    A file that cannot be read (not valid UTF-8, or refused) is appended to
+    `unreadable` as a violation when the caller passes a list, so a check that
+    reports clean has read every file.
+    """
     out: list[FileRecord] = []
     skip = {"archive", ".git", "__pycache__"}
-    for path in sorted(folder.rglob("*.md")):
+    for path in sorted(walk_md_files(folder, skip_dirs=skip)):
         parts = path.relative_to(folder).parts
         if any(p in skip for p in parts):
             continue
         if path.name == "MEMORY.md":
             continue
         try:
-            text = path.read_text(encoding="utf-8")
-        except (OSError, UnicodeDecodeError):
+            text = read_text_no_follow(path, root=folder)
+        except (OSError, UnicodeDecodeError) as exc:
+            if unreadable is not None:
+                unreadable.append(f"{path.relative_to(folder).as_posix()}: cannot read file: {exc}")
             continue
         fm = parse_frontmatter(text)
         if not fm:
@@ -150,10 +161,22 @@ def parse_date(s: str) -> Optional[date]:
     return None
 
 
-def audit(folder: Path, taxonomy_values: dict[str, set[str]], stale_days: int) -> list[str]:
-    """Returns a list of violation strings. Empty list = clean."""
+def audit(
+    folder: Path,
+    taxonomy_values: dict[str, set[str]],
+    stale_days: int,
+    tag_warnings: Optional[list[str]] = None,
+) -> list[str]:
+    """Returns a list of violation strings. Empty list = clean.
+
+    A tag value the taxonomy does not list is a violation, unless the caller
+    passes `tag_warnings`: those findings are then appended to that list
+    instead, for a taxonomy that is a starter vocabulary rather than the
+    operator's own.
+    """
     violations: list[str] = []
-    files = discover_files(folder)
+    tag_findings = violations if tag_warnings is None else tag_warnings
+    files = discover_files(folder, unreadable=violations)
     if not files:
         return violations
 
@@ -182,7 +205,7 @@ def audit(folder: Path, taxonomy_values: dict[str, set[str]], stale_days: int) -
             ns, _, val = tag.partition(":")
             if ns in taxonomy_values:
                 if val not in taxonomy_values[ns]:
-                    violations.append(
+                    tag_findings.append(
                         f"{rec.rel}: tag '{tag}' value not in taxonomy namespace '{ns}'"
                     )
 
@@ -203,8 +226,9 @@ def audit(folder: Path, taxonomy_values: dict[str, set[str]], stale_days: int) -
 
     for rec in files:
         try:
-            text = rec.path.read_text(encoding="utf-8")
-        except (OSError, UnicodeDecodeError):
+            text = read_text_no_follow(rec.path, root=folder)
+        except (OSError, UnicodeDecodeError) as exc:
+            violations.append(f"{rec.rel}: cannot read file: {exc}")
             continue
         for m in MEM_URI_RE.finditer(text):
             target = m.group(1)
@@ -234,19 +258,29 @@ def audit(folder: Path, taxonomy_values: dict[str, set[str]], stale_days: int) -
 
 def default_paths() -> list[Path]:
     """Default memory folders via the centralized, IDE/OS-neutral resolver
-    (existence-filtered)."""
+    (existence-filtered; one that cannot be looked at is kept, so it is
+    reported)."""
     from memforge.paths import default_memory_paths
 
-    return [p for p in default_memory_paths() if p.exists()]
+    return [p for p in default_memory_paths() if os.path.exists(p) or access_error(p)]
 
 
+@terminal_safe
 def main() -> int:
     p = argparse.ArgumentParser(
         prog="memory-audit-deep",
         description="v0.3.0-aware recursive memory audit (Phase 1 T4).",
     )
     p.add_argument("--path", action="append", default=[], help="Folder (repeatable)")
-    p.add_argument("--strict", action="store_true", help="Exit 1 on any violation")
+    p.add_argument(
+        "--strict",
+        action="store_true",
+        help=(
+            "Exit 1 on any violation. A tag value missing from the packaged "
+            "starter taxonomy is a warning and never a violation; with "
+            "--memforge-root it is a violation"
+        ),
+    )
     p.add_argument(
         "--stale-days",
         type=int,
@@ -256,7 +290,10 @@ def main() -> int:
     p.add_argument(
         "--memforge-root",
         default=None,
-        help="Override memforge repo root for taxonomy.yaml lookup",
+        help=(
+            "Use <root>/spec/taxonomy.yaml as your own taxonomy and enforce it: "
+            "an out-of-vocabulary tag is then a violation"
+        ),
     )
     p.add_argument(
         "--allow-missing-taxonomy",
@@ -299,11 +336,15 @@ def main() -> int:
 
     total = 0
     for folder in folders:
-        if not folder.exists():
+        if not os.path.exists(folder) and access_error(folder) is None:
             sys.stderr.write(f"warning: skipping nonexistent {folder}\n")
             continue
-        violations = audit(folder, tax_values, args.stale_days)
-        print(f"\n====== {folder} ======")
+        # The packaged taxonomy is a starter vocabulary: a value it does not
+        # list is worth a warning, not a failure. A taxonomy the operator
+        # points at with --memforge-root is theirs, and is enforced.
+        tag_warnings: Optional[list[str]] = [] if memforge_root is None else None
+        violations = audit(folder, tax_values, args.stale_days, tag_warnings)
+        print(f"\n====== {visible(folder)} ======")
         if not taxonomy_loaded:
             # Make the disabled-check explicit in the per-folder report so a
             # "clean" result is never read as "tags validated".
@@ -313,8 +354,16 @@ def main() -> int:
         else:
             print(f"  VIOLATIONS ({len(violations)}):")
             for v in violations:
-                print(f"    - {v}")
+                print(f"    - {visible(v)}")
             total += len(violations)
+        if tag_warnings:
+            print(
+                f"  TAG WARNINGS ({len(tag_warnings)}; not violations, not counted, "
+                "never change the exit code; pass --memforge-root to enforce "
+                "your own taxonomy):"
+            )
+            for w in tag_warnings:
+                print(f"    - {visible(w)}")
 
     print(f"\nTotal violations: {total}")
     if args.strict and not taxonomy_loaded:

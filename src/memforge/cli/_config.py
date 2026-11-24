@@ -5,8 +5,11 @@
 
 from __future__ import annotations
 
+import os
 from pathlib import Path
 from typing import Any, Optional
+
+from memforge.discovery import access_error
 
 try:
     import yaml  # type: ignore
@@ -35,7 +38,7 @@ def _default_spec_version() -> str:
     from the package (not a hardcoded literal) so the default cannot drift
     STALE behind the shipping package (closes config-03).
     """
-    fallback = "0.9.0"
+    fallback = "1.0.0"
     try:
         from importlib.metadata import PackageNotFoundError, version as _pkg_version
 
@@ -133,12 +136,13 @@ def _merge_defaults(loaded: dict[str, Any]) -> dict[str, Any]:
 def find_config_path(start: Optional[Path] = None) -> Optional[Path]:
     """Walk upward from `start` (or cwd) looking for `.memforge/config.yaml`.
 
-    Returns the path if found, else None.
+    Returns the path if found, else None. A config that cannot be looked at
+    is found: walking past it would apply a config further up instead.
     """
     here = (start or Path.cwd()).resolve()
     for directory in [here, *here.parents]:
         candidate = directory / ".memforge" / "config.yaml"
-        if candidate.is_file():
+        if os.path.isfile(candidate) or access_error(candidate):
             return candidate
     return None
 
@@ -166,9 +170,26 @@ def load_config(start: Optional[Path] = None) -> dict[str, Any]:
     path = find_config_path(start)
     if path is None:
         return _merge_defaults({})
+    # The bounded loader, as for frontmatter: the config lives in the store,
+    # so a synced store can carry one built to stop the tools that read it.
+    # One byte past the limit is enough to know a file is over it.
+    from memforge.frontmatter import MAX_FRONTMATTER_BYTES, load_bounded
+
     try:
-        raw = yaml.safe_load(path.read_text(encoding="utf-8")) or {}
-    except (OSError, UnicodeDecodeError, yaml.YAMLError):  # pragma: no cover
+        with path.open("rb") as f:
+            head = f.read(MAX_FRONTMATTER_BYTES + 1)
+        if len(head) > MAX_FRONTMATTER_BYTES:
+            raise yaml.YAMLError(f"over the {MAX_FRONTMATTER_BYTES}-byte limit")
+        raw = load_bounded(head.decode("utf-8")) or {}
+    except OSError as exc:
+        import sys as _sys
+
+        _sys.stderr.write(f"warning: cannot read {path}: {exc}; using the default config\n")
+        return _merge_defaults({})
+    except (UnicodeDecodeError, yaml.YAMLError) as exc:
+        import sys as _sys
+
+        _sys.stderr.write(f"warning: cannot parse {path}: {exc}; using the default config\n")
         return _merge_defaults({})
     if not isinstance(raw, dict):
         return _merge_defaults({})

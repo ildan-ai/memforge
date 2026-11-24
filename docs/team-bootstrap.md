@@ -37,7 +37,7 @@ The store must be the top level of its git repository. Run `memforge sync` from 
 
 ## Case 1: two people, a private GitHub repository (`ssh`)
 
-Each person:
+Each person, inside the store's repository (the creator after `git init`, everyone else after `git clone`):
 
 ```bash
 git config gpg.format ssh
@@ -52,17 +52,20 @@ alice namespaces="git" ssh-ed25519 AAAA...
 bob namespaces="git" ssh-ed25519 AAAA...
 ```
 
-Do not use `valid-after`, `valid-before` or `cert-authority` on a line. They make the whole list invalid.
+Do not use `valid-after`, `valid-before` or `cert-authority` on a line. They make the whole list invalid. Do not paste only a `.pub` file's content either: each line needs the name and `namespaces="git"` in front of the key, or every commit by that signer is refused with `ssh_not_verified`.
 
-The creator commits the list in a signed commit and pushes. Then the creator runs:
+The creator commits the list in a signed commit and pushes with an upstream, so sync knows which remote branch to check:
 
 ```bash
+git push -u origin <branch>
 memforge sync --adopt-local
 ```
 
+Without an upstream, sync exits 1 with `no_upstream`.
+
 This pins your local `HEAD`. It is a statement that you vouch for this clone, not a check, and the command says so.
 
-The other person clones and runs the sync with the full commit id the creator gives them (usually the head of the creator's last sync):
+The other person clones, sets the three `git config` lines above, and runs the sync with the full commit id the creator gives them (usually the head of the creator's last sync; `git rev-parse HEAD` prints it):
 
 ```bash
 git clone <repo-url> memory && cd memory
@@ -106,19 +109,23 @@ memforge sync           # verify, fast-forward, record
 
 `--check` fetches like any run, so the one remote-tracking ref for your upstream branch and its objects may update. It does not move your branch, change your work tree or write `verifiedHead`. It prints whether `HEAD` equals `verifiedHead`.
 
-Each run prints one line per tool, `verifier <name>: path=... version=... sha256=...`, for `git`, `ssh-keygen`, `gpg` and `gitsign`. After verification it prints a mode line, for example `mode ssh: verdict has no receiver-local input except the git and ssh-keygen executables`. For `gpg` and `keyless` the text is `verdict depends on this receiver's keyring, configuration and clock`. With `--check` it also prints `HEAD equals verifiedHead: yes` or `no` (with `(verifiedHead is unset)` on a first sync).
+Each run prints one line per tool, `verifier <name>: path=... version=... sha256=...`, for `git`, `ssh-keygen`, `gpg` and `gitsign`. For each mode whose list judged a commit in this run it prints a mode line; a run with no new commit to judge prints none. For example `mode ssh: verdict has no receiver-local input except the git and ssh-keygen executables`. For `gpg` and `keyless` the text is `verdict depends on this receiver's keyring, configuration and clock`. With `--check` it also prints `HEAD equals verifiedHead: yes` or `no` (with `(verifiedHead is unset)` on a first sync).
 
 ## Sync exit codes and reasons
 
 | Exit | Meaning |
 | --- | --- |
 | 0 | Verified and recorded. With `--check`: verified, nothing recorded. |
-| 2 | Refused by verification, history or shallow rules. The first failing commit and its reason are named. |
-| 1 | Any other error. |
+| 2 | A commit or the history failed a check. The message starts `memforge sync: refused (<reason>)` and names the first failing commit. |
+| 1 | Sync could not run or could not finish. The message starts `memforge sync: <reason>:`. No commit was judged bad, except for `bad_commit`. |
 
-Other exit-1 errors you may see: `root_not_toplevel` (the memory root is not the repository top level), `fetch_failed`, `no_branch` (detached `HEAD`), `no_upstream`, `pin_invalid` (`--trust-head` needs the full commit id), `bad_arguments` (both pin flags), `state_invalid`, `git_missing`, `not_a_repository`, `object_missing`, `bad_commit`, `isolation_failed`, `git_failed`.
+A script that treats exit 2 as "do not trust this remote" and exit 1 as "fix the setup and run again" matches these meanings, with two exceptions. `diverged` exits 1, and a rewritten remote can show up as `diverged` (see Troubleshooting). `bad_commit` exits 1 but names a commit in the range sync was checking, usually one it fetched, whose parent header memforge cannot read (for example a parent id in uppercase hex, which git accepts and stores). Treat a `bad_commit` from the remote as a refusal.
 
-Reasons you may see: `no_pin`, `pin_refused`, `diverged`, `history_rewrite`, `shallow_range`, `ff_failed`, `state_write_failed`, `mode_unreleased`, `ambiguous_list`, `list_missing`, `list_invalid`, `list_removed`, `unsigned`, `ssh_not_verified`, and for `gpg` and `keyless` `bad_signature`, `no_key`, `expired`, `revoked`, `signer_not_listed`, `verifier_failed`, `gitsign_missing`, `keyless_not_verified`. The spec defines each one.
+**Exit 2 reasons:** `history_rewrite`, `shallow_range`, `mode_unreleased`, `ambiguous_list`, `list_missing`, `list_invalid`, `list_removed`, `unsigned`, `ssh_not_verified`, and for `gpg` and `keyless` `bad_signature`, `no_key`, `expired`, `revoked`, `signer_not_listed`, `verifier_failed`, `gitsign_missing`, `keyless_not_verified`.
+
+**Exit 1 reasons:** `no_pin`, `pin_refused`, `pin_invalid` (`--trust-head` needs the full commit id), `bad_arguments` (both pin flags), `diverged`, `ff_failed`, `state_write_failed`, `root_not_toplevel` (the memory root is not the repository top level), `fetch_failed`, `no_branch` (detached `HEAD`), `no_upstream`, `state_invalid`, `git_missing`, `not_a_repository`, `object_missing`, `bad_commit`, `isolation_failed`, `git_failed`, `tool_in_store` (a `git`, `ssh-keygen`, `gpg` or `gitsign` on `PATH` resolves to a file inside the store).
+
+The spec defines each one.
 
 When sync refuses a commit, your local branch, work tree and recorded state do not move. Fetched objects and the one remote-tracking ref may have been updated, and are never used. The way out is the remote's owner removing the commit. In `gpg` and `keyless`, a refusal can be local (a missing key, no network). Fix your keyring or network and run it again.
 
@@ -149,10 +156,12 @@ See [known limitations](../spec/known-limitations.md) and the "Commit trust" sec
 
 - **`no_pin`**: this is a first sync. Pass `--trust-head <commit>` or `--adopt-local`.
 - **`pin_refused`**: sync already has a starting point. Drop the pin flag. To start again, make a fresh clone.
-- **`diverged`**: your local branch and the remote each have commits the other lacks. Sync never merges. Most often you have local commits: merge or rebase with git, sign the result, then sync. If you have none, the remote may have been rewritten. Treat that as an incident and ask the remote's owner.
-- **`history_rewrite`**: the remote no longer contains a commit you verified. Treat it as an incident. Local files are untouched.
+- **`diverged`** (exit 1): your local branch and the remote each have commits the other lacks. Sync never merges. Most often you have local commits: merge or rebase with git, sign the result, then sync. If you have none, the remote may have been rewritten. Treat that as an incident and ask the remote's owner.
+- **`history_rewrite`** (exit 2): the commit you last verified is not in the history sync is asked to accept. Treat it as an incident. Local files are untouched. A force-pushed remote reports this only when your local branch is behind the new remote head; when your branch still sits on the old head it reports `diverged` instead.
 - **`shallow_range`**: your clone is shallow and does not hold the range. Deepen it with `git fetch --unshallow`.
 - **`ff_failed`**: local work-tree changes block the fast-forward. Commit or discard them and run sync again.
 - **`ssh_not_verified`**: a bad signature, a key not on the list, or no `ssh-keygen` all look the same. Read git's message that sync prints unchanged.
-- **`list_invalid`**: the list does not parse, has no entries, or a line uses `valid-after`, `valid-before` or `cert-authority`.
+- **`list_invalid`**: the list in the commit before the one being judged does not parse, has no entries, is over 1 MiB, holds a control character other than tab, has a non-ASCII character or a double quote outside `namespaces="..."` in an `ssh` entry, or a line uses `valid-after`, `valid-before` or `cert-authority`. The spec's "List grammar" gives the full rules.
+- **`list_removed`**: the commit being judged leaves no single valid list behind it. The detail names why: `list_invalid` (the list it writes does not parse, for example a `valid-after` line), `list_missing` (it deletes the list; the detail text reads `no list file in the first parent`, and it means the commit's own tree) or `ambiguous_list` (it adds a second list). The commit is refused even if its signature is good. An unsigned commit is refused `unsigned` before its own list is read.
+- **`no_upstream`** (exit 1): the branch has no upstream. Push with `git push -u origin <branch>`, or run `git branch --set-upstream-to origin/<branch>`.
 - **`mode_unreleased`**: the store uses a mode this release has not released. Use `ssh`.

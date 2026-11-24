@@ -124,7 +124,7 @@ def test_cross_check_no_findings_returns_none():
 
 
 def test_cross_check_non_memforge_file_returns_none():
-    # Plain markdown, no frontmatter — should not emit mismatch even with findings
+    # Plain markdown, no frontmatter: should not emit mismatch even with findings
     text = "Just markdown with arn:aws:iam::1:role/x"
     assert check_sensitivity_mismatch(text, Path("x"), [_finding("aws_arn")]) is None
 
@@ -266,6 +266,22 @@ def test_load_config_overrides(tmp_path):
     assert cfg["audit"]["default_export_tier"] == "internal"
     assert cfg["audit"]["enforce_sensitivity_export_gate"] is False
     assert cfg["dlp"]["enforce_sensitivity_cross_check"] is False
+
+
+@pytest.mark.parametrize("body", [
+    "audit: " + "[" * 5000 + "]" * 5000 + "\n",
+    "audit:\n  enforce_sensitivity_export_gate: false\ncreated: 2024-13-45\n",
+    "audit:\n  enforce_sensitivity_export_gate: false\npad: " + "v" * 70000 + "\n",
+], ids=["deep_nesting", "invalid_date", "oversized"])
+def test_load_config_falls_back_to_the_defaults_on_a_hostile_file(tmp_path, capsys, body):
+    cfg_dir = tmp_path / ".memforge"
+    cfg_dir.mkdir()
+    (cfg_dir / "config.yaml").write_text(body, encoding="utf-8")
+
+    cfg = load_config(start=tmp_path)
+
+    assert cfg["audit"]["enforce_sensitivity_export_gate"] is True
+    assert "using the default config" in capsys.readouterr().err
 
 
 def test_load_config_preserves_other_keys(tmp_path):

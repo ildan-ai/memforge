@@ -1,4 +1,4 @@
-# memory-cluster-suggest — surface candidate rollup clusters (Phase 1 T2 v1).
+# memory-cluster-suggest: surface candidate rollup clusters (Phase 1 T2 v1).
 #
 # ADR: 0001 §Phase 1 T2, §Phase 2 D1
 # Spec: 0.3.0
@@ -13,12 +13,15 @@
 from __future__ import annotations
 
 import argparse
+import os
 import re
 import sys
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Optional
 
+from memforge._terminal import terminal_safe, visible
+from memforge.discovery import access_error, read_text_no_follow  # noqa: E402
 from memforge.frontmatter import parse as _mf_parse  # noqa: E402
 
 
@@ -59,7 +62,7 @@ def discover_top_level(folder: Path) -> list[FileRec]:
         if p.name == "MEMORY.md":
             continue
         try:
-            text = p.read_text(encoding="utf-8")
+            text = read_text_no_follow(p, root=folder)
         except (OSError, UnicodeDecodeError):
             continue
         fm = parse_frontmatter(text)
@@ -244,7 +247,7 @@ def emit_markdown(folder: Path, clusters: list[list[FileRec]], min_size: int) ->
         why = _suggested_why(group, common_tokens, common_topics)
         lines.append(f"## Cluster {i} -- suggested slug: `{slug}` ({len(group)} files)")
         lines.append("")
-        lines.append(f"**Why (suggested stub):** {why}")
+        lines.append(f"**Why (suggested stub):** {visible(why)}")
         lines.append("")
         if common_topics:
             lines.append(f"**Common topic tags:** {', '.join(common_topics)}")
@@ -253,7 +256,7 @@ def emit_markdown(folder: Path, clusters: list[list[FileRec]], min_size: int) ->
         lines.append("")
         lines.append("**Files:**")
         for f in sorted(group, key=lambda x: x.name):
-            lines.append(f"  - {f.name}")
+            lines.append(f"  - {visible(f.name)}")
         lines.append("")
         cmd_files = " ".join(f.name for f in sorted(group, key=lambda x: x.name))
         lines.append("**Suggested rollup command:**")
@@ -286,12 +289,14 @@ def _suggested_why(group: list[FileRec], common_tokens: list[str], common_topics
 
 def default_paths() -> list[Path]:
     """Default memory folders via the centralized, IDE/OS-neutral resolver
-    (existence-filtered)."""
+    (existence-filtered; one that cannot be looked at is kept, so it is
+    reported)."""
     from memforge.paths import default_memory_paths
 
-    return [p for p in default_memory_paths() if p.exists()]
+    return [p for p in default_memory_paths() if os.path.exists(p) or access_error(p)]
 
 
+@terminal_safe
 def main() -> int:
     p = argparse.ArgumentParser(
         prog="memory-cluster-suggest",
@@ -331,7 +336,12 @@ def main() -> int:
 
     rc = 0
     for folder in folders:
-        if not folder.exists():
+        err = access_error(folder)
+        if err is not None:
+            sys.stderr.write(f"error: cannot read {folder}: {err}\n")
+            rc = 1
+            continue
+        if not os.path.exists(folder):
             sys.stderr.write(f"warning: skipping nonexistent {folder}\n")
             continue
         files = discover_top_level(folder)

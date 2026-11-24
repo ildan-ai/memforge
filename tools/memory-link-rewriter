@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Thin shim — invokes memforge.cli.link_rewriter.main()."""
+"""Thin shim: invokes memforge.cli.link_rewriter.main()."""
 import sys
 from memforge.cli.link_rewriter import main
 

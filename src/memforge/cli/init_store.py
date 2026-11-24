@@ -13,8 +13,11 @@ import os
 import re
 import subprocess
 import sys
-import tempfile
 from pathlib import Path
+
+from memforge._programs import ProgramInFolder, git_env, refuse_inside
+from memforge._sync_git import find_program
+from memforge.discovery import SymlinkWriteRefused, write_text_inside
 
 LIST_FILES: dict[str, str] = {
     "ssh": "allowed_signers",
@@ -68,10 +71,22 @@ def register(subparsers: argparse._SubParsersAction) -> None:
 
 
 def _run(args: list[str], cwd: Path) -> str | None:
+    program = find_program(args[0])
+    if program is None:
+        return None
+    # A program inside the store, or inside the repository that holds it, is
+    # never run, as sync refuses it: anyone who can commit there could have
+    # replaced it.
+    try:
+        refuse_inside(args[0], program, cwd)
+    except ProgramInFolder as exc:
+        print(f"memforge init-store: not running {program}: it is inside {exc.folder}", file=sys.stderr)
+        return None
     try:
         out = subprocess.run(
-            args,
+            [program, *args[1:]],
             cwd=cwd,
+            env=git_env(),
             capture_output=True,
             text=True,
             timeout=_TIMEOUT_S,
@@ -105,7 +120,7 @@ def _ssh_list_line(root: Path) -> str | None:
         if path.suffix != ".pub":
             path = path.with_name(path.name + ".pub")
         try:
-            if not path.is_file() or path.stat().st_size > _MAX_PUB_BYTES:
+            if not os.path.isfile(path) or path.stat().st_size > _MAX_PUB_BYTES:
                 return None
             material = path.read_text(encoding="utf-8").splitlines()[0].strip()
         except (OSError, UnicodeDecodeError, IndexError):
@@ -137,26 +152,17 @@ def _gpg_list_line(root: Path) -> str | None:
     return None
 
 
-def _write_new(path: Path, text: str) -> None:
-    """Create `path` with `text`, atomically, failing if it already exists."""
-    fd, tmp = tempfile.mkstemp(dir=path.parent, prefix=".init-store-")
-    try:
-        with os.fdopen(fd, "w", encoding="utf-8") as fh:
-            fh.write(text)
-        os.chmod(tmp, 0o644)
-        os.link(tmp, path)
-    finally:
-        os.unlink(tmp)
-
-
 def cmd(args: argparse.Namespace) -> int:
     memory_root = Path(args.memory_root).resolve()
-    if not memory_root.is_dir():
+    if not os.path.isdir(memory_root):
         print(f"memory-root {memory_root} is not a directory.", file=sys.stderr)
         return 2
 
     store_dir = memory_root / ".memforge"
-    existing = [n for n in LIST_FILES.values() if (store_dir / n).exists()]
+    if os.path.islink(store_dir) or (os.path.exists(store_dir) and not os.path.isdir(store_dir)):
+        print(f"{store_dir} is a link or not a folder. Nothing was changed.", file=sys.stderr)
+        return 2
+    existing = [n for n in LIST_FILES.values() if os.path.exists(store_dir / n)]
     if existing:
         print(
             f"signer list already present in {store_dir}: {', '.join(existing)}. "
@@ -178,11 +184,14 @@ def cmd(args: argparse.Namespace) -> int:
         line = _gpg_list_line(memory_root)
 
     target = store_dir / LIST_FILES[args.mode]
+    try:
+        write_text_inside(memory_root, target, line + "\n" if line else _COMMENT_ONLY[args.mode])
+    except SymlinkWriteRefused as exc:
+        print(f"{exc}. Nothing was written.", file=sys.stderr)
+        return 2
     if line:
-        _write_new(target, line + "\n")
         print(f"wrote {target} with your configured signing key.")
     else:
-        _write_new(target, _COMMENT_ONLY[args.mode])
         print(f"wrote {target} with comments only: no signing key was added.")
         print("Fill the list before the first `memforge sync`; an empty list fails every commit.")
     print("Commit the list, signed, then run the first sync.")

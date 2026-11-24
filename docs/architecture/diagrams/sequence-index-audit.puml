@@ -1,0 +1,71 @@
+@startuml sequence-index-audit
+!include _style.iuml
+title MemForge write, index, resolve and audit
+
+actor "Agent or person" as Writer
+participant "**gate-memory-frontmatter.py**\nPreToolUse" as Gate
+participant "**memory-validate**\npre-commit hook" as Validate
+database "Memory folder" as Folder
+participant "**memory-index-gen**" as Index
+participant "**memforge-resolve**" as Resolve
+participant "**memory-audit**" as Audit
+database "Store repository" as Repo
+
+Writer -> Gate : Write or Edit (Claude Code)
+Gate -> Gate : reconstruct the file after the edit
+Gate -> Gate : validate_frontmatter (invariant 27)\nvalidate_required_fields (name, description, type)
+alt fails
+  Gate --> Writer : permissionDecision deny (SC-24)
+else internal error
+  Gate --> Writer : allow (fails open), one stderr line\nnaming the error class
+end
+Writer -> Folder : memory file
+Writer -> Validate : git commit
+Validate -> Folder : parse staged memory files
+alt frontmatter does not parse as a mapping
+  Validate --> Writer : exit 1, commit stopped
+end
+Writer -> Index : memory-index-gen ~--write [~--with-recall-index]
+Index -> Folder : read frontmatter (no-follow, size limits) (SC-14, SC-15)
+Index -> Index : flatten control characters, U+2028, U+2029;\nrefuse generator markers, open comment, code fence;\ncopy the preamble as literal text in a code fence;\ndrop a preamble with a generator marker (SC-16)
+alt the memory folder cannot be listed
+  Index --> Writer : error, MEMORY.md not built, exit 1
+else a memory is refused
+  Index --> Writer : named on stderr, left out, exit 1
+end
+Index -> Folder : MEMORY.md (header unchanged),\n.memforge/recall-index.json (local cache, SC-41)
+
+Writer -> Resolve : memforge-resolve <topic> ~--memory-root <store>
+Resolve -> Folder : open .memforge/snoozes one name at a time (SC-14)
+alt .memforge, snoozes or the snooze is a link
+  Resolve --> Writer : exit 2, nothing changed
+end
+Resolve -> Folder : winner active; losers superseded,\nsuperseded_by, ever_multi_member
+Resolve -> Repo : git ~--literal-pathspecs commit -o\n-m "memforge: resolve <topic>" ~-- <members> (SC-40)
+Resolve -> Resolve : MEMORY.md unchanged by the\nresolve commit; run memory-index-gen after
+
+Writer -> Audit : memory-audit ~--strict ~--path <store>
+Audit -> Folder : Tier 1 at HEAD: integrity invariants,\npointers, rollup READMEs, competing claims;\na folder it cannot list is a violation
+Audit -> Audit : export tier gate (SC-20)\n(audit.default_export_tier or ~--export-tier)
+Audit -> Audit : find git in absolute PATH entries (SC-06);\nrun it without the repository-local git variables (SC-05)
+alt not found, inside the store or its repository,\nor its top level does not hold the store
+  Audit --> Writer : WARN Tier 2 SKIPPED, no waivers;\ncommit-log invariants not evaluated
+end
+Audit -> Repo : git log -z ~--since=30.days with parents (NUL-separated),\nfile names literal (SC-40), changed paths (a merge: against its first parent),\nfrontmatter before and after (SC-22)
+Audit -> Repo : git ls-tree HEAD ~-- .memforge/audit-waivers.yaml (SC-23)
+alt work-tree waiver file differs from HEAD
+  Audit --> Writer : WARN, HEAD copy is honored
+end
+Audit -> Audit : resolve scope, authority changes,\nconfig and snooze paths (case variants, committed links,\nlink chains followed as the file system does;\nsnooze folder link and config link BLOCKERs),\nwaiver, alias, deletion rules (live member into archive/ counts)
+Audit -> Audit : on a merge, leave a finding to the merged branch\nonly when the merge keeps the branch's result and\nevery branch commit behind it is inside the window
+Audit -> Audit : waive listed commits, never one that\nchanges the waiver file; report "N waived"
+Audit --> Writer : violations, health; ~--strict exits 1 on any violation
+
+note right of Repo
+**RISK**
+* Tier 2 sees 30 days only
+* a waiver commit can waive
+* audit runs only when someone runs it
+* no usable git: Tier 2 skipped, a WARN only
+end note
+@enduml

@@ -57,12 +57,12 @@ def _hits(health: list[str]) -> list[str]:
 # ---- helper unit coverage ----
 
 def test_has_topic_tag_accepts_list_form() -> None:
-    assert _has_topic_tag({"tags": ["topic:forge", "terraform"]}) is True
+    assert _has_topic_tag({"tags": ["topic:gadgets", "terraform"]}) is True
 
 
 def test_has_topic_tag_accepts_scalar_form() -> None:
-    """`tags: topic:forge` is valid YAML and appears in real corpora."""
-    assert _has_topic_tag({"tags": "topic:forge"}) is True
+    """`tags: topic:gadgets` is valid YAML and appears in real corpora."""
+    assert _has_topic_tag({"tags": "topic:gadgets"}) is True
 
 
 def test_has_topic_tag_rejects_non_topic_tags() -> None:
@@ -87,7 +87,7 @@ def test_untagged_file_is_reported(tmp_path: Path) -> None:
 
 
 def test_tagged_file_is_not_reported(tmp_path: Path) -> None:
-    _write(tmp_path, "tagged.md", "tags:\n- topic:forge\n")
+    _write(tmp_path, "tagged.md", "tags:\n- topic:gadgets\n")
     (tmp_path / "MEMORY.md").write_text(
         "# Index\n\n- [Test memory](tagged.md): hook\n", encoding="utf-8"
     )

@@ -35,18 +35,36 @@ import hashlib
 import json
 import os
 import re
+import time
 import unicodedata
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Optional
 
-from memforge.frontmatter import has_frontmatter, parse as _mf_parse
+from memforge.discovery import (
+    SymlinkWriteRefused,
+    read_bytes_no_follow,
+    read_text_no_follow,
+    write_text_inside,
+)
+from memforge.frontmatter import has_frontmatter, load_bounded, parse as _mf_parse
 
 # --- artifact constants -----------------------------------------------------
 
 INDEX_VERSION = 1
 INDEX_REL_PATH = ".memforge/recall-index.json"
 SYNONYMS_REL_PATH = ".memforge/recall-synonyms.yaml"
+
+# A file whose mtime is within this distance of the index build time (the
+# boundary included: a clock that rounds up to the step lands exactly on it), on
+# either side,
+# may have been rewritten after it was read without its size or mtime moving:
+# file clocks tick in steps (about 15 ms on NTFS, 2 s on FAT, 1 s on older ext
+# volumes). The window is the coarsest of those, so one fixed margin is right
+# on every volume. A file clearly older than the build, or dated far in the
+# future (a clock that was ahead, an archive extract), never forces a rebuild:
+# a later edit changes its mtime and the fingerprint sees it.
+RACY_WINDOW_NS = 2_000_000_000
 
 LIVE_STATUSES = frozenset({"active", "proposed", "gated"})
 _ARCHIVE = "archive"
@@ -199,11 +217,10 @@ def load_synonyms(folder: Path) -> dict[str, list[str]]:
     .memforge/recall-synonyms.yaml (override keys win). Never raises."""
     merged: dict[str, list[str]] = {k: list(v) for k, v in _DEFAULT_SYNONYMS.items()}
     override = folder / SYNONYMS_REL_PATH
-    if not override.is_file():
+    if not os.path.isfile(override):
         return merged
     try:
-        import yaml  # local import: only needed when an override exists
-        data = yaml.safe_load(override.read_text(encoding="utf-8"))
+        data = load_bounded(read_text_no_follow(override, root=folder))
         custom = (data or {}).get("map", data) if isinstance(data, dict) else None
         if isinstance(custom, dict):
             for k, v in custom.items():
@@ -237,9 +254,38 @@ def _iter_memory_files(folder: Path):
             if not fn.endswith(".md") or fn == "MEMORY.md":
                 continue
             p = root_path / fn
-            if p.is_symlink():
+            if os.path.islink(p):
                 continue  # never ingest a symlinked file
             yield p
+
+
+def _scan_files(folder: Path) -> Optional[list[tuple[str, int, int]]]:
+    """(relative name, size, mtime in nanoseconds) for each memory file, from a
+    stat alone. None when a file cannot be looked at."""
+    rows = []
+    try:
+        for path in _iter_memory_files(folder):
+            st = path.stat()
+            rows.append((path.relative_to(folder).as_posix(), st.st_size, st.st_mtime_ns))
+    except OSError:
+        return None
+    return rows
+
+
+def _digest_rows(rows: list[tuple[str, int, int]]) -> str:
+    digest = hashlib.sha256()
+    for rel, size, mtime_ns in sorted(rows):
+        digest.update(f"{rel}\0{size}\0{mtime_ns}\n".encode("utf-8", "surrogateescape"))
+    return digest.hexdigest()
+
+
+def memory_fingerprint(folder: Path) -> Optional[str]:
+    """A digest of the local memory files the index is built from: each one's
+    relative name, size and mtime in nanoseconds. Stat only, no file is read, so
+    it is cheap enough to compute before every query. None when a file cannot
+    be looked at (the caller then rebuilds)."""
+    rows = _scan_files(Path(folder))
+    return None if rows is None else _digest_rows(rows)
 
 
 def build_index(folder: Path, synonyms: Optional[dict[str, list[str]]] = None) -> dict[str, Any]:
@@ -262,6 +308,10 @@ def build_index(folder: Path, synonyms: Optional[dict[str, list[str]]] = None) -
     map through both build_index and recall.
     """
     folder = Path(folder)
+    # Taken before any file is read, so a file changed during the build still
+    # counts as newer than the index.
+    built_ns = time.time_ns()
+    fingerprint = memory_fingerprint(folder)
     if synonyms is None:
         synonyms = load_synonyms(folder)
     rev, canon = _build_synonym_rev(synonyms)
@@ -278,8 +328,8 @@ def build_index(folder: Path, synonyms: Optional[dict[str, list[str]]] = None) -
         try:
             # Read only the head: frontmatter is small, and this caps memory use
             # if a large non-memory file is mistakenly named *.md (local DoS).
-            with path.open("r", encoding="utf-8", errors="ignore") as fh:
-                text = fh.read(FRONTMATTER_READ_BYTES)
+            head = read_bytes_no_follow(path, limit=FRONTMATTER_READ_BYTES, root=folder)
+            text = head.decode("utf-8", errors="ignore")
             mtime = path.stat().st_mtime
         except OSError:
             continue
@@ -292,11 +342,16 @@ def build_index(folder: Path, synonyms: Optional[dict[str, list[str]]] = None) -
         fm, _body = _mf_parse(text)
         if not fm:
             continue
+        # A field of the wrong YAML type (a list where text belongs) must not
+        # abort the build for every other memory: a non-text status is not
+        # live, a non-text uid falls back to the path, non-list tags are none.
         status = fm.get("status", "active")
-        if status not in LIVE_STATUSES:
+        if not isinstance(status, str) or status not in LIVE_STATUSES:
             continue
 
-        uid = fm.get("uid") or f"path:{rel}"
+        uid = fm.get("uid")
+        if not isinstance(uid, str) or not uid:
+            uid = f"path:{rel}"
         if uid in entries:
             # Loop the disambiguation suffix until it is genuinely unused. A
             # single `#{dup}` could collide with a memory that legitimately
@@ -311,6 +366,8 @@ def build_index(folder: Path, synonyms: Optional[dict[str, list[str]]] = None) -
         tags = fm.get("tags") or []
         if isinstance(tags, str):
             tags = [tags]
+        if not isinstance(tags, list):
+            tags = []
         explicit = _as_str_list(fm.get("triggers"))
 
         entries[uid] = {
@@ -372,6 +429,8 @@ def build_index(folder: Path, synonyms: Optional[dict[str, list[str]]] = None) -
         "tokens": tokens_map,
         "phrases": phrases_map,
         "manifest": manifest,
+        "fingerprint": fingerprint,
+        "built_ns": built_ns,
         "synonyms_hash": _synonyms_hash(synonyms),
     }
     # Route the freshly built payload through the SAME sanitizer the load path
@@ -386,12 +445,16 @@ def build_index(folder: Path, synonyms: Optional[dict[str, list[str]]] = None) -
 
 
 def write_index(folder: Path, payload: dict[str, Any]) -> Path:
-    """Atomically write the index to <folder>/.memforge/recall-index.json."""
+    """Atomically write the index to <folder>/.memforge/recall-index.json.
+
+    Raises SymlinkWriteRefused when the temporary file or the .memforge folder
+    is a symlink: a planted link must not send the index outside the folder.
+    """
     folder = Path(folder)
     out = folder / INDEX_REL_PATH
     out.parent.mkdir(parents=True, exist_ok=True)
     tmp = out.with_suffix(".json.tmp")
-    tmp.write_text(json.dumps(payload, ensure_ascii=False, indent=1), encoding="utf-8")
+    write_text_inside(folder, tmp, json.dumps(payload, ensure_ascii=False, indent=1))
     os.replace(tmp, out)
     return out
 
@@ -426,6 +489,53 @@ def index_is_stale(folder: Path, payload: dict[str, Any]) -> bool:
         return False
     except Exception:
         return True
+
+
+def current_index(folder: Path) -> tuple[Optional[dict[str, Any]], Optional[str]]:
+    """The index for what is in the folder now, and a warning or None.
+
+    The index file is a local cache: it is served only when its fingerprint
+    equals the one computed from the folder's files. Any other index, one that
+    arrived by pull or was edited by hand included, is replaced by a fresh
+    build. When the new index cannot be written the build is served from memory
+    and the warning says why. None when there is nothing to answer from."""
+    folder = Path(folder)
+    if not os.path.isdir(folder):
+        return None, None
+    rows = _scan_files(folder)
+    fingerprint = None if rows is None else _digest_rows(rows)
+    existing = load_index(folder)
+    # A file whose mtime is within the racy window of the build, the edge
+    # included, may carry the size and
+    # mtime the build saw, so the fingerprint cannot vouch for it. An index
+    # without a build time is rebuilt once.
+    built_ns = existing.get("built_ns") if existing is not None else None
+    racy = (
+        built_ns is None
+        or rows is None
+        or any(abs(mtime_ns - built_ns) <= RACY_WINDOW_NS for _, _, mtime_ns in rows)
+    )
+    # The synonym override is not a memory file, so the fingerprint cannot see
+    # it; an index built under other synonyms would normalize queries wrongly.
+    if (
+        existing is not None
+        and fingerprint is not None
+        and not racy
+        and existing.get("fingerprint") == fingerprint
+        and existing.get("synonyms_hash") == _synonyms_hash(load_synonyms(folder))
+    ):
+        return existing, None
+    payload = build_index(folder)
+    if not payload["entries"] and not payload["manifest"] and existing is None:
+        return payload, None  # no memories and no index: leave the folder as it is
+    warning = None
+    try:
+        write_index(folder, payload)
+    except SymlinkWriteRefused as exc:
+        warning = f"recall index not written for {folder}: {exc}"
+    except OSError:
+        pass  # a store this process cannot write is still answered from memory
+    return payload, warning
 
 
 # --- query ------------------------------------------------------------------
@@ -474,7 +584,15 @@ def _sanitize_payload(payload: dict[str, Any], folder: str) -> Optional[dict[str
              for k, v in m.items() if isinstance(k, str) and isinstance(v, list)}
             if isinstance(m, dict) else {}
         )
-    payload["folder"] = str(payload.get("folder") or folder)
+    # The folder being read, never the one the file names: an index that
+    # arrives by pull must not point citations at another place.
+    payload["folder"] = str(folder)
+    fingerprint = payload.get("fingerprint")
+    payload["fingerprint"] = fingerprint if isinstance(fingerprint, str) else None
+    built_ns = payload.get("built_ns")
+    payload["built_ns"] = (
+        built_ns if isinstance(built_ns, int) and not isinstance(built_ns, bool) else None
+    )
     return payload
 
 
@@ -483,9 +601,10 @@ def load_index(folder: Path) -> Optional[dict[str, Any]]:
     oversized. Never raises (fail-open-empty per spec post-condition 7)."""
     try:
         p = Path(folder) / INDEX_REL_PATH
-        if p.stat().st_size > MAX_INDEX_BYTES:
+        raw = read_bytes_no_follow(p, limit=MAX_INDEX_BYTES + 1, root=Path(folder))
+        if len(raw) > MAX_INDEX_BYTES:
             return None
-        payload = json.loads(p.read_text(encoding="utf-8"))
+        payload = json.loads(raw.decode("utf-8"))
         if not isinstance(payload, dict) or payload.get("version") != INDEX_VERSION:
             return None
         return _sanitize_payload(payload, str(folder))

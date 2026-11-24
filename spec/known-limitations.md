@@ -35,6 +35,12 @@ These are the residuals of the trust model in `SPEC.md` §"Commit trust (v1.0.0+
 
 A mode that is refused because its proofs have not passed is the release gate working. It is not a defect.
 
+## File-system and output limits
+
+- **Windows: a link swapped in for a file that does not exist yet.** A file cannot be opened relative to a folder handle on Windows, so the check for a link and the open are two steps. On Windows, a link swapped in for a file that does not exist yet, between the check and the open, has its target created empty before the write is refused; nothing is written through it. A link already there is refused before the open. Linux and macOS open the file relative to a folder handle and do not have this gap.
+- **Windows: line endings.** Files are written with the platform's newline, so a file written on Windows ends its lines with CRLF. Every reader accepts LF and CRLF, and `memory-index-gen --check` reads either.
+- **`memforge paths` writes folder names as bytes.** Every other command-line tool that prints text from a store shows control characters from file names, frontmatter and quoted text as visible escapes (for example `\x1b`). `memforge paths` writes the default folder names as file-system bytes by design, so scripts get the real name.
+
 ## Removed in 1.0.0
 
 Per-memory signatures, the operator registry, agent attestations, sender sequences, key rotation, revocation and recovery, the messaging adapter contract, and the 13 commands that implemented them are removed. See `docs/migrating-to-1.0.md`. Legacy `identity` and `signature` frontmatter is preserved and ignored.
@@ -42,7 +48,7 @@ Per-memory signatures, the operator registry, agent attestations, sender sequenc
 ## Other deferred refinements
 
 - **Embedding or semantic ranking in recall.** Matching is deterministic keyword, light-stem and synonym expansion. Embedding ranking is out of scope; promote it if recall miss-rate data justifies it.
-- **Per-file incremental recall index build.** The reference build recompiles the whole index and skips a rebuild when nothing changed. Adequate for typical folder sizes.
+- **Per-file incremental recall index build.** The reference build recompiles the whole index when the fingerprint of the memory files (name, size and modification time) differs from the stored one, or when any memory file's modification time is within 2 seconds (inclusive, either side) of the build time stored in the index, and skips the rebuild otherwise. A file touched in the last 2 seconds before a build is therefore rebuilt on each query until the window passes. Every query stats each memory file to compute that fingerprint; no file content is hashed. Adequate for typical folder sizes.
 - **Lint scoring is non-normative.** The spec defines lint by the dimensions it scores and the safety posture it observes, not by a scoring algorithm. Do not treat a numeric score as a conformance signal.
 - **The always-set budget is advisory.** It is a warning, never an integrity violation, so `--strict` is unaffected.
 - **Wikilink rewriting is limited to the rename alias set** (old stem, name, uid). A uid-only strict mode for short-stem collision safety is deferred to a future major version.

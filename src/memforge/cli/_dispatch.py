@@ -11,7 +11,8 @@ import os
 import sys
 import traceback
 
-from memforge.cli import _removed, init_store, sync
+from memforge._terminal import terminal_safe
+from memforge.cli import _removed, init_store, paths, sync
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -30,11 +31,13 @@ def build_parser() -> argparse.ArgumentParser:
 
     init_store.register(sub)
     sync.register(sub)
+    paths.register(sub)
     _removed.register(sub)
 
     return p
 
 
+@terminal_safe
 def main(argv=None) -> int:
     args_list = list(sys.argv[1:] if argv is None else argv)
     # A removed command answers before parsing, so any trailing flags or

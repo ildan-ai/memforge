@@ -93,7 +93,7 @@ def test_undo_refuses_move_target_outside_folder(tmp_path: Path):
 
 def test_undo_happy_path_within_folder(tmp_path: Path, monkeypatch):
     """A legitimate in-folder undo still works after the containment guard."""
-    # Force the no-rewriter fallback path (plain shutil.move).
+    # Force the no-rewriter fallback path (a move without the link rewrite).
     monkeypatch.setattr(rollup, "find_link_rewriter", lambda: None)
 
     folder = tmp_path / "memory"
@@ -128,16 +128,16 @@ def test_create_rolls_back_on_move_failure(tmp_path: Path, monkeypatch):
     f2 = _write_memory(folder, "beta")
     f3 = _write_memory(folder, "gamma")
 
-    real_move = rollup.shutil.move
+    real_move = rollup._move_inside
     calls = {"n": 0}
 
-    def flaky_move(src, dst):
+    def flaky_move(root, src, dst):
         calls["n"] += 1
         if calls["n"] == 2:  # fail on the second file
             raise OSError("simulated move failure")
-        return real_move(src, dst)
+        return real_move(root, src, dst)
 
-    monkeypatch.setattr(rollup.shutil, "move", flaky_move)
+    monkeypatch.setattr(rollup, "_move_inside", flaky_move)
 
     rc = rollup.cmd_create(folder, "cluster", [f1, f2, f3], None, None, dry_run=False)
     assert rc == 2

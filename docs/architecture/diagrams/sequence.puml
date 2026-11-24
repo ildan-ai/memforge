@@ -1,0 +1,93 @@
+@startuml sequence
+!include _style.iuml
+title MemForge primary path: memforge sync
+
+actor "Receiver" as User
+participant "**memforge sync**\nmemforge.sync" as Sync
+participant "_sync_git\nresolve_tools" as Tools
+participant "Store\n(store's own git,\nuser's environment less\nrepository-local git variables)" as Store
+participant "Isolation\nthrowaway bare git,\ncleared environment" as Iso
+participant "Verifier\n_sync_verify" as Ver
+database "Git remote" as Remote
+
+User -> Sync : memforge sync [~--check]\n[~--trust-head <commit> | ~--adopt-local]
+Sync -> Sync : memory root has its own .git entry?\n(before any program runs)
+alt a folder above it has one
+  Sync --> User : exit 1 root_not_toplevel (SC-08)
+else none
+  Sync --> User : exit 1 not_a_repository
+end
+Sync -> Tools : find git, ssh-keygen, gpg, gitsign\nin absolute PATH entries (SC-06)
+alt a tool resolves inside the store
+  Tools --> User : exit 1 tool_in_store
+end
+Tools --> User : verifier <name>: path= version= sha256=
+Sync -> Store : git rev-parse ~--show-toplevel
+alt memory root is not the top level
+  Sync --> User : exit 1 root_not_toplevel (SC-08)
+end
+Sync -> Store : git config ~--local ~--get memforge.verifiedHead
+alt unset and no pin
+  Sync --> User : exit 1 no_pin
+else set and a pin flag given
+  Sync --> User : exit 1 pin_refused
+end
+Sync -> Sync : start S = verifiedHead, or the pin
+Sync -> Store : branch.<name>.remote, branch.<name>.merge
+alt detached HEAD / no upstream
+  Sync --> User : exit 1 no_branch / no_upstream
+end
+Store -> Remote : git fetch ~--no-recurse-submodules\n~--no-write-fetch-head <remote> <branch> (SC-09)
+Remote --> Store : objects, one remote-tracking ref
+Sync -> Iso : mkdtemp memforge-sync-*,\ngit init ~--bare ~--template=,\nobjects/info/alternates (SC-05)
+Sync -> Iso : merge-base ~--is-ancestor local fetched
+alt neither is an ancestor
+  Iso --> User : exit 1 diverged (never merges)
+end
+Sync -> Sync : target H = fetched head or local head
+loop first-parent walk H back to S
+  Sync -> Iso : git cat-file commit <id>
+  alt commit absent in a shallow clone
+    Iso --> User : exit 2 shallow_range
+  else root reached before S
+    Iso --> User : exit 2 history_rewrite (SC-07)
+  end
+end
+loop each commit C in S..H, oldest first
+  Sync -> Ver : verify(C)
+  Ver -> Iso : ls-tree C^1 ~-- the three list names,\nread up to 4 KiB (SC-44)
+  alt no list / two lists or a name twice / gpg or keyless list
+    Ver --> User : exit 2 list_missing / ambiguous_list /\nmode_unreleased (SC-02)
+  end
+  Ver -> Iso : cat-file -t, then -s, then the blob (SC-44), parse_list
+  alt not a blob, over 1 MiB, control char,\nnon-ASCII entry, quote, cert-authority,\nvalid-after, valid-before, no key
+    Ver --> User : exit 2 list_invalid (SC-03, SC-44)
+  end
+  Ver -> Iso : ls-tree C ~-- .memforge/ (own tree)
+  alt not exactly one valid list
+    Ver --> User : exit 2 list_removed (SC-04)
+  end
+  alt no gpgsig header
+    Ver --> User : exit 2 unsigned
+  end
+  Ver -> Iso : git -c gpg.format=ssh\n-c gpg.ssh.program=<resolved ssh-keygen>\n-c gpg.ssh.allowedSignersFile=<parent list>\nverify-commit C (SC-01)
+  alt non-zero exit
+    Ver --> User : exit 2 ssh_not_verified, commit C
+  end
+end
+Sync -> Iso : remove throwaway directory
+Sync --> User : mode ssh: verdict has no receiver-local input...\nverified N commit(s) from S to H
+alt with the check flag
+  Sync --> User : exit 0, no branch, work tree or verifiedHead changed
+else
+  Sync -> Store : git merge ~--ff-only H
+  alt merge fails
+    Sync --> User : exit 1 ff_failed, verifiedHead unchanged
+  end
+  Sync -> Store : git config ~--local memforge.verifiedHead H (SC-08)
+  alt write fails
+    Sync --> User : exit 1 state_write_failed
+  end
+  Sync --> User : verifiedHead is now H, exit 0
+end
+@enduml

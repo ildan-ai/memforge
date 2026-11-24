@@ -4,31 +4,31 @@ Cursor adapter for MemForge. Surfaces a memory folder via Cursor's `.cursor/rule
 
 ## Setup
 
-1. Pick a memory folder (typically `~/.claude/projects/<workspace>/memory/` or `~/.cursor/memory/`).
+1. Pick a memory folder (typically `~/.claude/projects/<project>/memory/` or `~/.cursor/memory/`).
 2. `git init` inside the memory folder so changes can be versioned.
 3. Seed `MEMORY.md` (or copy from an existing memory folder).
-4. **Load on session start** — copy `rules/memory-load.mdc` into `~/.cursor/rules/` (global) or `<repo>/.cursor/rules/` (project-scoped). Edit the path inside the rule to match your memory folder.
-5. **Auto-commit on writes** — install the cross-platform watcher:
+4. **Load on session start**: copy `rules/memory-load.mdc` into `~/.cursor/rules/` (global) or `<repo>/.cursor/rules/` (project-scoped). Edit the path inside the rule to match your memory folder.
+5. **Auto-commit on writes**: install the cross-platform watcher:
    ```bash
-   python3 -m pip install watchdog        # one-time
-   ~/claude-projects/memforge/tools/memory-watch
+   memory-watch --path <memory folder>
    ```
+   `memory-watch` is installed with `ildan-memforge`, `watchdog` included.
    This runs in the foreground until you Ctrl-C. To run as a daemon at login, pick the template that matches your OS:
-   - **macOS** — `daemon-launchd.plist` (LaunchAgent)
-   - **Linux** — `daemon-systemd.service` (user-level systemd)
-   - **Windows** — `daemon-windows-task.ps1` (PowerShell-driven Scheduled Task)
+   - **macOS**: `daemon-launchd.plist` (LaunchAgent)
+   - **Linux**: `daemon-systemd.service` (user-level systemd)
+   - **Windows**: `daemon-windows-task.ps1` (PowerShell-driven Scheduled Task)
 6. Restart Cursor. The rule will load `MEMORY.md` content into every chat as session-start context.
 
 ### Windows-specific notes
 
 - Cursor on Windows reads `.cursor/rules/*.mdc` from the same paths as macOS / Linux. Copy `rules/memory-load.mdc` into `%USERPROFILE%\.cursor\rules\` (global) or `<repo>\.cursor\rules\` (project).
 - Edit `rules/memory-load.mdc` to use Windows-style paths if your memory folders live under `%USERPROFILE%`. The `@`-syntax in the rule accepts absolute paths in either form.
-- `memory-watch` requires Python 3 + the `watchdog` package + git on `PATH`. Install Python 3 from python.org or the Microsoft Store; `py -m pip install watchdog` for the watcher backend.
+- `memory-watch` requires `git` on `PATH`; it is installed with `ildan-memforge`, `watchdog` included, so no separate watcher install is needed.
 
 ## What works
 
 - **Auto-load**: rules in `.cursor/rules/` are surfaced to the model on every chat. Pointing one at `MEMORY.md` gives MemForge a session-start surface equivalent to Claude Code's `autoMemoryDirectory`.
-- **Auto-commit**: `memory-watch` runs `git add -A && git commit` on every settled filesystem write inside the memory folder. Same effect as the Claude Code `PostToolUse` hook, just driven by filesystem events instead of tool events.
+- **Auto-commit**: `memory-watch` commits on every settled filesystem write inside the memory folder. It stages the memory `.md` files outside `.memforge/` by name, never `.memforge/` itself (the recall index is a local cache and is never committed), and commits just those names. Same effect as the Claude Code `PostToolUse` hook, just driven by filesystem events instead of tool events.
 - **All MemForge tools**: `memory-audit-deep`, `memory-rollup`, `memory-query`, `memory-cluster-suggest`, `memory-dlp-scan`, `memory-audit-log`, etc. all work unchanged. They operate on the filesystem, not on the agent.
 - **Sensitivity filtering**: Cursor rules support `alwaysApply: false` + glob scoping. You can split sensitive memories into a separate folder and load only the public-tier ones via a more restrictive rule.
 
@@ -44,10 +44,10 @@ Cursor exposes **no pre-write hook** (writes surface after the fact via `memory-
 
 ## Files in this adapter
 
-- `rules/memory-load.mdc` — Cursor rule that loads `MEMORY.md` content as session-start context. Copy to `~/.cursor/rules/` or `<repo>/.cursor/rules/`.
-- `daemon-launchd.plist` — macOS LaunchAgent template for running `memory-watch` as a background daemon. Copy to `~/Library/LaunchAgents/com.memforge.memory-watch.plist`, edit the path, then `launchctl load ~/Library/LaunchAgents/com.memforge.memory-watch.plist`.
-- `daemon-systemd.service` — Linux systemd user-service template. Copy to `~/.config/systemd/user/memforge-watch.service`, then `systemctl --user enable --now memforge-watch.service`.
-- `daemon-windows-task.ps1` — Windows PowerShell script that registers a Scheduled Task running `memory-watch` at user login. Run once: `powershell -ExecutionPolicy Bypass -File daemon-windows-task.ps1`. Edit the `$MemoryWatchPath` variable inside before running.
+- `rules/memory-load.mdc`: Cursor rule that loads `MEMORY.md` content as session-start context. Copy to `~/.cursor/rules/` or `<repo>/.cursor/rules/`.
+- `daemon-launchd.plist`: macOS LaunchAgent template for running `memory-watch` as a background daemon. Copy to `~/Library/LaunchAgents/com.memforge.memory-watch.plist`, replace `MEMORY_WATCH` with the absolute path of the installed `memory-watch` command and `MEMORY_FOLDER` with your memory folder, then `launchctl load ~/Library/LaunchAgents/com.memforge.memory-watch.plist`.
+- `daemon-systemd.service`: Linux systemd user-service template. Copy to `~/.config/systemd/user/memforge-watch.service`, put the absolute path of the installed `memory-watch` command and of your memory folder in `ExecStart`, then `systemctl --user enable --now memforge-watch.service`.
+- `daemon-windows-task.ps1`: Windows PowerShell script that registers a Scheduled Task running `memory-watch` at user login. Run once: `powershell -ExecutionPolicy Bypass -File daemon-windows-task.ps1`. Edit the `$MemoryFolder` variable inside before running; the script finds the installed `memory-watch` command on `PATH`.
 
 ## Multi-memory-folder workflow
 

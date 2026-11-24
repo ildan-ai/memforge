@@ -6,7 +6,7 @@ Two flavors of every example: bash (macOS / Linux / Git Bash on Windows / WSL) a
 
 ## commit-msg hook: enforce `memforge:` prefix grammar
 
-Rejects commits violating the `memforge:` prefix grammar for Tier 2 scoped paths (config and snoozes). Catches the bulk of common mistakes at commit time, before the diff lands in the audit trail.
+Rejects commits violating the `memforge:` prefix grammar for Tier 2 scoped paths (config, waivers and snoozes), and a waiver commit that holds other files. Catches the bulk of common mistakes at commit time, before the diff lands in the audit trail. It does not check that a config commit touches only the config file, and it misses a snooze file whose name holds a newline; `memory-audit` reports both.
 
 ### bash version (`git-hooks/commit-msg`)
 
@@ -29,19 +29,21 @@ exit `$LASTEXITCODE
 "@ | Set-Content -LiteralPath .git\hooks\commit-msg -Encoding utf8
 ```
 
-Extend either version for `memforge: resolve <topic>` and `memforge: alias <topic>` as your team adopts those operations. The hook checks commit-message prefixes only. Commit signing is a separate git setting (`commit.gpgsign true`), and `memforge sync` checks the signatures. See `docs/quickstart.md` §"Commit hygiene and the `memforge:` prefixes" and `docs/team-bootstrap.md`.
+The hook checks config, snooze and waiver commits. Extend either version for `memforge: resolve <topic>` and `memforge: alias <topic>` as your team adopts those operations. The hook checks commit-message prefixes only. Commit signing is a separate git setting (`commit.gpgsign true`), and `memforge sync` checks the signatures. See `docs/quickstart.md` §"Commit hygiene and the `memforge:` prefixes" and `docs/team-bootstrap.md`.
 
 ## auto-commit watcher: auto-commit memory `.md` writes
 
-Watches a memory-root and auto-commits memory `.md` files as they land. Skips Tier 2 scoped paths so the `memforge` CLI's own commits land cleanly without a race. It commits only `.md` files, so a signer list file (`.memforge/allowed_signers` and the like) is never auto-committed; those land in a deliberate signed commit.
+Watches a memory-root and auto-commits memory `.md` files as they land. Skips everything under `.memforge/` (config, snoozes, waivers, signer lists), so the `memforge` CLI's own commits land cleanly without a race and those files land only in a deliberate signed commit. It commits only `.md` files outside `.memforge/`.
 
 ### bash version (`scripts/memforge-auto-commit-watcher.sh`)
 
 macOS requires fswatch (`brew install fswatch`); Linux requires inotify-tools (`apt install inotify-tools`).
 
 ```bash
-./examples/scripts/memforge-auto-commit-watcher.sh ~/.claude/global-memory &
+./examples/scripts/memforge-auto-commit-watcher.sh ~/.memforge/global-memory &
 ```
+
+Pass the folder `memforge paths` prints. `~/.memforge/global-memory` is the 1.0 default; an existing Claude Code store is under `~/.claude/` instead.
 
 Stop with `kill <PID>` or `fg` + Ctrl-C.
 

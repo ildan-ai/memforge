@@ -7,6 +7,7 @@ normative post-condition from SPEC.md §"Recall operation".
 from __future__ import annotations
 
 import json
+import os
 from pathlib import Path
 
 import pytest
@@ -469,6 +470,10 @@ def test_cli_rebuild_skips_when_not_stale(folder: Path, capsys):
     # MINOR recall-03: --rebuild now consumes index_is_stale and reuses an
     # up-to-date index instead of rewriting it every time.
     from memforge.cli import recall as cli
+    # Files written moments before a build are inside the racy window and would
+    # be rebuilt on purpose; a quiet store has older files.
+    for md in folder.glob("*.md"):
+        os.utime(md, (md.stat().st_atime - 3600, md.stat().st_mtime - 3600))
     cli.main(["--path", str(folder), "--rebuild"])  # initial build
     idx = folder / recall.INDEX_REL_PATH
     mtime_before = idx.stat().st_mtime_ns

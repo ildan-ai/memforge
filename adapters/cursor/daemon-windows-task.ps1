@@ -1,8 +1,10 @@
 # Register memforge memory-watch as a Windows Scheduled Task that
 # starts at user login and stays running.
 #
-# Usage (PowerShell, regular user — no admin needed for user tasks):
-#   1. Edit $MemoryWatchPath below to point at your memory-watch script.
+# Usage (PowerShell, regular user; no admin needed for user tasks):
+#   1. Install the package (pip install ildan-memforge). It installs the
+#      memory-watch command, watchdog included. Edit $MemoryFolder below to
+#      name your memory folder.
 #   2. Run this script once:
 #        powershell -ExecutionPolicy Bypass -File daemon-windows-task.ps1
 #   3. Verify:
@@ -12,35 +14,31 @@
 #        Unregister-ScheduledTask -TaskName "MemForge-MemoryWatch" -Confirm:$false
 #
 # Prereqs:
-#   - Python 3 on PATH.
-#   - watchdog installed (python -m pip install watchdog).
+#   - ildan-memforge installed, with its Scripts folder on PATH. No separate
+#     watchdog install is needed.
 #   - git on PATH.
 #   - Memory folder is git-init'd.
 
 $TaskName = "MemForge-MemoryWatch"
 
-# Edit this to your memory-watch location.
-# Typical path on Windows when memforge is cloned to your user profile:
-$MemoryWatchPath = "$env:USERPROFILE\claude-projects\memforge\tools\memory-watch"
+# Edit this to the absolute path of your memory folder.
+$MemoryFolder = "<absolute path to your memory folder>"
 
-# Resolve the python executable; py launcher is preferred on Windows.
-$PythonExe = (Get-Command py -ErrorAction SilentlyContinue).Source
-if (-not $PythonExe) {
-    $PythonExe = (Get-Command python -ErrorAction SilentlyContinue).Source
-}
-if (-not $PythonExe) {
-    Write-Error "Python not found on PATH. Install Python 3 first."
+# The memory-watch command that pip installed with ildan-memforge.
+$MemoryWatchPath = (Get-Command memory-watch -ErrorAction SilentlyContinue).Source
+if (-not $MemoryWatchPath) {
+    Write-Error "memory-watch not found on PATH. Install ildan-memforge into an environment whose Scripts folder is on PATH."
     exit 1
 }
 
-if (-not (Test-Path $MemoryWatchPath)) {
-    Write-Error "memory-watch not found at $MemoryWatchPath. Edit this script."
+if (-not (Test-Path $MemoryFolder)) {
+    Write-Error "Memory folder not found at $MemoryFolder. Edit this script."
     exit 1
 }
 
 $Action = New-ScheduledTaskAction `
-    -Execute $PythonExe `
-    -Argument "`"$MemoryWatchPath`" --quiet"
+    -Execute $MemoryWatchPath `
+    -Argument "--path `"$MemoryFolder`" --quiet"
 
 $Trigger = New-ScheduledTaskTrigger -AtLogOn -User $env:USERNAME
 

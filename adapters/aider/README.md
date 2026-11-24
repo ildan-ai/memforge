@@ -6,26 +6,27 @@ Aider adapter for MemForge. Surfaces a memory folder via Aider's `--read` flag (
 
 1. Pick a memory folder. `git init` if not already.
 2. Seed `MEMORY.md` (or copy from an existing memory folder).
-3. **Load on session start** — choose one:
+3. **Load on session start**: choose one:
 
-   **Option A: command-line flag.** Add to your aider invocation:
+   **Option A: command-line flag.** Pass `--read` for the `MEMORY.md` of each folder `memforge paths` prints. On a fresh 1.0 install those are:
    ```bash
-   aider --read ~/.claude/global-memory/MEMORY.md \
-         --read ~/.claude/projects/<workspace>/memory/MEMORY.md \
+   aider --read ~/.memforge/memory/MEMORY.md \
+         --read ~/.memforge/global-memory/MEMORY.md \
          <your-source-files>
    ```
+   If you already have a Claude Code store, `memforge paths` prints `~/.claude/projects/<project>/memory` and `~/.claude/global-memory` instead; use those. The `aider-mem` wrapper below does this lookup for you.
 
    **Option B: `.aider.conf.yml` (recommended for daily use).** Copy `aider.conf.yml.example` from this folder into `~/.aider.conf.yml` (global) or your project root, edit the paths, then start aider normally.
 
-4. **Auto-commit on writes** — aider's native git integration auto-commits source-file edits per turn, but it does NOT auto-commit changes to `--read` files (those are read-only context). For memory files that aider edits via the `/add` command, aider DOES auto-commit. For external edits to memory files (your editor, tools, other agents), install and run the cross-platform watcher:
+4. **Auto-commit on writes**: aider's native git integration auto-commits source-file edits per turn, but it does NOT auto-commit changes to `--read` files (those are read-only context). For memory files that aider edits via the `/add` command, aider DOES auto-commit. For external edits to memory files (your editor, tools, other agents), install and run the cross-platform watcher:
    ```bash
-   python3 -m pip install watchdog        # one-time, all platforms
-   ~/claude-projects/memforge/tools/memory-watch
+   memory-watch --path <memory folder>
    ```
+   `memory-watch` is installed with `ildan-memforge`, `watchdog` included.
    For daemon-style operation pick the template from `../cursor/`:
-   - **macOS** — `daemon-launchd.plist`
-   - **Linux** — `daemon-systemd.service`
-   - **Windows** — `daemon-windows-task.ps1` (PowerShell)
+   - **macOS**: `daemon-launchd.plist`
+   - **Linux**: `daemon-systemd.service`
+   - **Windows**: `daemon-windows-task.ps1` (PowerShell)
 
 ## What works
 
@@ -43,9 +44,9 @@ Aider adapter for MemForge. Surfaces a memory folder via Aider's `--read` flag (
 
 ## Files in this adapter
 
-- `aider.conf.yml.example` — Aider config template with `read:` entries pointing at typical memory folders. Copy to `~/.aider.conf.yml` (macOS / Linux) or `%USERPROFILE%\.aider.conf.yml` (Windows) and edit.
-- `aider-memory-cmd.sh` — bash/zsh convenience function that wraps `aider` with the right `--read` flags for memforge folders. Source from `~/.bashrc` or `~/.zshrc` and use `aider-mem` instead of `aider`.
-- `aider-memory-cmd.ps1` — PowerShell equivalent for Windows. Dot-source from your PowerShell profile (`. $PROFILE` after editing).
+- `aider.conf.yml.example`: Aider config template with `read:` entries pointing at typical memory folders. Copy to `~/.aider.conf.yml` (macOS / Linux) or `%USERPROFILE%\.aider.conf.yml` (Windows) and edit.
+- `aider-memory-cmd.sh`: bash/zsh convenience function that wraps `aider` with the right `--read` flags for memforge folders. Source from `~/.bashrc` or `~/.zshrc` and use `aider-mem` instead of `aider`. It asks `memforge paths` for the default memory folders and passes `--read` for each folder's `MEMORY.md` that exists, so it reads the same store as every memforge tool: `MEMFORGE_MEMORY_PATH` if set, else the Claude Code store of the git root (the nearest folder up the tree with a `.git` entry, or the current folder outside a repository), else `~/.memforge`. In a linked worktree that is the worktree's folder; whether Claude Code does the same is unconfirmed, so set `MEMFORGE_MEMORY_PATH` if the store is not found. It needs `memforge` on `PATH`; without it, it says so and does not start aider.
+- `aider-memory-cmd.ps1`: PowerShell equivalent for Windows, with the same behavior. Dot-source from your PowerShell profile (`. $PROFILE` after editing).
 
 ## Write-boundary gate (spec v0.7.0)
 
@@ -57,22 +58,20 @@ Aider auto-commits with messages like `aider: <description>`. If you want memory
 
 ## Honoring sensitivity
 
-To exclude `restricted` or `privileged` memories from the aider context, pre-generate a filtered MEMORY.md:
+`memory-index-gen --viewer-tier` filters by the `access` label only, not by `sensitivity`. A memory with `sensitivity: privileged` and no `access` line is still printed. So run the gates first and start aider only if they pass:
 
 ```bash
-memory-index-gen --print --viewer-tier internal --path ~/your-memory-folder > /tmp/aider-memory.md
-aider --read /tmp/aider-memory.md ...
+memory-audit --export-tier=internal --strict --path ~/your-memory-folder &&
+memory-dlp-scan --paths ~/your-memory-folder/*.md --strict &&
+out=$(mktemp) &&
+memory-index-gen --print --viewer-tier internal --path ~/your-memory-folder > "$out" &&
+aider --read "$out" ...
 ```
+
+The filtered index goes to a file `mktemp` creates (mode 600, a name nobody else can predict), not to a fixed name in `/tmp`, which other accounts can read or pre-create. Remove it when the session ends: `rm -f "$out"`.
 
 Re-run when memory changes. (Could be wired as a pre-aider shell function.)
 
 ### v0.4 enforcement
-
-Pair the filtered index with the v0.4 enforcement gates so a mislabeled memory cannot leak into the aider context:
-
-```bash
-memory-audit --export-tier=internal --strict --path ~/your-memory-folder
-memory-dlp-scan --paths ~/your-memory-folder/*.md --strict
-```
 
 The audit's export-tier gate fails BLOCKER on declared-tier > export-tier; the DLP cross-check fails BLOCKER on body content whose implied tier exceeds the declared label. Privileged-tier enforcement is a hard floor. See `docs/adapter-implementation-guide.md` §"Secure-mode sensitivity enforcement (v0.4.0+)".

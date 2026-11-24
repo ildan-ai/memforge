@@ -9,9 +9,11 @@ from __future__ import annotations
 
 import os
 import re
+import subprocess
+import threading
 from dataclasses import dataclass
 
-from memforge._sync_git import Fail, Isolation, SyncError, Tool, run
+from memforge._sync_git import TIMEOUT_SECONDS, Fail, Isolation, SyncError, Tool, run
 
 LIST_DIR = ".memforge"
 LIST_FILES = {
@@ -19,6 +21,19 @@ LIST_FILES = {
     "allowed_gpg_fingerprints": "gpg",
     "allowed_identities": "keyless",
 }
+
+# The largest list sync reads. No entry in any mode needs more than a few KB
+# (the longest is an ssh line with the largest RSA key OpenSSH accepts, 16384
+# bits, under 3 KB), so 1 MiB holds hundreds of such lines and thousands of
+# ordinary ones, while a listed signer can no longer make every receiver read
+# a list of any size for each commit judged against it.
+LIST_MAX_BYTES = 1024 * 1024
+
+# The most of a commit's list file listing sync reads. Each `ls-tree` record
+# for a list file is under 200 bytes and a well-formed tree has at most one per
+# name, so only a tree that repeats a name can be longer, and any tree under
+# `.memforge/`, however wide, is judged without reading its other entries.
+LISTING_MAX_BYTES = 4096
 
 # gpg and keyless stay unreleased until their real-tool proofs pass.
 RELEASED_MODES = frozenset({"ssh"})
@@ -32,7 +47,14 @@ MODE_LINES = {
 _HEX = re.compile(r"[0-9a-f]{40}(?:[0-9a-f]{24})?")
 _FINGERPRINT = re.compile(r"[0-9A-Fa-f]{40}")
 _SSH_KEY_TYPE = re.compile(r"(?:ssh-|ecdsa-sha2-|sk-)\S*")
-_SSH_FORBIDDEN = re.compile(r"(?:^|[\s,])(?:cert-authority|valid-after=|valid-before=)", re.IGNORECASE)
+_SSH_FORBIDDEN = re.compile(r'(?:^|[\s,"])(?:cert-authority|valid-after=|valid-before=)', re.IGNORECASE)
+# The one option value a list may quote. ssh-keygen ends a quoted field at its
+# closing quote, so any other quote can join or split fields unseen.
+_SSH_NAMESPACES_VALUE = re.compile(r'(?:^|(?<=[ \t,]))namespaces="[^"]*"', re.IGNORECASE)
+# Every mode: an entry is printable ASCII, space and tab, so trimming and
+# splitting fields can only ever mean space and tab.
+_ENTRY_CHARS = re.compile(r"[\t\x20-\x7e]*")
+_CONTROL = re.compile(r"[\x00-\x08\x0a-\x1f\x7f]")
 
 # Variables a keyless verification may read; gitsign's trust roots, config and network.
 _KEYLESS_PREFIXES = ("GITSIGN_", "SIGSTORE_")
@@ -78,8 +100,14 @@ def parse_list(mode: str, data: bytes) -> tuple:
     except UnicodeDecodeError:
         raise Fail("list_invalid", "list is not valid UTF-8") from None
     entries = []
-    for number, raw in enumerate(text.splitlines(), 1):
-        line = raw.strip()
+    # Lines, blanks and comments as ssh-keygen reads them: split on newline
+    # only, and only space and tab before a `#`. A character either side would
+    # read differently makes the list invalid.
+    for number, raw in enumerate(text.split("\n"), 1):
+        raw = raw.removesuffix("\r")
+        if _CONTROL.search(raw):
+            raise Fail("list_invalid", f"line {number}: control character")
+        line = raw.strip(" \t")
         if not line or line.startswith("#"):
             continue
         entries.append(_parse_line(mode, line, number))
@@ -89,14 +117,18 @@ def parse_list(mode: str, data: bytes) -> tuple:
 
 
 def _parse_line(mode: str, line: str, number: int) -> object:
+    if not _ENTRY_CHARS.fullmatch(line):
+        raise Fail("list_invalid", f"line {number}: only printable ASCII is allowed in an entry")
     if mode == "ssh":
+        if '"' in _SSH_NAMESPACES_VALUE.sub("", line):
+            raise Fail("list_invalid", f'line {number}: a quote is allowed only around a namespaces="..." value')
         if _SSH_FORBIDDEN.search(line):
             raise Fail("list_invalid", f"line {number}: valid-after, valid-before and cert-authority are not allowed")
         if not any(_SSH_KEY_TYPE.fullmatch(token) for token in line.split()):
             raise Fail("list_invalid", f"line {number}: no public key found")
         return line
     if mode == "gpg":
-        field = line.split("#", 1)[0].strip()
+        field = line.split("#", 1)[0].strip(" \t")
         if not _FINGERPRINT.fullmatch(field):
             raise Fail("list_invalid", f"line {number}: expected one 40-hex primary fingerprint")
         return field.upper()
@@ -106,21 +138,70 @@ def _parse_line(mode: str, line: str, number: int) -> object:
     return (parts[0], parts[1])
 
 
+def _list_records(iso: Isolation, commit: str) -> bytes:
+    """The `ls-tree -z` records of the list file names in a commit, read up to
+    LISTING_MAX_BYTES; a longer listing is refused unread."""
+    argv = [iso._git, f"--git-dir={iso.gitdir}", "ls-tree", "-z", commit, "--",
+            *(f"{LIST_DIR}/{name}" for name in LIST_FILES)]
+    try:
+        proc = subprocess.Popen(argv, env=iso.env(), cwd=iso.root, stdin=subprocess.DEVNULL,
+                                stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+    except OSError as exc:
+        raise SyncError("object_missing", f"cannot read tree of {commit}: {exc}") from None
+    timer = threading.Timer(TIMEOUT_SECONDS, proc.kill)
+    timer.start()
+    try:
+        out = proc.stdout.read(LISTING_MAX_BYTES + 1)
+        if len(out) > LISTING_MAX_BYTES:
+            # Close both pipes instead of draining them: on Windows the git on
+            # the path is a launcher, the kill reaches only the launcher, and
+            # draining would read the whole listing into memory.
+            proc.kill()
+            proc.stdout.close()
+            proc.stderr.close()
+            proc.wait()
+            raise Fail("ambiguous_list",
+                       f"the tree names a list file more than once (listing over {LISTING_MAX_BYTES} bytes)")
+        _, err = proc.communicate()
+    finally:
+        timer.cancel()
+    if proc.returncode != 0:
+        detail = err.decode("utf-8", "replace").strip() or f"git ls-tree exited {proc.returncode}"
+        raise SyncError("object_missing", f"cannot read tree of {commit}: {detail}")
+    return out
+
+
 def list_files(iso: Isolation, commit: str) -> dict[str, str]:
     """Map each list file name present in a commit's tree to its blob id."""
-    result = iso.git("ls-tree", "-z", commit, "--", f"{LIST_DIR}/")
-    if result.rc != 0:
-        raise SyncError("object_missing", f"cannot read tree of {commit}: {result.err.strip()}")
     found: dict[str, str] = {}
-    for record in result.out.split(b"\0"):
+    for record in _list_records(iso, commit).split(b"\0"):
         if not record:
             continue
         meta, _, path = record.partition(b"\t")
         mode_bits, kind, blob = meta.decode("ascii", "replace").split()[:3]
         name = path.decode("utf-8", "replace").rsplit("/", 1)[-1]
         if kind == "blob" and name in LIST_FILES:
+            if name in found:
+                raise Fail("ambiguous_list", f"the tree names {name} more than once")
             found[name] = blob
     return found
+
+
+def _blob_size(iso: Isolation, blob: str) -> int:
+    # The tree entry's mode says blob, but it can name any object, and
+    # `cat-file blob` follows a tag to its target: the size checked must be
+    # the size of the object read.
+    result = iso.git("cat-file", "-t", blob)
+    kind = result.out.decode("ascii", "replace").strip()
+    if result.rc != 0:
+        raise SyncError("object_missing", f"cannot read the type of list {blob}: {result.err.strip()}")
+    if kind != "blob":
+        raise Fail("list_invalid", f"list entry names a {kind}, not a blob")
+    result = iso.git("cat-file", "-s", blob)
+    text = result.out.decode("ascii", "replace").strip()
+    if result.rc != 0 or not text.isdigit():
+        raise SyncError("object_missing", f"cannot read the size of list {blob}: {result.err.strip()}")
+    return int(text)
 
 
 def _blob(iso: Isolation, blob: str) -> bytes:
@@ -236,6 +317,9 @@ class Verifier:
         self._parsed: dict[tuple[str, str], tuple] = {}
 
     def _entries(self, mode: str, blob: str) -> tuple[bytes, tuple]:
+        size = _blob_size(self.iso, blob)
+        if size > LIST_MAX_BYTES:
+            raise Fail("list_invalid", f"list is {size} bytes, over the {LIST_MAX_BYTES}-byte limit")
         data = _blob(self.iso, blob)
         key = (mode, blob)
         if key not in self._parsed:
@@ -252,13 +336,15 @@ class Verifier:
         if mode not in self.modes_seen:
             self.modes_seen.append(mode)
         data, entries = self._entries(mode, blob)
+        # A commit refused for its signature state alone is not worth reading
+        # its own list for.
+        if not commit.signed:
+            raise Fail("unsigned", "commit has no signature header")
         try:
             own_mode, own_blob = _single_list(list_files(self.iso, commit.id))
             self._entries(own_mode, own_blob)
         except Fail as exc:
             raise Fail("list_removed", exc.reason + ": " + exc.detail) from None
-        if not commit.signed:
-            raise Fail("unsigned", "commit has no signature header")
         if mode == "ssh":
             _verify_ssh(self.iso, self.tools, commit.id, data)
         elif mode == "gpg":

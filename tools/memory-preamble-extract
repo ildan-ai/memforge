@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Thin shim — invokes memforge.cli.preamble_extract.main()."""
+"""Thin shim: invokes memforge.cli.preamble_extract.main()."""
 import sys
 from memforge.cli.preamble_extract import main
 

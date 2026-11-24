@@ -5,7 +5,7 @@ file's YAML frontmatter contained an unquoted colon-space (e.g., a long
 `description:` line), yaml.safe_load failed, the backfill saw an empty
 fm dict, and apply_change line-appended every required field. On every
 subsequent Write/Edit the auto-commit hook re-ran backfill, which kept
-appending — producing growing blocks of duplicate keys.
+appending, producing growing blocks of duplicate keys.
 
 Two-layer fix under test:
 

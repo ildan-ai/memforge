@@ -1,10 +1,12 @@
-"""agents-md-gen — generate AGENTS.md from MemForge folders.
+"""agents-md-gen: generate AGENTS.md from MemForge folders.
 
 Reads:
-  ~/.claude/CLAUDE.md                                 (voice + rule sections only)
-  ~/.claude/global-memory/                            (global memory folder)
-  ~/.claude/projects/<user>-claude-projects/memory/   (per-cwd memory folder)
+  the memory folders memforge.paths resolves for <cwd> (MEMFORGE_MEMORY_PATH,
+  else the Claude Code layout, else ~/.memforge), per-cwd before global
   <cwd>/CLAUDE.md                                     (repo-specific, if present)
+
+Nothing else is read: AGENTS.md is committed, so no other file in the home
+folder (such as ~/.claude/CLAUDE.md) is opened or copied into it.
 
 Writes:
   <cwd>/AGENTS.md                                     (cross-tool rules file)
@@ -21,8 +23,18 @@ Usage:
 
 Exit codes:
   0 success
-  2 write error, or DLP refusal (rendered AGENTS.md carried a secret), or
-    usage error (argparse exits 2 on bad args)
+  2 write error, a refused read or write (CLAUDE.md, AGENTS.md or the backup
+    in the repo is a symlink or not a regular file), DLP refusal (rendered
+    AGENTS.md carried a BLOCKER or MAJOR secret finding), or usage error
+    (argparse exits 2 on bad args)
+
+A pinned body is copied as literal text inside a backtick fence one longer
+than the longest backtick run in it, so nothing in it reaches the AGENTS.md
+around it.
+
+A memory whose field the generator cannot place (a non-text sensitivity, or a
+name or description carrying generator-only text) is left out and named on
+stderr; the run still exits 0 for the others.
 
 (agentsmd-mainexit-01: exit code 1 was documented but unreachable; the only
 non-success paths return 2, and argparse's own bad-arg exit is also 2.)
@@ -30,38 +42,32 @@ non-success paths return 2, and argparse's own bad-arg exit is also 2.)
 from __future__ import annotations
 
 import argparse
-import re
+import io
+import os
 import sys
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
+
+from memforge.cli.index_gen import (
+    _ANY_LINE_BREAK,
+    fenced_literal,
+    index_line_fields,
+)
+from memforge.discovery import (
+    access_error,
+    read_bytes_no_follow,
+    read_text_no_follow,
+    write_text_inside,
+)
+from memforge.paths import default_memory_paths
+from memforge._terminal import terminal_safe, visible
 
 SENSITIVITY_LEVELS = ["public", "internal", "restricted", "privileged"]
 SENSITIVITY_RANK = {s: i for i, s in enumerate(SENSITIVITY_LEVELS)}
 DEFAULT_MAX_SENSITIVITY = "internal"
 MARKER = "<!-- generated-by: agents-md-gen -->"
 CEILING_BYTES = 20000
-
-CLAUDE_MD_INCLUDE_HEADINGS = [
-    "## Writing voice",
-    "## No fabrication",
-    "## One question at a time",
-    "## Shell",
-]
-
-# Memory filenames whose bodies are inlined verbatim in AGENTS.md because
-# they carry load-bearing rules the IDE agent MUST see, not just index.
-# Other memories appear as description-only index entries.
-CRITICAL_MEMORY_FILENAMES = {
-    "feedback_employer_vs_ildan.md",
-    "feedback_ildan_firm_vs_founder.md",
-    "feedback_cipm_iapp_format.md",
-    "feedback_no_keys_in_files.md",
-    "feedback_precommit_secrets_scan.md",
-    "feedback_no_fabrication.md",
-    "assistant_name.md",
-    "tone_personality.md",
-}
 
 
 @dataclass
@@ -78,9 +84,12 @@ class MemoryEntry:
     # auto-commit hook, a lint reformat) and so is a weak memory-age proxy
     # (agentsmd-mtime-01).
     created: str = ""
+    # Frontmatter `pinned: true`: the body carries a rule the IDE agent must see
+    # verbatim, so it is inlined instead of listed as a description-only entry.
+    pinned: bool = False
 
 
-def parse_frontmatter(path: Path) -> tuple[dict, str]:
+def parse_frontmatter(path: Path, root: Path) -> tuple[dict, str]:
     """Parse a memory file's frontmatter + body via the canonical
     memforge.frontmatter.parse (yaml.safe_load).
 
@@ -91,34 +100,76 @@ def parse_frontmatter(path: Path) -> tuple[dict, str]:
     """
     from memforge.frontmatter import parse as _mf_parse
 
-    text = path.read_text(encoding="utf-8", errors="replace")
+    text = read_text_no_follow(path, root=root)
     return _mf_parse(text)
 
 
 def load_memory_folder(folder: Path) -> list[MemoryEntry]:
-    if not folder.is_dir():
+    """The memories in ``folder``; none when it is absent or not a folder.
+
+    Raises OSError for a folder that is there but cannot be looked at or
+    listed: AGENTS.md would otherwise leave out its memories without a word.
+    """
+    err = access_error(folder)
+    if err is not None:
+        raise err
+    if not os.path.isdir(folder):
         return []
     entries: list[MemoryEntry] = []
     for p in folder.glob("*.md"):
         if p.name == "MEMORY.md":
             continue
         try:
-            fm, body = parse_frontmatter(p)
+            fm, body = parse_frontmatter(p, folder)
             if not fm:
                 continue
+            # The same one-line cleaning MEMORY.md applies: a line break in a
+            # name or description must not start a line of its own in AGENTS.md.
+            name, description, _, _ = index_line_fields(fm, p.stem, p.name)
+            # Only a YAML boolean pins: the string "true" or a 1 is not a
+            # deliberate pin and must not pull a body into a committed file.
+            pinned = fm.get("pinned") is True
+            # A reader splitting lines with `str.splitlines` must see the
+            # lines a Markdown reader sees, so every line break it honours
+            # is one here.
+            body = _ANY_LINE_BREAK.sub("\n", body).strip()
+            ftype = fm.get("type")
             entries.append(MemoryEntry(
                 path=p,
-                name=fm.get("name", p.stem),
-                description=fm.get("description", ""),
-                type=fm.get("type", ""),
-                sensitivity=fm.get("sensitivity", "internal") or "internal",
+                name=name,
+                description=description,
+                type=ftype if isinstance(ftype, str) else "",
+                sensitivity=_sensitivity(fm.get("sensitivity"), p),
                 body=body,
                 mtime=p.stat().st_mtime,
                 created=str(fm.get("created") or fm.get("updated") or ""),
+                pinned=pinned,
             ))
         except Exception as e:
-            print(f"warning: skipping {p}: {e}", file=sys.stderr)
+            print(f"warning: skipping {visible(p)}: {visible(e)}; it is left out of AGENTS.md", file=sys.stderr)
     return entries
+
+
+# Ranks above every ceiling, so a memory carrying it is never included.
+_UNRANKED_SENSITIVITY = ""
+
+
+def _sensitivity(value: object, path: Path) -> str:
+    """The sensitivity a memory is filtered by; absent or empty means internal.
+
+    A value that is not text names no level, so it cannot be placed under any
+    ceiling: the memory is left out and the file named, as memory-audit
+    reports it.
+    """
+    if value is None or value == "":
+        return "internal"
+    if isinstance(value, str):
+        return value
+    print(
+        f"warning: {visible(path)}: field 'sensitivity' must be text; it is left out of AGENTS.md",
+        file=sys.stderr,
+    )
+    return _UNRANKED_SENSITIVITY
 
 
 def filter_by_sensitivity(entries: list[MemoryEntry], max_level: str) -> list[MemoryEntry]:
@@ -126,38 +177,10 @@ def filter_by_sensitivity(entries: list[MemoryEntry], max_level: str) -> list[Me
     return [e for e in entries if SENSITIVITY_RANK.get(e.sensitivity, 99) <= threshold]
 
 
-def extract_claude_md_sections(path: Path, included_headings: list[str]) -> str:
-    if not path.exists():
-        return ""
-    text = path.read_text(encoding="utf-8", errors="replace")
-    lines = text.split("\n")
-    out: list[str] = []
-    including = False
-    current_heading_level = 0
-
-    for line in lines:
-        heading_match = re.match(r"^(#{1,6})\s+(.+?)$", line)
-        if heading_match:
-            hashes, title = heading_match.groups()
-            level = len(hashes)
-            full = f"{hashes} {title}"
-            if any(full.startswith(h) for h in included_headings):
-                including = True
-                current_heading_level = level
-                out.append(line)
-                continue
-            if including and level <= current_heading_level:
-                including = False
-        if including:
-            out.append(line)
-
-    return "\n".join(out).strip() + "\n"
-
-
 def render_critical_rules(
     entries: list[MemoryEntry], inline_above_public: bool = False
 ) -> str:
-    """Inline full bodies for memories whose filename is in CRITICAL_MEMORY_FILENAMES.
+    """Inline full bodies for memories pinned in their frontmatter.
 
     These are rules the IDE agent MUST see verbatim, not just as index entries.
 
@@ -168,7 +191,7 @@ def render_critical_rules(
     ``internal`` (the safe default), so by default nothing above public is inlined
     verbatim into the committed file.
     """
-    criticals = [e for e in entries if e.path.name in CRITICAL_MEMORY_FILENAMES]
+    criticals = [e for e in entries if e.pinned]
     if not inline_above_public:
         criticals = [
             e for e in criticals
@@ -184,17 +207,18 @@ def render_critical_rules(
         if e.description:
             lines.append(f"_{e.description}_")
             lines.append("")
+        # Literal text: nothing in a body can reach the sections around it.
         body = e.body.strip()
         if body:
-            lines.append(body)
+            lines.append(fenced_literal(body))
         lines.append("")
     return "\n".join(lines).rstrip() + "\n"
 
 
 def render_memory_index(entries: list[MemoryEntry], heading: str) -> str:
-    """Render memories as a description-only index. Critical ones are skipped
+    """Render memories as a description-only index. Pinned ones are skipped
     here because they're already inlined via render_critical_rules."""
-    non_critical = [e for e in entries if e.path.name not in CRITICAL_MEMORY_FILENAMES]
+    non_critical = [e for e in entries if not e.pinned]
     if not non_critical:
         return ""
     lines = [f"## {heading}", ""]
@@ -211,7 +235,7 @@ def render_memory_index(entries: list[MemoryEntry], heading: str) -> str:
         lines.append("")
         for e in items:
             desc = e.description or "(no description)"
-            lines.append(f"- **{e.name}** — {desc}")
+            lines.append(f"- **{e.name}**: {desc}")
         lines.append("")
     return "\n".join(lines).rstrip() + "\n"
 
@@ -236,6 +260,7 @@ def enforce_ceiling(
     per_cwd_entries: list[MemoryEntry],
     global_entries: list[MemoryEntry],
     ceiling: int,
+    global_heading: str = "Global memory",
 ) -> tuple[str, str, list[str]]:
     """With description-only rendering, per-memory cost is tiny so the ceiling
     rarely triggers. If it does, drop reference entries first (lowest signal),
@@ -274,7 +299,7 @@ def enforce_ceiling(
                 if label == "per-cwd":
                     per_cwd_section = render_memory_index(entries, "Per-project memory")
                 else:
-                    global_section = render_memory_index(entries, "Global memory")
+                    global_section = render_memory_index(entries, global_heading)
                 dropped.append(f"{label} {drop_type}: {v.name}")
             if total_size() <= ceiling:
                 return per_cwd_section, global_section, dropped
@@ -283,27 +308,25 @@ def enforce_ceiling(
 
 
 def render_agents_md(
-    claude_md_content: str,
     repo_claude_md: str,
     per_cwd_entries: list[MemoryEntry],
     global_entries: list[MemoryEntry],
-    per_cwd_summary: str,
-    global_summary: str,
+    source_lines: list[str],
     max_sensitivity: str,
     ceiling: int,
     inline_above_public: bool = False,
+    global_heading: str = "Global memory",
 ) -> str:
     combined_critical = render_critical_rules(
         per_cwd_entries + global_entries, inline_above_public=inline_above_public
     )
     per_cwd_section = render_memory_index(per_cwd_entries, "Per-project memory")
-    global_section = render_memory_index(global_entries, "Global memory")
+    global_section = render_memory_index(global_entries, global_heading)
 
-    fixed_content = claude_md_content + combined_critical
     # Copy lists so enforce_ceiling can mutate locally.
     per_cwd_section, global_section, dropped = enforce_ceiling(
-        fixed_content, per_cwd_section, global_section,
-        list(per_cwd_entries), list(global_entries), ceiling,
+        combined_critical, per_cwd_section, global_section,
+        list(per_cwd_entries), list(global_entries), ceiling, global_heading,
     )
 
     timestamp = datetime.now().strftime("%Y-%m-%d %H:%M")
@@ -318,22 +341,14 @@ def render_agents_md(
         "",
         "## Source",
         "",
-        f"- `~/.claude/CLAUDE.md` — voice + rule sections",
-        f"- `~/.claude/global-memory/` — {global_summary}",
-        f"- per-cwd memory — {per_cwd_summary}",
+        *source_lines,
     ]
     if repo_claude_md:
-        parts.append(f"- `<repo>/CLAUDE.md` — repo-specific instructions included")
+        parts.append(f"- `<repo>/CLAUDE.md`: repo-specific instructions included")
     if dropped:
         parts.append("")
         parts.append(f"Dropped for ceiling ({ceiling} bytes): {len(dropped)} entries.")
     parts.append("")
-
-    if claude_md_content.strip():
-        parts.append("# Voice and rules (from ~/.claude/CLAUDE.md)")
-        parts.append("")
-        parts.append(claude_md_content.strip())
-        parts.append("")
 
     if combined_critical.strip():
         parts.append(combined_critical.strip())
@@ -356,32 +371,45 @@ def render_agents_md(
     return "\n".join(parts).rstrip() + "\n"
 
 
-def find_per_cwd_memory_folder() -> Path | None:
-    """Locate the per-cwd MEMORY folder via the centralized path resolver.
+def split_store_folders(folders: list[Path], home: Path) -> tuple[list[Path], list[Path], bool]:
+    """Split the resolved store folders into (per-cwd, global, layout-defined).
 
-    Routes through memforge.paths.default_memory_paths so the MEMORY-folder
-    discovery is IDE/OS-neutral. The ~/.claude/CLAUDE.md read in main() stays
-    intentionally Claude-Code-specific (that file is this tool's voice source);
-    only the MEMORY-folder lookup is generalized.
+    The Claude Code layout and the ~/.memforge default each end with a
+    `global-memory` folder in the home, after at most one per-cwd `memory`
+    folder; only those layouts say which folder is per-cwd. Any other list (a
+    MEMFORGE_MEMORY_PATH the operator set) is used as given, every folder
+    read in order, with no per-cwd versus global distinction.
     """
-    from memforge.paths import default_memory_paths
+    global_folders = (home / ".claude" / "global-memory", home / ".memforge" / "global-memory")
+    if (
+        folders
+        and len(folders) <= 2
+        and folders[-1] in global_folders
+        and all(p.name == "memory" for p in folders[:-1])
+    ):
+        return folders[:-1], folders[-1:], True
+    return [], list(folders), False
 
-    for p in default_memory_paths():
-        # The per-cwd folder is conventionally the one named "memory"; the
-        # global folder ("global-memory") is read separately in main().
-        if p.name == "memory" and p.is_dir():
-            return p
-    return None
+
+def folder_label(folder: Path, home: Path) -> str:
+    """How AGENTS.md names a store folder: home-relative, else by its last
+    name only, so the committed file does not carry a machine path."""
+    try:
+        return f"~/{folder.relative_to(home).as_posix()}/"
+    except ValueError:
+        return f".../{folder.name}/"
 
 
 def scan_rendered_for_secrets(rendered: str) -> list[str]:
     """Run the rendered AGENTS.md through the DLP secret/sensitivity scan and
-    return a list of BLOCKER finding strings. Empty list == clean.
+    return a list of secret finding strings. Empty list == clean.
 
     AGENTS.md is committed and shared with five external tools, so before it is
     written to disk it MUST pass the same secret pre-scan the rest of the package
-    ships for exactly this purpose. Any BLOCKER finding refuses the write
-    (agentsmd-01).
+    ships for exactly this purpose (agentsmd-01). Every BLOCKER refuses the write,
+    and so does every MAJOR except the kinds in _NOT_A_SECRET: a JWT or a
+    password assignment is MAJOR in a memory only because the label cross-check
+    adds the BLOCKER there, and the rendered file has no label to check.
 
     Fail CLOSED (agentsmd-dlp-failopen-01): if the DLP scanner cannot be imported
     or raises while scanning, this is the gate that protects a committed/shared
@@ -402,87 +430,126 @@ def scan_rendered_for_secrets(rendered: str) -> list[str]:
         f"line {f.line_no} [{f.pattern}]: {f.excerpt}"
         for f in findings
         if f.severity == "BLOCKER"
+        or (f.severity == "MAJOR" and f.pattern not in _NOT_A_SECRET)
     ]
 
 
-def back_up_if_foreign(target: Path) -> Path | None:
-    if not target.exists():
+# MAJOR findings that are not a credential: an ARN names a resource and is
+# legitimate in a restricted memory written under --max-sensitivity restricted;
+# the others describe the scanned file, not its text.
+_NOT_A_SECRET = frozenset({"aws_arn", "invalid_utf8", "nul_bytes", "symlink_not_scanned"})
+
+
+def read_repo_file(path: Path, repo: Path) -> str | None:
+    """Text of a file in the working repo, or None when it does not exist.
+
+    The repo may be a clone whose CLAUDE.md or AGENTS.md is a symlink to a file
+    outside it, so the read never follows a link (LinkReadRefused).
+    """
+    try:
+        data = read_bytes_no_follow(path, root=repo)
+    except FileNotFoundError:
         return None
-    content = target.read_text(encoding="utf-8", errors="replace")
-    if MARKER in content:
+    return io.TextIOWrapper(io.BytesIO(data), encoding="utf-8", errors="replace").read()
+
+
+def back_up_if_foreign(target: Path, repo: Path) -> Path | None:
+    content = read_repo_file(target, repo)
+    if content is None or MARKER in content:
         return None
     stamp = datetime.now().strftime("%Y%m%d-%H%M%S")
     backup = target.with_name(f"{target.stem}.bak-{stamp}{target.suffix}")
-    backup.write_text(content)
+    write_text_inside(repo, backup, content)
     return backup
 
 
+@terminal_safe
 def main():
-    parser = argparse.ArgumentParser()
+    parser = argparse.ArgumentParser(
+        description="Generate <cwd>/AGENTS.md from the memory folders memforge resolves "
+                    "for <cwd> and from <cwd>/CLAUDE.md. Nothing else is read: no other "
+                    "file in the home folder, such as ~/.claude/CLAUDE.md, is opened.",
+    )
     parser.add_argument("--cwd", type=Path, default=Path.cwd())
     parser.add_argument("--max-sensitivity", choices=SENSITIVITY_LEVELS, default=DEFAULT_MAX_SENSITIVITY)
     parser.add_argument("--dry-run", action="store_true")
     parser.add_argument("--ceiling-bytes", type=int, default=CEILING_BYTES)
     parser.add_argument(
         "--inline-above-public", action="store_true",
-        help="Inline full bodies of critical memories above 'public' sensitivity "
+        help="Inline full bodies of pinned memories above 'public' sensitivity "
              "into the committed AGENTS.md. OFF by default: AGENTS.md is shared "
              "with external tools, so above-public inline content requires this "
              "explicit opt-in (mirrors dedup/lint local-only-by-default posture).",
     )
     args = parser.parse_args()
 
-    claude_md_path = Path.home() / ".claude" / "CLAUDE.md"
-    per_cwd_folder = find_per_cwd_memory_folder()
-    # Global MEMORY folder discovered via the centralized resolver (IDE/OS-
-    # neutral); the ~/.claude/CLAUDE.md voice read above stays Claude-specific.
-    from memforge.paths import default_memory_paths
-
-    _global_candidates = [p for p in default_memory_paths() if p.name == "global-memory"]
-    global_memory_folder = (
-        _global_candidates[0]
-        if _global_candidates
-        else Path.home() / ".claude" / "global-memory"
+    # The store is the one for the repo AGENTS.md is written into, not the one
+    # for the folder the command runs in: AGENTS.md is committed in that repo.
+    repo = args.cwd.resolve()
+    home = Path.home()
+    per_cwd_folders, global_folders, layout_defined = split_store_folders(
+        default_memory_paths(repo), home
     )
     repo_claude_md_path = args.cwd / "CLAUDE.md"
     target = args.cwd / "AGENTS.md"
 
-    claude_md_content = extract_claude_md_sections(claude_md_path, CLAUDE_MD_INCLUDE_HEADINGS)
-    repo_claude_md = repo_claude_md_path.read_text(encoding="utf-8", errors="replace") if repo_claude_md_path.exists() else ""
+    try:
+        repo_claude_md = read_repo_file(repo_claude_md_path, args.cwd) or ""
+    except OSError as e:
+        print(f"error: could not read {visible(repo_claude_md_path)}: {visible(e)}", file=sys.stderr)
+        return 2
 
-    global_all = load_memory_folder(global_memory_folder)
-    per_cwd_all = load_memory_folder(per_cwd_folder) if per_cwd_folder else []
-
-    global_kept = filter_by_sensitivity(global_all, args.max_sensitivity)
+    try:
+        per_cwd_all = [e for f in per_cwd_folders for e in load_memory_folder(f)]
+        global_loaded = [(f, load_memory_folder(f)) for f in global_folders]
+    except OSError as e:
+        print(f"error: could not read the memory folder {visible(e.filename)}: {visible(e)}; "
+              f"{visible(target)} not written", file=sys.stderr)
+        return 2
     per_cwd_kept = filter_by_sensitivity(per_cwd_all, args.max_sensitivity)
-
-    global_summary = summarize_filter(global_all, global_kept, args.max_sensitivity)
     per_cwd_summary = summarize_filter(per_cwd_all, per_cwd_kept, args.max_sensitivity)
 
+    global_kept: list[MemoryEntry] = []
+    source_lines: list[str] = []
+    summaries: list[tuple[str, str]] = []
+    for folder, folder_all in global_loaded:
+        if not folder_all and not layout_defined:
+            print(
+                f"warning: {visible(folder)}: no memories found in this MEMFORGE_MEMORY_PATH folder",
+                file=sys.stderr,
+            )
+        folder_kept = filter_by_sensitivity(folder_all, args.max_sensitivity)
+        global_kept.extend(folder_kept)
+        summary = summarize_filter(folder_all, folder_kept, args.max_sensitivity)
+        source_lines.append(f"- `{folder_label(folder, home)}`: {summary}")
+        summaries.append(("global" if layout_defined else folder_label(folder, home), summary))
+    if layout_defined:
+        source_lines.append(f"- per-cwd memory: {per_cwd_summary}")
+        summaries.append(("per-cwd", per_cwd_summary))
+
     rendered = render_agents_md(
-        claude_md_content=claude_md_content,
         repo_claude_md=repo_claude_md,
         per_cwd_entries=per_cwd_kept,
         global_entries=global_kept,
-        per_cwd_summary=per_cwd_summary,
-        global_summary=global_summary,
+        source_lines=source_lines,
         max_sensitivity=args.max_sensitivity,
         ceiling=args.ceiling_bytes,
         inline_above_public=args.inline_above_public,
+        global_heading="Global memory" if layout_defined else "Memory",
     )
 
     # DLP pre-scan: AGENTS.md is committed and shared with external tools, so it
-    # MUST pass a secret scan before any write (agentsmd-01). Refuse on BLOCKER.
+    # MUST pass a secret scan before any write (agentsmd-01).
     secret_findings = scan_rendered_for_secrets(rendered)
     if secret_findings:
         print(
-            f"error: refusing to write {target}: DLP scan found "
-            f"{len(secret_findings)} BLOCKER finding(s) in the rendered AGENTS.md "
+            f"error: refusing to write {visible(target)}: DLP scan found "
+            f"{len(secret_findings)} secret finding(s) in the rendered AGENTS.md "
             "(AGENTS.md is committed/shared; it must not carry secrets):",
             file=sys.stderr,
         )
         for f in secret_findings:
-            print(f"  - {f}", file=sys.stderr)
+            print(f"  - {visible(f)}", file=sys.stderr)
         return 2
 
     if args.dry_run:
@@ -490,18 +557,18 @@ def main():
         return 0
 
     try:
-        backup = back_up_if_foreign(target)
-        target.write_text(rendered, encoding="utf-8")
+        backup = back_up_if_foreign(target, args.cwd)
+        write_text_inside(args.cwd, target, rendered)
     except Exception as e:
-        print(f"error: could not write {target}: {e}", file=sys.stderr)
+        print(f"error: could not write {visible(target)}: {visible(e)}", file=sys.stderr)
         return 2
 
     size = len(rendered.encode("utf-8"))
-    print(f"wrote {target} ({size} bytes, ceiling {args.ceiling_bytes})")
-    print(f"  global: {global_summary}")
-    print(f"  per-cwd: {per_cwd_summary}")
+    print(f"wrote {visible(target)} ({size} bytes, ceiling {args.ceiling_bytes})")
+    for label, summary in summaries:
+        print(f"  {visible(label)}: {visible(summary)}")
     if backup:
-        print(f"  foreign AGENTS.md detected; backed up to {backup}")
+        print(f"  foreign AGENTS.md detected; backed up to {visible(backup)}")
     return 0
 
 

@@ -1,0 +1,62 @@
+@startuml keys-and-signing
+!include _style.iuml
+title MemForge keys and signing
+
+rectangle "**Signer's machine or key service**\noperated by each signer" as SignerZone {
+  database "Private signing key\n(never read by MemForge)" as Priv
+  component "git commit -S\ngpg.format, user.signingkey" as GitSign
+}
+
+rectangle "**Store repository: committed signer list**\none file under .memforge/ decides the mode" as Lists #FEFCE8 {
+  database "**ssh**\nallowed_signers\n<label> namespaces=<U+0022>git<U+0022> <key>" as SshList
+  database "**gpg** (refused)\nallowed_gpg_fingerprints\n40-hex primary fingerprint" as GpgList
+  database "**keyless** (refused)\nallowed_identities\n<identity> <issuer>" as KeylessList
+}
+
+rectangle "**Receiver: memforge sync**" as Recv {
+  component "init-store ~--mode ssh\nreads user.signingkey .pub only" as Init
+  component "Verifier\nlist from first parent C^1" as Ver
+  component "ssh-keygen (resolved)\nvia git verify-commit" as Ssh
+  component "gpg + receiver keyring\n(not reached)" as Gpg
+  component "gitsign + Sigstore roots\n(not reached)" as Gitsign
+}
+
+rectangle "**Release**\noperated by the maintainer" as Rel #FAF5FF {
+  database "Maintainer's tag\nsigning key" as TagKey
+  component "git tag -s vX.Y.Z" as Tag
+  component "release.yml test job\nverification.verified == true\nannotated, on main" as Check
+  component "publish job\nOIDC token, pypi environment" as Pub
+  component "attest job\nOIDC token, short-lived\nSigstore certificate" as Attest
+}
+cloud "**GitHub**\nverifies tag signatures" as GH
+cloud "**PyPI**\ntrusted publisher binding" as Pypi
+
+Priv --> GitSign : "signs"
+GitSign --> Ver : "signed commit C"
+Init --> SshList : "writes first line\n(public key)"
+SshList --> Ver : "list in C^1"
+Ver --> Ssh : "mode ssh"
+Ver -[dashed,#B91C1C]-> Gpg : "**mode_unreleased**"
+Ver -[dashed,#B91C1C]-> Gitsign : "**mode_unreleased**"
+GpgList --> Ver : "list in C^1"
+KeylessList --> Ver : "list in C^1"
+
+rectangle "**Who adds a signer:** a commit signed by a signer already\non the list. The list is read from the first parent, so a\ncommit that edits the list is judged by the old list and\ncannot authorize itself. A mode change deletes the old file\nand adds the new one in one commit, judged under the old mode.\nA commit whose own tree lacks exactly one valid list is\nrefused (list_removed). Removing a key stops later commits\nonly. MemForge has no rotation, revocation or recovery." as Rules #FFFFFF
+SshList -[hidden]- Rules
+
+TagKey --> Tag : "signs tag object"
+Tag --> GH : "git push origin vX.Y.Z"
+GH --> Check : "tag object, verification"
+Check --> Pub : "needs: test, build"
+Pub --> Pypi : "upload, no stored token"
+Check --> Attest : "after build and pdf"
+Attest --> GH : "provenance attestation over\ndist, SBOM, PDF; no stored key"
+
+note right of SshList
+**RISK**
+* a listed key is trusted completely
+* any listed signer can add another signer
+* the principal is only a label
+* a valid list of keys nobody holds blocks syncs
+end note
+@enduml

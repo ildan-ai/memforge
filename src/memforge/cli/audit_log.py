@@ -1,5 +1,4 @@
-# memory-audit-log — tamper-evident hash-chain audit log for memory folders
-# (Phase 1 T6.3).
+# memory-audit-log keeps a hash-chain audit log for memory folders (Phase 1 T6.3).
 #
 # ADR: 0001 §Phase 1 T6 (Audit trails sub-deliverable)
 #
@@ -9,14 +8,21 @@
 #
 # chain_sha256 = sha256( prev_chain_sha256 || canonical-json(record-without-
 # chain_sha256) ). Record N+1 carries record N's chain_sha256 as its
-# prev_chain_sha256, forming an append-only Merkle chain. Verification re-
-# walks the chain; exit 1 on any tamper or missing prev linkage.
+# prev_chain_sha256, forming a hash chain. Verification re-walks the chain;
+# exit 1 on a line that cannot be read, a hash mismatch or a broken link.
+#
+# What the chain does and does not detect. The chain has no key and no anchor
+# outside the log file. `verify` detects accidental corruption and an edit that
+# does not recompute the chain. It does not detect a full rewrite or a
+# truncation by someone who can write the file: they can recompute every hash,
+# or drop records from the end (or the whole file), and `verify` still passes.
+# Do not treat a passing `verify` as proof that the log is complete or original.
 #
 # Operations:
 #   append   --op X --file F  Write a new record. Computes file SHA-256
 #                              before/after where applicable; chains to last
 #                              record.
-#   verify                     Re-walk the chain. Exit 1 on tamper.
+#   verify                     Re-walk the chain. Exit 1 on a break.
 #   tail     [--n N]           Show last N records.
 #   export   [--format jsonl|json|cef]  Export for SIEM forwarding.
 #
@@ -26,11 +32,13 @@ from __future__ import annotations
 
 import argparse
 import contextlib
+import errno
 import getpass
 import hashlib
 import json
 import os
 import socket
+import stat
 import sys
 import time
 from dataclasses import asdict, dataclass, field
@@ -38,10 +46,39 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Optional
 
+from memforge._terminal import terminal_safe, visible
+from memforge.discovery import access_error
+
 
 LOG_FILENAME = ".memforge-audit-log.jsonl"
 LOCK_FILENAME = ".memforge-audit-log.lock"
 SCHEMA = "memforge-audit-log/v1"
+
+CHAIN_LIMITS = (
+    "The chain detects accidental corruption and an edit that does not "
+    "recompute the chain. It does not detect a full rewrite or a truncation "
+    "by someone who can write the log file."
+)
+
+
+def _lock_windows(lock_file) -> None:
+    """Take the exclusive lock, waiting as long as it takes as flock does.
+
+    msvcrt.LK_LOCK polls once a second and gives up after ten tries, which
+    let a waiting append go on without the lock and fork the chain. Polling
+    for a free lock here never gives up while another process holds it.
+    """
+    import msvcrt
+
+    lock_file.seek(0)
+    while True:
+        try:
+            msvcrt.locking(lock_file.fileno(), msvcrt.LK_NBLCK, 1)
+            return
+        except OSError as exc:
+            if exc.errno not in (errno.EACCES, errno.EDEADLK):
+                raise
+            time.sleep(0.01)
 
 
 @contextlib.contextmanager
@@ -65,7 +102,7 @@ def _append_lock(folder: Path):
     lock_file = None
     locked = False
     try:
-        lock_file = lock_path.open("a+")
+        lock_file = os.fdopen(_open_for_append(lock_path, os.O_RDWR | os.O_CREAT), "a+")
         try:
             import fcntl
 
@@ -73,10 +110,7 @@ def _append_lock(folder: Path):
             locked = True
         except ImportError:  # pragma: no cover - non-POSIX
             try:
-                import msvcrt
-
-                lock_file.seek(0)
-                msvcrt.locking(lock_file.fileno(), msvcrt.LK_LOCK, 1)
+                _lock_windows(lock_file)
                 locked = True
             except Exception:  # pragma: no cover - best-effort on Windows
                 locked = False
@@ -103,7 +137,7 @@ def _append_lock(folder: Path):
 class AuditLogError(Exception):
     """Raised when the audit log cannot be safely appended to.
 
-    The hash chain is tamper-evident only if every append links to the true
+    The hash chain is only meaningful if every append links to the true
     last record. When the final log line is corrupt, torn, or schema-
     incomplete, we MUST refuse to append rather than silently re-anchor a new
     chain (seq=1, empty prev) on top of an existing log (closes auditlog-01,
@@ -111,16 +145,138 @@ class AuditLogError(Exception):
     """
 
 
-def file_sha256(path: Path) -> Optional[str]:
-    if not path.exists() or not path.is_file():
-        return None
-    h = hashlib.sha256()
+def _is_symlink(path: Path) -> bool:
+    """True for any symbolic link, including one whose target is missing.
+    `exists()` follows links, so it cannot answer this."""
     try:
-        with path.open("rb") as f:
-            for chunk in iter(lambda: f.read(65536), b""):
-                h.update(chunk)
+        return stat.S_ISLNK(os.lstat(path).st_mode)
+    except FileNotFoundError:
+        return False
+    except OSError as e:
+        raise AuditLogError(f"cannot check {path}: {e}") from e
+
+
+def _refuse_symlink(path: Path) -> None:
+    if _is_symlink(path):
+        raise AuditLogError(
+            f"{path} is a symbolic link. The audit log and its lock must be "
+            "regular files inside the memory folder."
+        )
+
+
+# Flags missing on a platform are 0.
+_O_NOFOLLOW = getattr(os, "O_NOFOLLOW", 0)
+_O_NONBLOCK = getattr(os, "O_NONBLOCK", 0)
+_O_BINARY = getattr(os, "O_BINARY", 0)
+
+
+def _open_log(log_path: Path, flags: int) -> int:
+    """Open the log without following a link and return the descriptor.
+
+    The log lives in a folder other people can write to, so the path can be
+    swapped for a link between any check and the open. The decision is
+    therefore made on the opened descriptor: it must be a regular file and the
+    same file the path names now, and the path must not be a link. That holds
+    on platforms without O_NOFOLLOW too. Raises FileNotFoundError when there
+    is no log and AuditLogError for anything that is not the log itself.
+
+    The open never waits: O_NONBLOCK keeps a named pipe from blocking it, and
+    the descriptor is set back to blocking once it is known to be a regular
+    file, so reads and writes behave as without the flag.
+
+    With O_CREAT in ``flags`` a new file is created exclusively, and an
+    existing name is opened without O_CREAT. Without O_NOFOLLOW a plain
+    O_CREAT open of a link swapped in after the check would create the link's
+    missing target outside the folder before the descriptor check refuses it;
+    an exclusive create fails on any existing name, a dangling link included.
+    """
+    _refuse_symlink(log_path)
+    flags |= _O_NOFOLLOW | _O_NONBLOCK
+    try:
+        if flags & os.O_CREAT:
+            try:
+                fd = os.open(log_path, flags | os.O_EXCL, 0o666)
+            except FileExistsError:
+                fd = os.open(log_path, flags & ~os.O_CREAT)
+        else:
+            fd = os.open(log_path, flags, 0o666)
+    except FileNotFoundError:
+        raise
+    except OSError as e:
+        # A write-only, non-blocking open of a pipe with no reader fails ENXIO.
+        if e.errno == errno.ENXIO:
+            raise _not_a_regular_file(log_path) from None
+        raise AuditLogError(f"cannot open {log_path}: {e}") from e
+    try:
+        opened = os.fstat(fd)
+        named = os.lstat(log_path)
+    except OSError as e:
+        os.close(fd)
+        raise AuditLogError(f"cannot check {log_path}: {e}") from e
+    if stat.S_ISLNK(named.st_mode) or (opened.st_dev, opened.st_ino) != (
+        named.st_dev, named.st_ino
+    ):
+        os.close(fd)
+        raise AuditLogError(
+            f"{log_path} is not a regular file inside the memory folder "
+            "(it is a symbolic link, or was replaced while being opened)."
+        )
+    if not stat.S_ISREG(opened.st_mode):
+        os.close(fd)
+        raise _not_a_regular_file(log_path)
+    if _O_NONBLOCK:
+        os.set_blocking(fd, True)
+    return fd
+
+
+def _not_a_regular_file(path: Path) -> AuditLogError:
+    return AuditLogError(
+        f"{path} is not a regular file (for example a named pipe or a folder). "
+        "The audit log and its lock must be regular files inside the memory folder."
+    )
+
+
+def _open_for_append(path: Path, flags: int) -> int:
+    """Open the log or its lock for writing, as :func:`_open_log` does.
+
+    A file with a second hard link is refused before anything is written: the
+    same file is reachable under another name, possibly outside the folder.
+    """
+    try:
+        fd = _open_log(path, flags)
+    except (AuditLogError, FileNotFoundError) as e:
+        raise AuditLogError(f"refusing to append: {e}") from e
+    if os.fstat(fd).st_nlink != 1:
+        os.close(fd)
+        raise AuditLogError(
+            f"refusing to append to {path}: it has another hard link, so the "
+            "write would change a file under a second name"
+        )
+    return fd
+
+
+def file_sha256(path: Path) -> Optional[str]:
+    """Hash of the regular file at `path`, or None when there is none.
+
+    A link is followed: the operator names this file. The path can be swapped
+    for a named pipe at any time, so the open never waits and the decision is
+    made on the opened descriptor.
+    """
+    try:
+        fd = os.open(path, os.O_RDONLY | _O_BINARY | _O_NONBLOCK)
     except OSError:
         return None
+    h = hashlib.sha256()
+    with os.fdopen(fd, "rb") as f:
+        try:
+            if not stat.S_ISREG(os.fstat(fd).st_mode):
+                return None
+            if _O_NONBLOCK:
+                os.set_blocking(fd, True)
+            for chunk in iter(lambda: f.read(65536), b""):
+                h.update(chunk)
+        except OSError:
+            return None
     return h.hexdigest()
 
 
@@ -141,27 +297,47 @@ def now_iso() -> str:
     return datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.%fZ")
 
 
-def read_log(folder: Path) -> list[dict]:
-    """Full-file read. Used by `verify` (must walk every record) and `tail`
-    when explicit count is requested. Append paths use `tail_record` instead
-    so cost stays O(1) regardless of log size.
-    """
+def _read_log_lines(folder: Path) -> tuple[list[dict], list[str]]:
+    """Return (records, problems). A problem names a line that is not a JSON
+    object; such a line is never part of the returned records. Raises
+    AuditLogError when the log is a link or cannot be opened."""
     log_path = folder / LOG_FILENAME
-    if not log_path.exists():
-        return []
-    out: list[dict] = []
-    with log_path.open("r", encoding="utf-8") as f:
+    try:
+        fd = _open_log(log_path, os.O_RDONLY)
+    except FileNotFoundError:
+        return [], []
+    records: list[dict] = []
+    problems: list[str] = []
+    # Undecodable bytes are replaced, not raised: the damaged line then fails
+    # its hash check and the rest of the log is still read.
+    with os.fdopen(fd, "r", encoding="utf-8", errors="replace") as f:
         for line_no, line in enumerate(f, 1):
             line = line.strip()
             if not line:
+                # Append never writes one, so a blank line was put there.
+                problems.append(f"line {line_no}: blank line")
                 continue
             try:
                 rec = json.loads(line)
             except json.JSONDecodeError as e:
-                sys.stderr.write(f"warning: malformed log line {line_no}: {e}\n")
+                problems.append(f"line {line_no}: not valid JSON ({e})")
                 continue
-            out.append(rec)
-    return out
+            if not isinstance(rec, dict):
+                problems.append(f"line {line_no}: not a JSON object")
+                continue
+            records.append(rec)
+    return records, problems
+
+
+def read_log(folder: Path) -> list[dict]:
+    """Full-file read. Used by `tail` and `export`. Append paths use
+    `tail_record` instead so cost stays O(1) regardless of log size. Lines
+    that are not records are skipped with a warning; `verify` fails on them.
+    """
+    records, problems = _read_log_lines(folder)
+    for problem in problems:
+        sys.stderr.write(f"warning: malformed log {visible(problem)}\n")
+    return records
 
 
 def tail_record(folder: Path) -> Optional[dict]:
@@ -171,14 +347,17 @@ def tail_record(folder: Path) -> Optional[dict]:
 
     Strategy: seek to EOF, read backwards in 8KB chunks until a newline
     delimiter for the final record is found, parse that line only.
-    Returns None if the log is missing or empty.
+    Returns None if the log is missing or empty. Raises AuditLogError when
+    the log is a link or not a regular file (see :func:`_open_log`).
     """
     log_path = folder / LOG_FILENAME
-    if not log_path.exists():
+    try:
+        fd = _open_log(log_path, os.O_RDONLY | _O_BINARY)
+    except FileNotFoundError:
         return None
 
     chunk = 8192
-    with log_path.open("rb") as f:
+    with os.fdopen(fd, "rb") as f:
         f.seek(0, os.SEEK_END)
         size = f.tell()
         if size == 0:
@@ -214,14 +393,14 @@ def _log_has_content(log_path: Path) -> bool:
     chain at seq=1) from a non-empty log whose tail could not be read (must
     fail closed rather than silently re-anchor).
     """
-    if not log_path.exists():
-        return False
     try:
-        with log_path.open("rb") as f:
+        with os.fdopen(_open_log(log_path, os.O_RDONLY | _O_BINARY), "rb") as f:
             for chunk in iter(lambda: f.read(65536), b""):
                 if chunk.strip():
                     return True
-    except OSError:
+    except FileNotFoundError:
+        return False
+    except (AuditLogError, OSError):
         # Cannot read the file at all: treat as content-present and fail closed
         # upstream rather than risk re-anchoring over an unreadable log.
         return True
@@ -238,6 +417,13 @@ def append_record(
     meta: Optional[dict],
 ) -> dict:
     log_path = folder / LOG_FILENAME
+    # The log lives in a folder other people can write to. Following a link
+    # here would create or extend a file somewhere else on disk.
+    for path in (log_path, folder / LOCK_FILENAME):
+        try:
+            _refuse_symlink(path)
+        except AuditLogError as e:
+            raise AuditLogError(f"refusing to append: {e}") from e
     with _append_lock(folder):
         return _append_record_locked(folder, log_path, op, file, before_sha256,
                                      after_sha256, operator, meta)
@@ -253,7 +439,10 @@ def _append_record_locked(
     operator: Optional[str],
     meta: Optional[dict],
 ) -> dict:
-    last = tail_record(folder)
+    try:
+        last = tail_record(folder)
+    except AuditLogError as e:
+        raise AuditLogError(f"refusing to append: {e}") from e
     if last is None:
         # tail_record returns None for BOTH an empty/missing log AND an
         # unreadable (corrupt/torn) final line. Only the former is safe to
@@ -298,7 +487,8 @@ def _append_record_locked(
     record["chain_sha256"] = compute_chain_hash(prev_chain, record)
 
     log_path.parent.mkdir(exist_ok=True)
-    with log_path.open("a", encoding="utf-8") as f:
+    fd = _open_for_append(log_path, os.O_WRONLY | os.O_APPEND | os.O_CREAT)
+    with os.fdopen(fd, "a", encoding="utf-8") as f:
         f.write(canonical_json(record) + "\n")
     return record
 
@@ -313,11 +503,17 @@ def _default_operator() -> str:
 
 
 def verify_chain(folder: Path) -> tuple[bool, list[str]]:
-    """Returns (ok, errors). Errors is empty when ok=True."""
-    records = read_log(folder)
-    errors: list[str] = []
+    """Returns (ok, errors). Errors is empty when ok=True.
+
+    A passing result means the records present are self-consistent. See
+    CHAIN_LIMITS for what that does not cover.
+    """
+    try:
+        records, errors = _read_log_lines(folder)
+    except AuditLogError as e:
+        return False, [str(e)]
     if not records:
-        return True, errors
+        return (not errors), errors
 
     expected_prev = ""
     expected_seq = 1
@@ -330,17 +526,19 @@ def verify_chain(folder: Path) -> tuple[bool, list[str]]:
             errors.append(f"seq {seq}: prev_chain mismatch (want {expected_prev or '<empty>'}, got {prev_chain or '<empty>'})")
         recorded_chain = rec.get("chain_sha256", "")
         body = {k: v for k, v in rec.items() if k != "chain_sha256"}
-        recomputed = compute_chain_hash(prev_chain, body)
+        # A field of the wrong type cannot match a computed hash; str() keeps
+        # the walk going so every bad record is reported.
+        recomputed = compute_chain_hash(str(prev_chain or ""), body)
         if recorded_chain != recomputed:
-            errors.append(f"seq {seq}: chain hash mismatch (want {recorded_chain[:16]}..., got {recomputed[:16]}...)")
+            errors.append(f"seq {seq}: chain hash mismatch (want {str(recorded_chain)[:16]}..., got {recomputed[:16]}...)")
         expected_prev = recorded_chain
-        expected_seq = seq + 1
+        expected_seq = seq + 1 if isinstance(seq, int) else expected_seq + 1
     return (not errors), errors
 
 
 def cmd_append(args) -> int:
     folder = Path(args.path).resolve()
-    if not folder.exists():
+    if not os.path.exists(folder) and access_error(folder) is None:
         sys.stderr.write(f"error: folder not found: {folder}\n")
         return 2
     file_path = Path(args.file).resolve() if args.file else None
@@ -387,41 +585,54 @@ def cmd_verify(args) -> int:
         return 2
     rc = 0
     for folder in folders:
-        if not folder.exists():
+        if not os.path.exists(folder) and access_error(folder) is None:
             sys.stderr.write(f"warning: skipping nonexistent {folder}\n")
             continue
         ok, errors = verify_chain(folder)
+        try:
+            n = len(_read_log_lines(folder)[0])
+        except AuditLogError:
+            n = 0
         if ok:
-            n = len(read_log(folder))
-            print(f"OK    {folder} ({n} records)")
+            print(f"OK    {visible(folder)} ({n} records)")
         else:
-            n = len(read_log(folder))
-            print(f"TAMPER {folder} ({n} records, {len(errors)} errors):")
+            print(f"TAMPER {visible(folder)} ({n} records, {len(errors)} errors):")
             for e in errors:
-                print(f"  - {e}")
+                print(f"  - {visible(e)}")
             rc = 1
+    print(f"note: {CHAIN_LIMITS} OK means the records present are self-consistent.")
     return rc
 
 
 def cmd_tail(args) -> int:
     folder = Path(args.path).resolve()
-    records = read_log(folder)
+    try:
+        records = read_log(folder)
+    except AuditLogError as e:
+        sys.stderr.write(f"error: {e}\n")
+        return 1
     if not records:
         print(f"(no records at {folder / LOG_FILENAME})")
         return 0
     n = args.n
     tail = records[-n:]
+    # The log may hold records this tool did not write: print what is there.
     for rec in tail:
         print(
-            f"seq={rec['seq']:5d} {rec['ts']}  {rec['operator']:30s}  "
-            f"{rec['op']:14s}  {rec.get('file', '') or '-'}"
+            f"seq={str(rec.get('seq', '-')):>5s} {rec.get('ts', '-')}  "
+            f"{str(rec.get('operator', '-')):30s}  "
+            f"{str(rec.get('op', '-')):14s}  {rec.get('file', '') or '-'}"
         )
     return 0
 
 
 def cmd_export(args) -> int:
     folder = Path(args.path).resolve()
-    records = read_log(folder)
+    try:
+        records = read_log(folder)
+    except AuditLogError as e:
+        sys.stderr.write(f"error: {e}\n")
+        return 1
     fmt = args.format
     if fmt == "jsonl":
         for rec in records:
@@ -450,7 +661,23 @@ def _product_version() -> str:
         return "0.0.0"
 
 
+def _cef_header(value: Any) -> str:
+    """Escape a CEF header field: backslash and pipe. A header cannot hold a
+    line break, so one becomes a space."""
+    text = str(value).replace("\\", "\\\\").replace("|", "\\|")
+    return text.replace("\r", " ").replace("\n", " ")
+
+
+def _cef_extension(value: Any) -> str:
+    """Escape a CEF extension value: backslash, equals and line breaks."""
+    text = str(value).replace("\\", "\\\\").replace("=", "\\=")
+    return text.replace("\r", "\\r").replace("\n", "\\n")
+
+
 def _format_cef(rec: dict) -> str:
+    # Record values come from the log file, which other people can write, so
+    # each one is escaped: an unescaped line break or delimiter would let a
+    # record forge a second event or extra fields in the SIEM.
     ts = rec.get("ts", "")
     operator = rec.get("operator", "-")
     op = rec.get("op", "-")
@@ -458,24 +685,28 @@ def _format_cef(rec: dict) -> str:
     seq = rec.get("seq", 0)
     chain = rec.get("chain_sha256", "")
     return (
-        f"CEF:0|ILDAN|MemForge|{_product_version()}|{op}|memforge-audit|3|"
-        f"rt={ts} suser={operator} fname={file} cs1={chain} "
-        f"cs1Label=chainHash externalId={seq}"
+        f"CEF:0|ILDAN|MemForge|{_product_version()}|"
+        f"{_cef_header(op)}|memforge-audit|3|"
+        f"rt={_cef_extension(ts)} suser={_cef_extension(operator)} "
+        f"fname={_cef_extension(file)} cs1={_cef_extension(chain)} "
+        f"cs1Label=chainHash externalId={_cef_extension(seq)}"
     )
 
 
 def default_paths() -> list[Path]:
     """Default memory folders via the centralized, IDE/OS-neutral resolver
-    (existence-filtered)."""
+    (existence-filtered; one that cannot be looked at is kept, so it is
+    reported)."""
     from memforge.paths import default_memory_paths
 
-    return [p for p in default_memory_paths() if p.exists()]
+    return [p for p in default_memory_paths() if os.path.exists(p) or access_error(p)]
 
 
+@terminal_safe
 def main() -> int:
     p = argparse.ArgumentParser(
         prog="memory-audit-log",
-        description="Tamper-evident hash-chain audit log for memory folders (Phase 1 T6.3).",
+        description=f"Hash-chain audit log for memory folders (Phase 1 T6.3). {CHAIN_LIMITS}",
     )
     sub = p.add_subparsers(dest="cmd", required=True)
 
@@ -491,7 +722,11 @@ def main() -> int:
     pa.add_argument("--meta", default=None, help="Optional JSON object string for extra metadata")
     pa.set_defaults(func=cmd_append)
 
-    pv = sub.add_parser("verify", help="Re-walk hash chain; exit 1 on tamper")
+    pv = sub.add_parser(
+        "verify",
+        help="Re-walk hash chain; exit 1 on a break",
+        description=f"Re-walk the hash chain; exit 1 on a break. {CHAIN_LIMITS}",
+    )
     pv.add_argument("--path", action="append", default=[], help="Folder (repeatable)")
     pv.set_defaults(func=cmd_verify)
 

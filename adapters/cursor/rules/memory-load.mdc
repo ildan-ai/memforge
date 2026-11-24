@@ -9,18 +9,19 @@ The following is the contents of the operator's MEMORY.md index. Treat it as ses
 
 When the operator references a memory by title (e.g., "the AWS infra rollup"), follow the link in MEMORY.md to read the underlying file before answering.
 
-When the operator asks you to remember something cross-session, write it to a new file in the memory folder using the v0.3.0 frontmatter schema (see `~/claude-projects/memforge/spec/SPEC.md`). The filesystem watcher will commit the file automatically.
+When the operator asks you to remember something cross-session, write it to a new file in the memory folder using the v0.3.0 frontmatter schema (see `<path to your memforge clone>/spec/SPEC.md`). The filesystem watcher will commit the file automatically.
 
 ## MEMORY.md content
 
-@~/.claude/projects/PER_CWD_WORKSPACE_NAME/memory/MEMORY.md
+@~/.claude/projects/PROJECT_FOLDER/memory/MEMORY.md
 
 @~/.claude/global-memory/MEMORY.md
 
 <!--
 Setup:
-  1. Replace PER_CWD_WORKSPACE_NAME with your actual workspace folder name
-     (run: ls ~/.claude/projects/ | grep claude-projects).
+  1. Replace PROJECT_FOLDER with the project's absolute path, every character
+     other than an ASCII letter or digit replaced by a hyphen
+     (/home/alice/notes becomes -home-alice-notes; run: ls ~/.claude/projects/).
   2. Drop additional @-references for any other memory folders you want
      loaded session-start.
   3. Cursor's @-syntax inlines the referenced file's content into the rule.

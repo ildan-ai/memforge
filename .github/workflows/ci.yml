@@ -152,6 +152,88 @@ jobs:
       - run: pip install 'check-jsonschema==0.37.1'
       - run: check-jsonschema --builtin-schema github-workflows .github/workflows/*.yml
 
+  architecture-pdf:
+    name: Architecture PDF build (pull requests that change docs/)
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    # Builds the PDF with the same pinned toolchain release.yml uses, so a
+    # change that breaks the build is caught before a tag.
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          fetch-depth: 0
+          # Chrome prints files from this checkout; leave no token in it.
+          persist-credentials: false
+      - name: Check for changes under docs/
+        id: docs
+        shell: bash
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+        run: |
+          set -euo pipefail
+          if git diff --quiet "$BASE_SHA" HEAD -- docs/; then
+            echo "changed=false" >> "$GITHUB_OUTPUT"
+            echo "No change under docs/; the PDF build is skipped."
+          else
+            echo "changed=true" >> "$GITHUB_OUTPUT"
+          fi
+      - if: steps.docs.outputs.changed == 'true'
+        name: Load the pinned PDF toolchain
+        # Versions and the pandoc checksum live in docs/pdf/toolchain.conf, which
+        # build-pdf.sh also reads; it refuses any other version.
+        shell: bash
+        run: |
+          set -euo pipefail
+          pins=$(grep -E '^(PANDOC_VERSION|PANDOC_LINUX_AMD64_SHA256|CHROME_VERSION)=[A-Za-z0-9.]+$' docs/pdf/toolchain.conf)
+          if [ "$(printf '%s\n' "$pins" | wc -l)" -ne 3 ]; then
+            echo "::error::docs/pdf/toolchain.conf must set PANDOC_VERSION, PANDOC_LINUX_AMD64_SHA256 and CHROME_VERSION once each"
+            exit 1
+          fi
+          printf '%s\n' "$pins" | tee -a "$GITHUB_ENV"
+      - if: steps.docs.outputs.changed == 'true'
+        name: Install pandoc (pinned, sha256-verified)
+        shell: bash
+        run: |
+          set -euo pipefail
+          archive="pandoc-${PANDOC_VERSION}-linux-amd64.tar.gz"
+          curl -sSfL "https://github.com/jgm/pandoc/releases/download/${PANDOC_VERSION}/${archive}" -o "$RUNNER_TEMP/$archive"
+          echo "${PANDOC_LINUX_AMD64_SHA256}  $RUNNER_TEMP/$archive" | sha256sum -c -
+          tar -xzf "$RUNNER_TEMP/$archive" -C "$RUNNER_TEMP"
+          echo "PANDOC=$RUNNER_TEMP/pandoc-${PANDOC_VERSION}/bin/pandoc" >> "$GITHUB_ENV"
+      - if: steps.docs.outputs.changed == 'true'
+        uses: browser-actions/setup-chrome@48ad923757ca74d66703209fe939badbdf80f2f4  # v2.2.0
+        id: chrome
+        with:
+          chrome-version: ${{ env.CHROME_VERSION }}
+          install-dependencies: true
+      - if: steps.docs.outputs.changed == 'true'
+        name: Let Chrome start its sandbox
+        # Ubuntu 23.10 and later block unprivileged user namespaces through
+        # AppArmor, and Chrome's sandbox needs one. This runner is a throwaway
+        # VM that runs only this job, so the restriction is lifted here and
+        # Chrome keeps its sandbox.
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [ -e /proc/sys/kernel/apparmor_restrict_unprivileged_userns ]; then
+            sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
+          fi
+      - if: steps.docs.outputs.changed == 'true'
+        name: Build the PDF
+        shell: bash
+        env:
+          CHROME: ${{ steps.chrome.outputs.chrome-path }}
+        run: |
+          set -euo pipefail
+          mkdir -p pdf
+          docs/pdf/build-pdf.sh pdf/memforge-architecture.pdf
+      - if: steps.docs.outputs.changed == 'true'
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9  # v7.0.2
+        with:
+          name: architecture-pdf
+          path: pdf/
+          if-no-files-found: error
+
   pytest:
     name: Pytest (${{ matrix.os }} / Python ${{ matrix.python-version }})
     runs-on: ${{ matrix.os }}
