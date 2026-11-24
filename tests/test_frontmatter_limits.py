@@ -17,9 +17,9 @@ import pytest
 from memforge import frontmatter
 
 PARSE_TIMEOUT_SECONDS = 20
-# Two bounded loads of the slowest shape take about 0.7 s on an idle machine
-# and an unbounded one never finishes, so this leaves room for a loaded
-# machine without letting a regression through.
+# Two bounded loads of the slowest shape take about 0.3 s on Python 3.10 on an
+# idle machine and an unbounded one never finishes, so this leaves room for a
+# loaded machine without letting a regression through.
 PARSE_BUDGET_SECONDS = 5.0
 
 GOOD = (
@@ -149,6 +149,51 @@ def test_node_count_at_the_limit_parses_and_one_over_does_not():
 
     assert len(fm["tags"]) == at_limit
     assert over == {}
+
+
+@pytest.mark.parametrize("innermost", ["", "x"])
+def test_nesting_at_the_depth_limit_parses_and_one_level_over_does_not(innermost: str):
+    # The mapping is level 1 and the outer list level 2, so `levels` lists put
+    # the innermost one at level `levels + 1` and an item in it one below.
+    def block(levels: int) -> str:
+        return "tags: " + "[" * levels + innermost + "]" * levels
+
+    at_limit = frontmatter.MAX_FRONTMATTER_DEPTH - 1 - len(innermost)
+
+    fm, _ = frontmatter.parse(f"---\n{block(at_limit)}\n---\nBody.\n")
+    ok, reason = frontmatter.validate_frontmatter(f"---\n{block(at_limit + 1)}\n---\nBody.\n")
+
+    assert "tags" in fm
+    assert not ok
+    assert f"{frontmatter.MAX_FRONTMATTER_DEPTH}-level limit" in reason
+
+
+def _alias_chain(anchors: int, levels: int) -> str:
+    """Each anchor nests the one before it `levels` lists deep: the text stays
+    inside the depth limit, the value the aliases build does not."""
+    lines = ["a0: &a0 x"] + [
+        f"a{i}: &a{i} " + "[" * levels + f"*a{i - 1}" + "]" * levels
+        for i in range(1, anchors + 1)
+    ]
+    return "---\nname: chain\n" + "\n".join(lines) + "\n---\n\nBody.\n"
+
+
+@pytest.mark.parametrize("anchors, levels", [(2, 40), (17, 62)])
+def test_alias_chain_deeper_than_the_limit_is_refused_not_a_crash(anchors: int, levels: int):
+    text = _alias_chain(anchors, levels)
+
+    fm, body = frontmatter.parse(text)
+    ok, reason = frontmatter.validate_frontmatter(text)
+
+    assert (fm, body) == ({}, text)
+    assert not ok
+    assert f"{frontmatter.MAX_FRONTMATTER_DEPTH}-level limit" in reason
+
+
+def test_alias_chain_within_the_limit_still_parses():
+    fm, _ = frontmatter.parse(_alias_chain(2, 20))
+
+    assert fm["a2"][0][0][0]
 
 
 @pytest.fixture

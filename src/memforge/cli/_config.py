@@ -170,14 +170,26 @@ def load_config(start: Optional[Path] = None) -> dict[str, Any]:
     path = find_config_path(start)
     if path is None:
         return _merge_defaults({})
+    # The bounded loader, as for frontmatter: the config lives in the store,
+    # so a synced store can carry one built to stop the tools that read it.
+    # One byte past the limit is enough to know a file is over it.
+    from memforge.frontmatter import MAX_FRONTMATTER_BYTES, load_bounded
+
     try:
-        raw = yaml.safe_load(path.read_text(encoding="utf-8")) or {}
+        with path.open("rb") as f:
+            head = f.read(MAX_FRONTMATTER_BYTES + 1)
+        if len(head) > MAX_FRONTMATTER_BYTES:
+            raise yaml.YAMLError(f"over the {MAX_FRONTMATTER_BYTES}-byte limit")
+        raw = load_bounded(head.decode("utf-8")) or {}
     except OSError as exc:
         import sys as _sys
 
         _sys.stderr.write(f"warning: cannot read {path}: {exc}; using the default config\n")
         return _merge_defaults({})
-    except (UnicodeDecodeError, yaml.YAMLError):  # pragma: no cover
+    except (UnicodeDecodeError, yaml.YAMLError) as exc:
+        import sys as _sys
+
+        _sys.stderr.write(f"warning: cannot parse {path}: {exc}; using the default config\n")
         return _merge_defaults({})
     if not isinstance(raw, dict):
         return _merge_defaults({})

@@ -53,6 +53,14 @@ MAX_FRONTMATTER_BYTES = 65536
 #: billions of nodes that every later traversal would visit one by one.
 MAX_FRONTMATTER_NODES = 10_000
 
+#: Most levels of nesting a YAML document may have, in its text and in the
+#: value its aliases build: its own mapping is level 1 and each value sits one
+#: level below its container. Without this a deeply nested block is refused
+#: only when Python's recursion limit stops the loader, which takes about a
+#: second per file on Python 3.10, and an alias chain can build a value deep
+#: enough to stop a caller that walks it.
+MAX_FRONTMATTER_DEPTH = 64
+
 
 class FrontmatterLimitError(yaml.YAMLError):
     """A YAML document is over a size, node-count or nesting limit.
@@ -62,12 +70,31 @@ class FrontmatterLimitError(yaml.YAMLError):
     """
 
 
+class _DepthLimitedLoader(yaml.SafeLoader):
+    """SafeLoader that stops composing past MAX_FRONTMATTER_DEPTH."""
+
+    def __init__(self, stream: str) -> None:
+        super().__init__(stream)
+        self._depth = 0
+
+    def compose_node(self, parent: Any, index: Any) -> Any:
+        self._depth += 1
+        try:
+            if self._depth > MAX_FRONTMATTER_DEPTH:
+                raise FrontmatterLimitError(
+                    f"YAML nests deeper than the {MAX_FRONTMATTER_DEPTH}-level limit"
+                )
+            return super().compose_node(parent, index)
+        finally:
+            self._depth -= 1
+
+
 def load_bounded(text: str) -> Any:
     """yaml.safe_load for untrusted input, with the limits above enforced.
 
     Raises FrontmatterLimitError before any caller can traverse a document
     that is too large, expands past the node limit through aliases (including
-    an alias to its own ancestor), or nests deeper than the parser can follow.
+    an alias to its own ancestor), or nests past the depth limit.
     Every other load failure is a yaml.YAMLError.
     """
     if len(text.encode("utf-8")) > MAX_FRONTMATTER_BYTES:
@@ -75,7 +102,7 @@ def load_bounded(text: str) -> Any:
             f"YAML is over the {MAX_FRONTMATTER_BYTES}-byte limit"
         )
     try:
-        loaded = yaml.safe_load(text)
+        loaded = yaml.load(text, Loader=_DepthLimitedLoader)
     except RecursionError:
         raise FrontmatterLimitError("YAML is over the nesting limit") from None
     except ValueError as e:
@@ -86,10 +113,14 @@ def load_bounded(text: str) -> Any:
     # Count on the way in, not on the way out: a container that would take the
     # total past the limit is never pushed, so the work stays bounded even
     # when aliases make the document a graph with shared or cyclic parts.
+    # The depth is checked here too: the loader bounds how deep the text
+    # nests, but an alias to a nested anchor puts that whole anchor one level
+    # below the alias, so a chain of them builds a value deep enough to stop
+    # any caller that walks it recursively.
     remaining = MAX_FRONTMATTER_NODES - 1
-    pending = [loaded]
+    pending = [(loaded, 1)]
     while pending:
-        node = pending.pop()
+        node, depth = pending.pop()
         if isinstance(node, dict):
             children = [*node.keys(), *node.values()]
         elif isinstance(node, (list, tuple, set)):
@@ -101,7 +132,11 @@ def load_bounded(text: str) -> Any:
             raise FrontmatterLimitError(
                 f"YAML expands past the {MAX_FRONTMATTER_NODES}-node limit"
             )
-        pending.extend(children)
+        if children and depth >= MAX_FRONTMATTER_DEPTH:
+            raise FrontmatterLimitError(
+                f"YAML nests deeper than the {MAX_FRONTMATTER_DEPTH}-level limit"
+            )
+        pending.extend((child, depth + 1) for child in children)
     return loaded
 
 
